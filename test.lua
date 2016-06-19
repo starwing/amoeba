@@ -7,7 +7,10 @@ local xl, xm, xr =
 print(xl)
 print(xm)
 print(xr)
-print((xm*2) :eq (xl + xr))
+print(S:constraint()
+      :add(xl):add(10)
+      :relation "le" -- or "<="
+      :add(xr))
 S:addconstraint((xm*2) :eq (xl + xr))
 S:addconstraint(
    S:constraint()
@@ -22,18 +25,21 @@ print(xl)
 print(xm)
 print(xr)
 
+print('suggest xm to 0')
 S:suggest(xm, 0)
 print(S)
 print(xl)
 print(xm)
 print(xr)
 
+print('suggest xm to 70')
 S:suggest(xm, 70)
 print(S)
 print(xl)
 print(xm)
 print(xr)
 
+print('delete edit xm')
 S:deledit(xm)
 print(S)
 print(xl)

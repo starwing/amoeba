@@ -155,12 +155,13 @@ static aml_Solver *aml_checkitems(lua_State *L, int start, aml_Item *items) {
     return NULL;
 }
 
-static void aml_performitem(am_Constraint *cons, aml_Item *item, double multiplier) {
+static int aml_performitem(am_Constraint *cons, aml_Item *item, double multiplier) {
     switch (item->type) {
-    case AML_CONSTANT: am_addconstant(cons, item->value*multiplier); break;
-    case AML_VAR:      am_addterm(cons, item->var, multiplier); break;
-    case AML_CONS:     am_mergeconstraint(cons, item->cons, multiplier); break;
+    case AML_CONSTANT: return am_addconstant(cons, item->value*multiplier); break;
+    case AML_VAR:      return am_addterm(cons, item->var, multiplier); break;
+    case AML_CONS:     return am_mergeconstraint(cons, item->cons, multiplier); break;
     }
+    return AM_FAILED;
 }
 
 static double aml_checkstrength(lua_State *L, int idx, double def) {
@@ -192,6 +193,19 @@ static int aml_checkrelation(lua_State *L, int idx) {
     else if (strcmp(op, "le") == 0)  return AM_LESSEQUAL;
     else if (strcmp(op, "ge") == 0)  return AM_GREATEQUAL;
     return aml_argferror(L, 2, "invalid relation operator: '%s'", op);
+}
+
+static aml_Cons *aml_makecons(lua_State *L, aml_Solver *S, int start) {
+    aml_Cons *lcons;
+    int op = aml_checkrelation(L, start);
+    double strength = aml_checkstrength(L, start+3, AM_REQUIRED);
+    aml_Item items[2];
+    aml_checkitems(L, start+1, items);
+    lcons = aml_newcons(L, S, strength);
+    aml_performitem(lcons->cons, &items[0], 1.0);
+    am_setrelation(lcons->cons, op);
+    aml_performitem(lcons->cons, &items[1], 1.0);
+    return lcons;
 }
 
 static void aml_dumpkey(luaL_Buffer *B, int idx, am_Symbol sym) {
@@ -398,8 +412,8 @@ static void open_variable(lua_State *L) {
 
 static int Lcons_new(lua_State *L) {
     aml_Solver *S = (aml_Solver*)luaL_checkudata(L, 1, AML_SOLVER_TYPE);
-    double strength = aml_checkstrength(L, 2, AM_REQUIRED);
-    aml_newcons(L, S, strength);
+    if (lua_gettop(L) >= 3) aml_makecons(L, S, 2);
+    else aml_newcons(L, S, aml_checkstrength(L, 2, AM_REQUIRED));
     return 1;
 }
 
@@ -414,31 +428,28 @@ static int Lcons_delete(lua_State *L) {
     return 0;
 }
 
+static int Lcons_reset(lua_State *L) {
+    aml_Cons *lcons = (aml_Cons*)luaL_checkudata(L, 1, AML_CONS_TYPE);
+    if (lcons->cons == NULL) luaL_argerror(L, 1, "invalid constraint");
+    am_resetconstraint(lcons->cons);
+    lua_settop(L, 1); return 1;
+}
+
 static int Lcons_add(lua_State *L) {
     aml_Cons *lcons = (aml_Cons*)luaL_checkudata(L, 1, AML_CONS_TYPE);
-    am_Variable *var;
-    const char *s;
-    int ret, type = lua_type(L, 2);
+    aml_Item item;
+    int ret;
     if (lcons->cons == NULL) luaL_argerror(L, 1, "invalid constraint");
-    switch (type) {
-    case LUA_TNUMBER:
-        ret = am_addconstant(lcons->cons, (double)lua_tonumber(L, 2));
-        break;
-    case LUA_TSTRING:
-        s = lua_tostring(L, 2);
+    if (lua_type(L, 2) == LUA_TSTRING) {
+        const char *s = lua_tostring(L, 2);
         if (s[0] == '<' || s[0] == '>' || s[0] == '=') {
             ret = am_setrelation(lcons->cons, aml_checkrelation(L, 2));
-            break;
+            goto out;
         }
-        /* FALLTHROUGHT */
-    case LUA_TUSERDATA:
-        var = aml_checkvar(L, lcons->S, 2);
-        ret = am_addterm(lcons->cons, var,
-                (double)luaL_optnumber(L, 3, 1.0));
-        break;
-    default:
-        return aml_typeerror(L, 2, "number/string/variable");
     }
+    item = aml_checkitem(L, lcons->S, 2);
+    ret = aml_performitem(lcons->cons, &item, 1.0);
+out:
     if (ret != AM_OK) luaL_error(L, "constraint has been added to solver!");
     lua_settop(L, 1); return 1;
 }
@@ -506,6 +517,7 @@ static void open_constraint(lua_State *L) {
 #define ENTRY(name) { #name, Lcons_##name }
         ENTRY(new),
         ENTRY(delete),
+        ENTRY(reset),
         ENTRY(add),
         ENTRY(relation),
         ENTRY(strength),
@@ -604,19 +616,18 @@ static int Ltostring(lua_State *L) {
     return 1;
 }
 
+static int Lreset(lua_State *L) {
+    aml_Solver *S = (aml_Solver*)luaL_checkudata(L, 1, AML_SOLVER_TYPE);
+    int clear = lua_toboolean(L, 2);
+    am_resetsolver(S->solver, clear);
+    lua_settop(L, 1); return 1;
+}
+
 static int Laddconstraint(lua_State *L) {
     aml_Solver *S = (aml_Solver*)luaL_checkudata(L, 1, AML_SOLVER_TYPE);
     aml_Cons *lcons = (aml_Cons*)luaL_testudata(L, 2, AML_CONS_TYPE);
     int ret;
-    if (lcons == NULL) {
-        int op = aml_checkrelation(L, 2);
-        aml_Item items[2];
-        aml_checkitems(L, 3, items);
-        lcons = aml_newcons(L, S, AM_REQUIRED);
-        aml_performitem(lcons->cons, &items[0], 1.0);
-        am_setrelation(lcons->cons, op);
-        aml_performitem(lcons->cons, &items[1], 1.0);
-    }
+    if (lcons == NULL) lcons = aml_makecons(L, S, 2);
     if ((ret = am_add(S->solver, lcons->cons)) == AM_OK)
     { lua_settop(L, 1); return 1; }
     switch (ret) {
@@ -664,6 +675,7 @@ LUALIB_API int luaopen_amoeba(lua_State *L) {
 #define ENTRY(name) { #name, L##name }
         ENTRY(new),
         ENTRY(delete),
+        ENTRY(reset),
         ENTRY(addconstraint),
         ENTRY(delconstraint),
         ENTRY(addedit),

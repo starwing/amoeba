@@ -947,11 +947,10 @@ AM_API int am_setstrength(am_Constraint *cons, double strength) {
     strength = am_nearzero(strength) ? AM_REQUIRED : strength;
     if (cons->strength >= AM_REQUIRED) return AM_FAILED;
     if (cons->marker.id != 0) {
-        am_Row *objective = &cons->solver->objective;
-        am_Term *term = (am_Term*)am_gettable(&objective->terms, cons->marker);
-        if (term != NULL) term->multiplier *= strength / cons->strength;
-        term = (am_Term*)am_gettable(&objective->terms, cons->other);
-        if (term != NULL) term->multiplier *= strength / cons->strength;
+        am_Solver *solver = cons->solver;
+        double multiplier = strength / cons->strength;
+        am_mergerow(solver, &solver->objective, cons->marker, multiplier);
+        am_mergerow(solver, &solver->objective, cons->other,  multiplier);
     }
     cons->strength = strength;
     return AM_OK;
