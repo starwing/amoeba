@@ -948,9 +948,9 @@ AM_API int am_setstrength(am_Constraint *cons, double strength) {
     if (cons->strength >= AM_REQUIRED) return AM_FAILED;
     if (cons->marker.id != 0) {
         am_Solver *solver = cons->solver;
-        double multiplier = strength / cons->strength;
-        am_mergerow(solver, &solver->objective, cons->marker, multiplier);
-        am_mergerow(solver, &solver->objective, cons->other,  multiplier);
+        double diff = strength - cons->strength;
+        am_mergerow(solver, &solver->objective, cons->marker, diff);
+        am_mergerow(solver, &solver->objective, cons->other,  diff);
     }
     cons->strength = strength;
     return AM_OK;
