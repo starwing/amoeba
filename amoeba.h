@@ -912,12 +912,12 @@ AM_API int am_add(am_Solver *solver, am_Constraint *cons) {
     int ret;
     if (cons == NULL || cons->marker.id != 0) return AM_FAILED;
     row = am_makerow(solver, cons);
-    if ((ret = am_try_addrow(solver, &row, cons)) != AM_OK)
-        am_remove(solver, cons);
-    else {
+    if ((ret = am_try_addrow(solver, &row, cons)) == AM_OK) {
         am_optimize(solver, &solver->objective);
         am_updatevars(solver);
     }
+    else if (ret != AM_UNSATISFIED)
+        am_remove(solver, cons);
     return ret;
 }
 
