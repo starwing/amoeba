@@ -71,12 +71,12 @@ AM_API int am_hasvariable   (am_Solver *solver, am_Variable *var);
 AM_API int am_hasedit       (am_Solver *solver, am_Variable *var);
 AM_API int am_hasconstraint (am_Solver *solver, am_Constraint *cons);
 
-AM_API int  am_add    (am_Solver *solver, am_Constraint *cons);
-AM_API void am_remove (am_Solver *solver, am_Constraint *cons);
+AM_API int  am_add    (am_Constraint *cons);
+AM_API void am_remove (am_Constraint *cons);
 
-AM_API void am_addedit (am_Solver *solver, am_Variable *var, double strength);
-AM_API void am_suggest (am_Solver *solver, am_Variable *var, double value);
-AM_API void am_deledit (am_Solver *solver, am_Variable *var);
+AM_API void am_addedit (am_Variable *var, double strength);
+AM_API void am_suggest (am_Variable *var, double value);
+AM_API void am_deledit (am_Variable *var);
 
 AM_API am_Variable *am_newvariable (am_Solver *solver);
 AM_API void         am_delvariable (am_Variable *var);
@@ -488,7 +488,7 @@ AM_API am_Variable *am_newvariable(am_Solver *solver) {
 AM_API void am_delvariable(am_Variable *var) {
     if (var && --var->refcount <= 0) {
         am_Solver *solver = var->solver;
-        if (var->constraint) am_remove(solver, var->constraint);
+        if (var->constraint) am_remove(var->constraint);
         am_VarEntry *e = (am_VarEntry*)am_gettable(&solver->vars, var->sym);
         if (e != NULL) am_delkey(&solver->vars, &e->entry);
         am_free(&solver->varpool, var);
@@ -514,7 +514,7 @@ AM_API void am_delconstraint(am_Constraint *cons) {
     am_Solver *solver = cons->solver;
     am_ConsEntry *ce = (am_ConsEntry*)am_gettable(&solver->constraints, am_key(cons));
     am_VarEntry *ve = NULL;
-    if (cons->marker.id != 0) am_remove(solver, cons);
+    if (cons->marker.id != 0) am_remove(cons);
     assert(ce != NULL);
     am_delkey(&solver->constraints, &ce->entry);
     while (am_nextentry(&cons->vars, (am_Entry**)&ve))
@@ -546,9 +546,8 @@ AM_API int am_mergeconstraint(am_Constraint *cons, am_Constraint *other, double 
 }
 
 AM_API void am_resetconstraint(am_Constraint *cons) {
-    am_Solver *solver = cons->solver;
     am_VarEntry *ve = NULL;
-    if (cons->marker.id != 0) am_remove(solver, cons);
+    if (cons->marker.id != 0) am_remove(cons);
     cons->relation = 0;
     while (am_nextentry(&cons->vars, (am_Entry**)&ve)) {
         am_delvariable(ve->variable);
@@ -756,8 +755,10 @@ static int am_try_addrow(am_Solver *solver, am_Row *row, am_Constraint *cons) {
     if (subject.id == 0) {
         while (am_nextentry(&row->terms, (am_Entry**)&term))
             if (!am_isdummy(term)) break;
-        if (term == NULL && !am_nearzero(row->constant))
+        if (term == NULL && !am_nearzero(row->constant)) {
+            am_freerow(solver, row);
             return AM_UNSATISFIED;
+        }
         return am_add_with_artificial(solver, row);
     }
     am_solvefor(solver, row, subject, am_null());
@@ -886,7 +887,7 @@ AM_API void am_resetsolver(am_Solver *solver, int clear_constrants) {
     if (!clear_constrants) {
         while (am_nextentry(&solver->vars, &entry)) {
             am_Constraint **cons = &((am_VarEntry*)entry)->variable->constraint;
-            if (*cons) am_remove(solver, *cons);
+            if (*cons) am_remove(*cons);
             *cons = NULL;
         }
         assert(am_nearzero(solver->objective.constant));
@@ -907,21 +908,25 @@ AM_API void am_resetsolver(am_Solver *solver, int clear_constrants) {
     }
 }
 
-AM_API int am_add(am_Solver *solver, am_Constraint *cons) {
+AM_API int am_add(am_Constraint *cons) {
+    am_Solver *solver = cons->solver;
     am_Row row;
-    int ret;
+    int ret, oldsym = solver->symbol_count;
     if (cons == NULL || cons->marker.id != 0) return AM_FAILED;
     row = am_makerow(solver, cons);
-    if ((ret = am_try_addrow(solver, &row, cons)) == AM_OK) {
+    if ((ret = am_try_addrow(solver, &row, cons)) != AM_OK) {
+        am_remove(cons);
+        solver->symbol_count = oldsym;
+    }
+    else {
         am_optimize(solver, &solver->objective);
         am_updatevars(solver);
     }
-    else if (ret != AM_UNSATISFIED)
-        am_remove(solver, cons);
     return ret;
 }
 
-AM_API void am_remove(am_Solver *solver, am_Constraint *cons) {
+AM_API void am_remove(am_Constraint *cons) {
+    am_Solver *solver = cons->solver;
     am_Row tmp;
     if (cons == NULL || cons->marker.id == 0) return;
     if (am_iserror(&cons->marker))
@@ -932,10 +937,13 @@ AM_API void am_remove(am_Solver *solver, am_Constraint *cons) {
         solver->objective.constant = 0.0;
     if (am_getrow(solver, cons->marker, &tmp) != AM_OK) {
         am_Symbol exit = am_get_leaving_row(solver, cons->marker);
-        assert(exit.id != 0);
-        am_getrow(solver, exit, &tmp);
-        am_solvefor(solver, &tmp, cons->marker, exit);
-        am_substitute_rows(solver, cons->marker, &tmp);
+        if (exit.id == 0)
+            am_initrow(&tmp);
+        else {
+            am_getrow(solver, exit, &tmp);
+            am_solvefor(solver, &tmp, cons->marker, exit);
+            am_substitute_rows(solver, cons->marker, &tmp);
+        }
     }
     cons->marker = cons->other = am_null();
     am_freerow(solver, &tmp);
@@ -956,9 +964,11 @@ AM_API int am_setstrength(am_Constraint *cons, double strength) {
     return AM_OK;
 }
 
-AM_API void am_addedit(am_Solver *solver, am_Variable *var, double strength) {
+AM_API void am_addedit(am_Variable *var, double strength) {
+    am_Solver *solver = var ? var->solver : NULL;
     am_Constraint *cons;
     int ret;
+    if (var == NULL) return;
     assert(am_key(var).id != 0);
     if (var->constraint != NULL) return;
     if (strength >= AM_STRONG) strength = AM_STRONG;
@@ -966,23 +976,25 @@ AM_API void am_addedit(am_Solver *solver, am_Variable *var, double strength) {
     am_setrelation(cons, AM_EQUAL);
     am_addterm(cons, var, 1.0); /* var must have positive signture */
     am_addconstant(cons, -var->value);
-    ret = am_add(solver, cons);
+    ret = am_add(cons);
     assert(ret == AM_OK);
     var->constraint = cons;
     var->edit_value = var->value;
 }
 
-AM_API void am_deledit(am_Solver *solver, am_Variable *var) {
-    if (var->constraint == NULL) return;
+AM_API void am_deledit(am_Variable *var) {
+    if (var == NULL || var->constraint == NULL) return;
     am_delconstraint(var->constraint);
     var->constraint = NULL;
     var->edit_value = 0.0;
 }
 
-AM_API void am_suggest(am_Solver *solver, am_Variable *var, double value) {
+AM_API void am_suggest(am_Variable *var, double value) {
+    am_Solver *solver = var ? var->solver : NULL;
     double delta;
+    if (var == NULL) return;
     if (var->constraint == NULL) {
-        am_addedit(solver, var, AM_MEDIUM);
+        am_addedit(var, AM_MEDIUM);
         assert(var->constraint != NULL);
     }
     delta = value - var->edit_value;

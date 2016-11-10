@@ -628,7 +628,7 @@ static int Laddconstraint(lua_State *L) {
     aml_Cons *lcons = (aml_Cons*)luaL_testudata(L, 2, AML_CONS_TYPE);
     int ret;
     if (lcons == NULL) lcons = aml_makecons(L, S, 2);
-    if ((ret = am_add(S->solver, lcons->cons)) == AM_OK)
+    if ((ret = am_add(lcons->cons)) == AM_OK)
     { lua_settop(L, 1); return 1; }
     switch (ret) {
     case AM_UNSATISFIED: luaL_argerror(L, 2, "constraint unsatisfied");
@@ -638,9 +638,9 @@ static int Laddconstraint(lua_State *L) {
 }
 
 static int Ldelconstraint(lua_State *L) {
-    aml_Solver *S = (aml_Solver*)luaL_checkudata(L, 1, AML_SOLVER_TYPE);
+    luaL_checkudata(L, 1, AML_SOLVER_TYPE);
     aml_Cons *lcons = (aml_Cons*)luaL_checkudata(L, 2, AML_CONS_TYPE);
-    am_remove(S->solver, lcons->cons);
+    am_remove(lcons->cons);
     lua_settop(L, 1); return 1;
 }
 
@@ -648,14 +648,14 @@ static int Laddedit(lua_State *L) {
     aml_Solver *S = (aml_Solver*)luaL_checkudata(L, 1, AML_SOLVER_TYPE);
     am_Variable *var = aml_checkvar(L, S, 2);
     double strength = aml_checkstrength(L, 3, AM_MEDIUM);
-    am_addedit(S->solver, var, strength);
+    am_addedit(var, strength);
     lua_settop(L, 1); return 1;
 }
 
 static int Ldeledit(lua_State *L) {
     aml_Solver *S = (aml_Solver*)luaL_checkudata(L, 1, AML_SOLVER_TYPE);
     am_Variable *var = aml_checkvar(L, S, 2);
-    am_deledit(S->solver, var);
+    am_deledit(var);
     lua_settop(L, 1); return 1;
 }
 
@@ -663,7 +663,7 @@ static int Lsuggest(lua_State *L) {
     aml_Solver *S = (aml_Solver*)luaL_checkudata(L, 1, AML_SOLVER_TYPE);
     am_Variable *var = aml_checkvar(L, S, 2);
     double value = (double)luaL_checknumber(L, 3);
-    am_suggest(S->solver, var, value);
+    am_suggest(var, value);
     lua_settop(L, 1); return 1;
 }
 
@@ -694,6 +694,6 @@ LUALIB_API int luaopen_amoeba(lua_State *L) {
     return 1;
 }
 
-/* maccc: flags+='-O2 -bundle -undefined dynamic_lookup' output='amoeba.so'
+/* maccc: flags+='-v -O2 -bundle -undefined dynamic_lookup' output='amoeba.so'
  * win32cc: flags+='-s -mdll -O3 -DLUA_BUILD_AS_DLL' output='amoeba.dll' */
 
