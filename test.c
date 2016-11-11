@@ -237,13 +237,14 @@ static void test_all(void) {
 static void test_binarytree(void) {
     am_Variable *arrX[1024], *arrY[1024];
 
-    // Create set of rules to distribute vertexes of a binary tree like this one:
-    //      0
-    //     / \
-    //    /   \
-    //   1     2
-    //  / \   / \
-    // 3   4 5   6
+    /* Create set of rules to distribute vertexes of a binary tree like this one:
+     *      0
+     *     / \
+     *    /   \
+     *   1     2
+     *  / \   / \
+     * 3   4 5   6
+     */
 
     am_Solver *pSolver = am_newsolver(debug_allocf, NULL);
 
@@ -299,8 +300,13 @@ static void test_binarytree(void) {
                 am_setrelation(pC, AM_EQUAL);
                 am_addterm(pC, arrX[nCurrentRowFirstPointIndex + nPoint], 0.5);
                 am_addterm(pC, arrX[nCurrentRowFirstPointIndex + nPoint - 1], 0.5);
+                am_dumpsolver(pSolver);
                 nResult = am_add(pC);
                 // assert(nResult == AM_OK);
+                if (nResult == AM_UNSATISFIED) {
+                    printf("after unsatisfied: \n");
+                    am_dumpsolver(pSolver);
+                }
 
                 nParentPoint++;
             }
@@ -359,7 +365,7 @@ static void test_unbounded(void) {
 
     c2 = am_newconstraint(solver, AM_REQUIRED);
     am_addterm(c2, x, 1.0);
-    am_setrelation(c2, AM_EQUAL);
+    am_setrelation(c2, AM_LESSEQUAL);
     ret = am_add(c2);
     assert(ret == AM_UNBOUND);
     am_dumpsolver(solver);
@@ -377,4 +383,5 @@ int main(void)
     test_binarytree();
     test_unbounded();
     test_all();
+    return 0;
 }
