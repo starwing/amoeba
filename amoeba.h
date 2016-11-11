@@ -488,8 +488,8 @@ AM_API am_Variable *am_newvariable(am_Solver *solver) {
 AM_API void am_delvariable(am_Variable *var) {
     if (var && --var->refcount <= 0) {
         am_Solver *solver = var->solver;
-        if (var->constraint) am_remove(var->constraint);
         am_VarEntry *e = (am_VarEntry*)am_gettable(&solver->vars, var->sym);
+        am_remove(var->constraint);
         if (e != NULL) am_delkey(&solver->vars, &e->entry);
         am_free(&solver->varpool, var);
     }
@@ -514,7 +514,7 @@ AM_API void am_delconstraint(am_Constraint *cons) {
     am_Solver *solver = cons->solver;
     am_ConsEntry *ce = (am_ConsEntry*)am_gettable(&solver->constraints, am_key(cons));
     am_VarEntry *ve = NULL;
-    if (cons->marker.id != 0) am_remove(cons);
+    am_remove(cons);
     assert(ce != NULL);
     am_delkey(&solver->constraints, &ce->entry);
     while (am_nextentry(&cons->vars, (am_Entry**)&ve))
@@ -547,7 +547,7 @@ AM_API int am_mergeconstraint(am_Constraint *cons, am_Constraint *other, double 
 
 AM_API void am_resetconstraint(am_Constraint *cons) {
     am_VarEntry *ve = NULL;
-    if (cons->marker.id != 0) am_remove(cons);
+    am_remove(cons);
     cons->relation = 0;
     while (am_nextentry(&cons->vars, (am_Entry**)&ve)) {
         am_delvariable(ve->variable);
@@ -902,7 +902,7 @@ AM_API void am_resetsolver(am_Solver *solver, int clear_constrants) {
     if (!clear_constrants) {
         while (am_nextentry(&solver->vars, &entry)) {
             am_Constraint **cons = &((am_VarEntry*)entry)->variable->constraint;
-            if (*cons) am_remove(*cons);
+            am_remove(*cons);
             *cons = NULL;
         }
         assert(am_nearzero(solver->objective.constant));
@@ -941,16 +941,18 @@ AM_API int am_add(am_Constraint *cons) {
 }
 
 AM_API void am_remove(am_Constraint *cons) {
-    am_Solver *solver = cons->solver;
+    am_Solver *solver;
+    am_Symbol marker;
     am_Row tmp;
     if (cons == NULL || cons->marker.id == 0) return;
+    solver = cons->solver, marker = cons->marker;
     am_remove_errors(solver, cons);
-    if (am_getrow(solver, cons->marker, &tmp) != AM_OK) {
-        am_Symbol exit = am_get_leaving_row(solver, cons->marker);
+    if (am_getrow(solver, marker, &tmp) != AM_OK) {
+        am_Symbol exit = am_get_leaving_row(solver, marker);
         assert(exit.id != 0);
         am_getrow(solver, exit, &tmp);
-        am_solvefor(solver, &tmp, cons->marker, exit);
-        am_substitute_rows(solver, cons->marker, &tmp);
+        am_solvefor(solver, &tmp, marker, exit);
+        am_substitute_rows(solver, marker, &tmp);
     }
     am_freerow(solver, &tmp);
     am_optimize(solver, &solver->objective);
