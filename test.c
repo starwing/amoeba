@@ -280,6 +280,14 @@ static void test_binarytree(void) {
             nResult = am_add(pC);
             assert(nResult == AM_OK);
 
+			// Add these to test.c line 282
+			pC = am_newconstraint(pSolver, AM_REQUIRED);
+			am_addterm(pC, arrX[nCurrentRowFirstPointIndex + nPoint], 1.0);
+			am_setrelation(pC, AM_GREATEQUAL);
+			am_addconstant(pC, 0.0);
+			nResult = am_add(pC);
+			assert(nResult == AM_OK);
+
             if (nPoint > 0) {
                 // Xcur = XPrev + 10
                 pC = am_newconstraint(pSolver, AM_REQUIRED);
