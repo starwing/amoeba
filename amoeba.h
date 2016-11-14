@@ -143,7 +143,7 @@ typedef struct am_MemPool {
 
 typedef struct am_Entry {
     am_Symbol key;
-    int next;
+    ptrdiff_t next;
 } am_Entry;
 
 typedef struct am_Table {
@@ -379,7 +379,7 @@ static const am_Entry *am_gettable(const am_Table *t, am_Symbol key) {
     assert((t->size & (t->size - 1)) == 0);
     e = am_mainposition(t, key);
     while (1) {
-        int next = e->next;
+        ptrdiff_t next = e->next;
         if (e->key.id == key.id) return e;
         if (next == 0) return NULL;
         e = am_index(e, next);
@@ -747,7 +747,7 @@ static int am_add_with_artificial(am_Solver *solver, am_Row *row) {
         if (term) am_delkey(&row->terms, &term->entry);
     }
     term = (am_Term*)am_gettable(&solver->objective.terms, a);
-    if (term) am_delkey(&row->terms, &term->entry);
+    if (term) am_delkey(&solver->objective.terms, &term->entry);
     return ret;
 }
 
