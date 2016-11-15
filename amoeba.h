@@ -67,9 +67,9 @@ AM_API am_Solver *am_newsolver   (am_Allocf *allocf, void *ud);
 AM_API void       am_resetsolver (am_Solver *solver, int clear_constrants);
 AM_API void       am_delsolver   (am_Solver *solver);
 
-AM_API int am_hasvariable   (am_Solver *solver, am_Variable *var);
-AM_API int am_hasedit       (am_Solver *solver, am_Variable *var);
-AM_API int am_hasconstraint (am_Solver *solver, am_Constraint *cons);
+AM_API int am_hasvariable   (am_Variable *var);
+AM_API int am_hasedit       (am_Variable *var);
+AM_API int am_hasconstraint (am_Constraint *cons);
 
 AM_API int  am_add    (am_Constraint *cons);
 AM_API void am_remove (am_Constraint *cons);
@@ -79,6 +79,7 @@ AM_API void am_suggest (am_Variable *var, double value);
 AM_API void am_deledit (am_Variable *var);
 
 AM_API am_Variable *am_newvariable (am_Solver *solver);
+AM_API void         am_usevariable (am_Variable *var);
 AM_API void         am_delvariable (am_Variable *var);
 AM_API int          am_variableid  (am_Variable *var);
 AM_API double       am_value       (am_Variable *var);
@@ -137,6 +138,7 @@ typedef struct am_Symbol {
 
 typedef struct am_MemPool {
     size_t size;
+    size_t count;
     void  *freed;
     void  *pages;
 } am_MemPool;
@@ -226,13 +228,15 @@ static void am_initsymbol(am_Solver *solver, am_Symbol *sym, int type)
 { if (sym->id == 0) *sym = am_newsymbol(solver, type); }
 
 static void am_initpool(am_MemPool *pool, size_t size) {
-    pool->size = size;
+    pool->size  = size;
+    pool->count = 0;
     pool->freed = pool->pages = NULL;
     assert(size > sizeof(void*) && size < AM_POOLSIZE/4);
 }
 
 static void am_freepool(am_Solver *solver, am_MemPool *pool) {
     const size_t offset = AM_POOLSIZE - sizeof(void*);
+    assert(pool->count == 0);
     while (pool->pages != NULL) {
         void *next = *(void**)((char*)pool->pages + offset);
         solver->allocf(solver->ud, pool->pages, 0, AM_POOLSIZE);
@@ -257,10 +261,13 @@ static void *am_alloc(am_Solver *solver, am_MemPool *pool) {
         return end;
     }
     pool->freed = *(void**)obj;
+    ++pool->count;
     return obj;
 }
 
 static void am_free(am_MemPool *pool, void *obj) {
+    assert(pool->count > 0);
+    --pool->count;
     *(void**)obj = pool->freed;
     pool->freed = obj;
 }
@@ -475,6 +482,7 @@ static void am_substitute(am_Solver *solver, am_Row *row, am_Symbol entry, const
 
 AM_API int am_variableid(am_Variable *var) { return am_key(var).id; }
 AM_API double am_value(am_Variable *var) { return var->value; }
+AM_API void am_usevariable(am_Variable *var) { ++var->refcount; }
 
 AM_API am_Variable *am_newvariable(am_Solver *solver) {
     am_Variable *var = (am_Variable*)am_alloc(solver, &solver->varpool);
@@ -489,8 +497,8 @@ AM_API void am_delvariable(am_Variable *var) {
     if (var && --var->refcount <= 0) {
         am_Solver *solver = var->solver;
         am_VarEntry *e = (am_VarEntry*)am_gettable(&solver->vars, var->sym);
-        am_remove(var->constraint);
         if (e != NULL) am_delkey(&solver->vars, &e->entry);
+        am_remove(var->constraint);
         am_free(&solver->varpool, var);
     }
 }
@@ -539,7 +547,7 @@ AM_API int am_mergeconstraint(am_Constraint *cons, am_Constraint *other, double 
     am_addrow(cons->solver, &cons->expression, &other->expression, multiplier);
     while (am_nextentry(&other->vars, (am_Entry**)&ve)) {
         nve = (am_VarEntry*)am_settable(other->solver, &cons->vars, am_key(ve));
-        ++ve->variable->refcount;
+        am_usevariable(ve->variable);
         nve->variable = ve->variable;
     }
     return AM_OK;
@@ -559,11 +567,12 @@ AM_API void am_resetconstraint(am_Constraint *cons) {
 AM_API int am_addterm(am_Constraint *cons, am_Variable *var, double multiplier) {
     am_VarEntry *ve;
     assert(am_key(var).id != 0);
+    assert(var->solver == cons->solver);
     if (cons->marker.id != 0) return AM_FAILED;
     if (cons->relation == AM_GREATEQUAL) multiplier = -multiplier;
     am_addvar(cons->solver, &cons->expression, var->sym, multiplier);
     ve = (am_VarEntry*)am_settable(cons->solver, &cons->vars, var->sym);
-    ++var->refcount;
+    am_usevariable(var);
     ve->variable = var;
     return AM_OK;
 }
@@ -588,14 +597,14 @@ AM_API int am_setrelation(am_Constraint *cons, int relation) {
 
 /* Cassowary algorithm */
 
-AM_API int am_hasvariable(am_Solver *solver, am_Variable *var)
-{ return am_gettable(&solver->vars, am_key(var)) != NULL; }
+AM_API int am_hasvariable(am_Variable *var)
+{ return var != NULL && am_gettable(&var->solver->vars,am_key(var)) != NULL; }
 
-AM_API int am_hasedit(am_Solver *solver, am_Variable *var)
-{ return var->constraint != NULL; }
+AM_API int am_hasedit(am_Variable *var)
+{ return var != NULL && var->constraint != NULL; }
 
-AM_API int am_hasconstraint(am_Solver *solver, am_Constraint *cons)
-{ return cons->marker.id != 0; }
+AM_API int am_hasconstraint(am_Constraint *cons)
+{ return cons != NULL && cons->marker.id != 0; }
 
 static void am_updatevars(am_Solver *solver) {
     am_VarEntry *ve = NULL;
@@ -760,11 +769,11 @@ static int am_try_addrow(am_Solver *solver, am_Row *row, am_Constraint *cons) {
     }
     if (subject.id == 0 && am_ispivotable(&cons->marker)) {
         am_Term *term = (am_Term*)am_gettable(&row->terms, cons->marker);
-        if (term->multiplier < 0.0f) subject = cons->marker;
+        if (term->multiplier < 0.0) subject = cons->marker;
     }
     if (subject.id == 0 && am_ispivotable(&cons->other)) {
         am_Term *term = (am_Term*)am_gettable(&row->terms, cons->other);
-        if (term->multiplier < 0.0f) subject = cons->other;
+        if (term->multiplier < 0.0) subject = cons->other;
     }
     if (subject.id == 0) {
         while (am_nextentry(&row->terms, (am_Entry**)&term))
