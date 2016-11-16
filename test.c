@@ -232,10 +232,22 @@ static void test_all(void) {
     printf("allmem = %d\n", (int)allmem);
     printf("maxmem = %d\n", (int)maxmem);
     assert(allmem == 0);
+    maxmem = 0;
 }
 
 static void test_binarytree(void) {
-    am_Variable *arrX[1024], *arrY[1024];
+    const int NUM_ROWS = 9;
+    const int X_OFFSET = 0;
+    int i, nPointsCount, nResult, nRow;
+    int nCurrentRowPointsCount = 1;
+    int nCurrentRowFirstPointIndex = 0;
+    am_Constraint *pC;
+    am_Solver *pSolver;
+    am_Variable **arrX, **arrY;
+
+    arrX = (am_Variable**)malloc(2048 * sizeof(am_Variable*));
+    if (arrX == NULL) return;
+    arrY = arrX + 1024;
 
     /* Create set of rules to distribute vertexes of a binary tree like this one:
      *      0
@@ -246,103 +258,80 @@ static void test_binarytree(void) {
      * 3   4 5   6
      */
 
-    am_Solver *pSolver = am_newsolver(debug_allocf, NULL);
+    pSolver = am_newsolver(debug_allocf, NULL);
 
     /* Xroot=500, Yroot=10 */
     arrX[0] = am_newvariable(pSolver);
     arrY[0] = am_newvariable(pSolver);
     am_addedit(arrX[0], AM_STRONG);
     am_addedit(arrY[0], AM_STRONG);
-    am_suggest(arrX[0], 500.0);
+    am_suggest(arrX[0], 500.0 + X_OFFSET);
     am_suggest(arrY[0], 10.0);
 
-    int nCurrentRowPointsCount = 1;
-    int nCurrentRowFirstPointIndex = 0;
-
-    am_Constraint *pC;
-    int nResult;
-    int nRows = 3;
-    for (int nRow = 1; nRow < nRows; nRow++) {
+    for (nRow = 1; nRow < NUM_ROWS; nRow++) {
         int nPreviousRowFirstPointIndex = nCurrentRowFirstPointIndex;
-        int nParentPoint = 0;
+        int nPoint, nParentPoint = 0;
         nCurrentRowFirstPointIndex += nCurrentRowPointsCount;
         nCurrentRowPointsCount *= 2;
-        for (int nPoint = 0; nPoint < nCurrentRowPointsCount; nPoint++) {
+
+        for (nPoint = 0; nPoint < nCurrentRowPointsCount; nPoint++) {
             arrX[nCurrentRowFirstPointIndex + nPoint] = am_newvariable(pSolver);
             arrY[nCurrentRowFirstPointIndex + nPoint] = am_newvariable(pSolver);
 
-            // Ycur = Yprev_row + 10
+            /* Ycur = Yprev_row + 15 */
             pC = am_newconstraint(pSolver, AM_REQUIRED);
             am_addterm(pC, arrY[nCurrentRowFirstPointIndex + nPoint], 1.0);
             am_setrelation(pC, AM_EQUAL);
             am_addterm(pC, arrY[nCurrentRowFirstPointIndex - 1], 1.0);
-            am_addconstant(pC, 10.0);
+            am_addconstant(pC, 15.0);
             nResult = am_add(pC);
             assert(nResult == AM_OK);
 
-			// Add these to test.c line 282
-			pC = am_newconstraint(pSolver, AM_REQUIRED);
-			am_addterm(pC, arrX[nCurrentRowFirstPointIndex + nPoint], 1.0);
-			am_setrelation(pC, AM_GREATEQUAL);
-			am_addconstant(pC, 0.0);
-			nResult = am_add(pC);
-			assert(nResult == AM_OK);
-
             if (nPoint > 0) {
-                // Xcur = XPrev + 10
+                /* Xcur >= XPrev + 5 */
                 pC = am_newconstraint(pSolver, AM_REQUIRED);
                 am_addterm(pC, arrX[nCurrentRowFirstPointIndex + nPoint], 1.0);
-                am_setrelation(pC, AM_EQUAL);
+                am_setrelation(pC, AM_GREATEQUAL);
                 am_addterm(pC, arrX[nCurrentRowFirstPointIndex + nPoint - 1], 1.0);
-                am_addconstant(pC, 10.0);
+                am_addconstant(pC, 5.0);
+                nResult = am_add(pC);
+                assert(nResult == AM_OK);
+            } else {
+                /* When these lines added it crashes at the line 109 */
+                pC = am_newconstraint(pSolver, AM_REQUIRED);
+                am_addterm(pC, arrX[nCurrentRowFirstPointIndex + nPoint], 1.0);
+                am_setrelation(pC, AM_GREATEQUAL);
+                am_addconstant(pC, 0.0);
                 nResult = am_add(pC);
                 assert(nResult == AM_OK);
             }
 
-            // 3rd call of this "if" causes "Unsatisfied" constraint and 
-            // "Assertion failed at amoeba.h line 935"
             if ((nPoint % 2) == 1) {
-                // Xparent = 0.5 * Xcur + 0.5 * Xprev
+                /* Xparent = 0.5 * Xcur + 0.5 * Xprev */
                 pC = am_newconstraint(pSolver, AM_REQUIRED);
                 am_addterm(pC, arrX[nPreviousRowFirstPointIndex + nParentPoint], 1.0);
                 am_setrelation(pC, AM_EQUAL);
                 am_addterm(pC, arrX[nCurrentRowFirstPointIndex + nPoint], 0.5);
                 am_addterm(pC, arrX[nCurrentRowFirstPointIndex + nPoint - 1], 0.5);
-                am_dumpsolver(pSolver);
+                /* It crashes here (at the 3rd call of am_add(...))!  */
                 nResult = am_add(pC);
-                // assert(nResult == AM_OK);
-                if (nResult == AM_UNSATISFIED) {
-                    printf("after unsatisfied: \n");
-                    am_dumpsolver(pSolver);
-                }
+                assert(nResult == AM_OK);
 
                 nParentPoint++;
             }
         }
-
-        /*		// By uncommenting this code it's possible to make correct constraints 
-        // X0 = 0.5 * Xrightmost + 0.5 * Xleftmost
-        pC = am_newconstraint(pSolver, AM_REQUIRED);
-        am_addterm(pC, arrX[0], 1.0);
-        am_setrelation(pC, AM_EQUAL);
-        am_addterm(pC, arrX[nCurrentRowFirstPointIndex + nCurrentRowPointsCount - 1], 0.5);
-        am_addterm(pC, arrX[nCurrentRowFirstPointIndex], 0.5);
-        nResult = am_add(pSolver, pC);
-        assert(nResult == AM_OK);
-        */
     }
+    nPointsCount = nCurrentRowFirstPointIndex + nCurrentRowPointsCount;
 
-    am_dumpsolver(pSolver);
-
-    int nLastPointIndex = nCurrentRowFirstPointIndex + nCurrentRowPointsCount - 1;
-    for (int i = 0; i <= nLastPointIndex; i++) {
+    for (i = 0; i < nPointsCount; i++)
         printf("Point %d: (%f, %f)\n", i, am_value(arrX[i]), am_value(arrY[i]));
-    }
 
     am_delsolver(pSolver);
     printf("allmem = %d\n", (int)allmem);
     printf("maxmem = %d\n", (int)maxmem);
     assert(allmem == 0);
+    free(arrX);
+    maxmem = 0;
 }
 
 static void test_unbounded(void) {
@@ -384,6 +373,7 @@ static void test_unbounded(void) {
     printf("allmem = %d\n", (int)allmem);
     printf("maxmem = %d\n", (int)maxmem);
     assert(allmem == 0);
+    maxmem = 0;
 }
 
 int main(void)
@@ -393,3 +383,4 @@ int main(void)
     test_all();
     return 0;
 }
+/* cc: flags='-Wall -O3 -Wextra -pedantic -std=c89' */

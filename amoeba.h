@@ -138,7 +138,6 @@ typedef struct am_Symbol {
 
 typedef struct am_MemPool {
     size_t size;
-    size_t count;
     void  *freed;
     void  *pages;
 } am_MemPool;
@@ -177,16 +176,16 @@ typedef struct am_Row {
     double   constant;
 } am_Row;
 
-typedef struct am_Variable {
+struct am_Variable {
     am_Symbol      sym;
     unsigned       refcount;
     am_Solver     *solver;
     am_Constraint *constraint;
     double         edit_value;
     double         value;
-} am_Variable;
+};
 
-typedef struct am_Constraint {
+struct am_Constraint {
     am_Row     expression;
     am_Table   vars;
     am_Symbol  marker;
@@ -194,9 +193,9 @@ typedef struct am_Constraint {
     int        relation;
     am_Solver *solver;
     double     strength;
-} am_Constraint;
+};
 
-typedef struct am_Solver {
+struct am_Solver {
     am_Allocf *allocf;
     void      *ud;
     unsigned   symbol_count;
@@ -208,7 +207,7 @@ typedef struct am_Solver {
     am_Table   infeasible_rows; /* symbol set */
     am_MemPool varpool;
     am_MemPool conspool;
-} am_Solver;
+};
 
 
 /* utils */
@@ -229,14 +228,12 @@ static void am_initsymbol(am_Solver *solver, am_Symbol *sym, int type)
 
 static void am_initpool(am_MemPool *pool, size_t size) {
     pool->size  = size;
-    pool->count = 0;
     pool->freed = pool->pages = NULL;
     assert(size > sizeof(void*) && size < AM_POOLSIZE/4);
 }
 
 static void am_freepool(am_Solver *solver, am_MemPool *pool) {
     const size_t offset = AM_POOLSIZE - sizeof(void*);
-    assert(pool->count == 0);
     while (pool->pages != NULL) {
         void *next = *(void**)((char*)pool->pages + offset);
         solver->allocf(solver->ud, pool->pages, 0, AM_POOLSIZE);
@@ -261,13 +258,10 @@ static void *am_alloc(am_Solver *solver, am_MemPool *pool) {
         return end;
     }
     pool->freed = *(void**)obj;
-    ++pool->count;
     return obj;
 }
 
 static void am_free(am_MemPool *pool, void *obj) {
-    assert(pool->count > 0);
-    --pool->count;
     *(void**)obj = pool->freed;
     pool->freed = obj;
 }
@@ -895,7 +889,6 @@ AM_API void am_delsolver(am_Solver *solver) {
     }
     while (am_nextentry(&solver->rows, (am_Entry**)&row))
         am_freerow(solver, row);
-    am_resetsolver(solver, 1);
     am_freerow(solver, &solver->objective);
     am_freetable(solver, &solver->vars);
     am_freetable(solver, &solver->constraints);
