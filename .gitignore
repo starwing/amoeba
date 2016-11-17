@@ -6,3 +6,7 @@
 *.exe
 
 *.so
+
+amoeba_test.*
+x64/
+.vs/
