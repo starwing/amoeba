@@ -8,6 +8,8 @@
 
 #define STR_CANT_CREATE_SOLVER   "Unable to create solver!"
 #define STR_CANT_CREATE_VARIABLE "Unable to create variable!"
+#define STR_THE_VALUE_IS         "The value is "
+#define STR_INSTEAD_OF           " instead of "
 
 static size_t g_nMemAllocated    = 0;
 static size_t g_nMemAllocatedMax = 0;
@@ -57,12 +59,15 @@ int basic_memory_3() {
 		FAIL(STR_CANT_CREATE_VARIABLE);
 	am_edit_add(pVar, AM_STRONG);
 	am_edit_suggest(pVar, -10.0);
-	BOOL bRes = am_approx(am_variable_get_value(pVar), -10.0);
+	double fValue = am_variable_get_value(pVar);
+	BOOL bRes = am_approx(fValue, -10.0);
+	if(!bRes)
+		WARN(STR_THE_VALUE_IS << fValue << STR_INSTEAD_OF << -10.0);
 	am_solver_del(pSolver);
 	return  bRes && (g_nMemAllocated == 0);
 }
 
-TEST_CASE( "Factorials are computed", "[basic][memory]" ) {
+TEST_CASE( "Basic/memory 'amoeba' tests are executed", "[basic][memory]" ) {
 	REQUIRE(basic_memory_1() == 1);
 	REQUIRE(basic_memory_2() == 1);
 	REQUIRE(basic_memory_3() == 1);
