@@ -513,10 +513,12 @@ AM_API am_Constraint *am_newconstraint(am_Solver *solver, double strength) {
 }
 
 AM_API void am_delconstraint(am_Constraint *cons) {
-    am_Solver *solver = cons->solver;
-    am_ConsEntry *ce = (am_ConsEntry*)am_gettable(&solver->constraints, am_key(cons));
+    am_Solver *solver = cons ? cons->solver : NULL;
+    am_ConsEntry *ce;
     am_VarEntry *ve = NULL;
+    if (cons == NULL) return;
     am_remove(cons);
+    ce = (am_ConsEntry*)am_gettable(&solver->constraints, am_key(cons));
     assert(ce != NULL);
     am_delkey(&solver->constraints, &ce->entry);
     while (am_nextentry(&cons->vars, (am_Entry**)&ve))
@@ -527,7 +529,9 @@ AM_API void am_delconstraint(am_Constraint *cons) {
 }
 
 AM_API am_Constraint *am_cloneconstraint(am_Constraint *other, double strength) {
-    am_Constraint *cons = am_newconstraint(other->solver,
+    am_Constraint *cons;
+    if (other == NULL) return NULL;
+    cons = am_newconstraint(other->solver,
             am_nearzero(strength) ? other->strength : strength);
     am_mergeconstraint(cons, other, 1.0);
     cons->relation = other->relation;
@@ -536,11 +540,13 @@ AM_API am_Constraint *am_cloneconstraint(am_Constraint *other, double strength) 
 
 AM_API int am_mergeconstraint(am_Constraint *cons, am_Constraint *other, double multiplier) {
     am_VarEntry *ve = NULL, *nve;
-    if (cons->marker.id != 0) return AM_FAILED;
+    if (cons == NULL || other == NULL || cons->marker.id != 0
+            || cons->solver != other->solver)
+        return AM_FAILED;
     if (cons->relation == AM_GREATEQUAL) multiplier = -multiplier;
     am_addrow(cons->solver, &cons->expression, &other->expression, multiplier);
     while (am_nextentry(&other->vars, (am_Entry**)&ve)) {
-        nve = (am_VarEntry*)am_settable(other->solver, &cons->vars, am_key(ve));
+        nve = (am_VarEntry*)am_settable(cons->solver, &cons->vars, am_key(ve));
         am_usevariable(ve->variable);
         nve->variable = ve->variable;
     }
@@ -549,6 +555,7 @@ AM_API int am_mergeconstraint(am_Constraint *cons, am_Constraint *other, double 
 
 AM_API void am_resetconstraint(am_Constraint *cons) {
     am_VarEntry *ve = NULL;
+    if (cons == NULL) return;
     am_remove(cons);
     cons->relation = 0;
     while (am_nextentry(&cons->vars, (am_Entry**)&ve)) {
@@ -560,9 +567,10 @@ AM_API void am_resetconstraint(am_Constraint *cons) {
 
 AM_API int am_addterm(am_Constraint *cons, am_Variable *var, double multiplier) {
     am_VarEntry *ve;
+    if (cons == NULL || cons->marker.id != 0 || cons->solver != var->solver)
+        return AM_FAILED;
     assert(am_key(var).id != 0);
     assert(var->solver == cons->solver);
-    if (cons->marker.id != 0) return AM_FAILED;
     if (cons->relation == AM_GREATEQUAL) multiplier = -multiplier;
     am_addvar(cons->solver, &cons->expression, var->sym, multiplier);
     ve = (am_VarEntry*)am_settable(cons->solver, &cons->vars, var->sym);
@@ -572,7 +580,7 @@ AM_API int am_addterm(am_Constraint *cons, am_Variable *var, double multiplier) 
 }
 
 AM_API int am_addconstant(am_Constraint *cons, double constant) {
-    if (cons->marker.id != 0) return AM_FAILED;
+    if (cons == NULL || cons->marker.id != 0) return AM_FAILED;
     if (cons->relation == AM_GREATEQUAL)
         cons->expression.constant -= constant;
     else
@@ -582,7 +590,8 @@ AM_API int am_addconstant(am_Constraint *cons, double constant) {
 
 AM_API int am_setrelation(am_Constraint *cons, int relation) {
     assert(relation >= AM_LESSEQUAL && relation <= AM_GREATEQUAL);
-    if (cons->marker.id != 0 || cons->relation != 0) return AM_FAILED;
+    if (cons == NULL || cons->marker.id != 0 || cons->relation != 0)
+        return AM_FAILED;
     if (relation != AM_GREATEQUAL) am_multiply(&cons->expression, -1.0);
     cons->relation = relation;
     return AM_OK;
