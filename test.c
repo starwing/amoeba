@@ -24,6 +24,9 @@ static void *debug_allocf(void *ud, void *ptr, size_t ns, size_t os) {
     return newptr;
 }
 
+static void *null_allocf(void *ud, void *ptr, size_t ns, size_t os)
+{ (void)ud, (void)ptr, (void)ns, (void)os; return NULL; }
+
 #define AM_IMPLEMENTATION
 #include "amoeba.h"
 
@@ -73,6 +76,7 @@ static void test_all(void) {
     am_Variable *xl;
     am_Variable *xm;
     am_Variable *xr;
+    am_Variable *xd;
     am_Constraint *c1, *c2, *c3, *c4, *c5, *c6;
     int ret = setjmp(jbuf);
     printf("ret = %d\n", ret);
@@ -85,10 +89,34 @@ static void test_all(void) {
         return;
     }
 
+    solver = am_newsolver(null_allocf, NULL);
+    assert(solver == NULL);
+
+    solver = am_newsolver(NULL, NULL);
+    assert(solver != NULL);
+    am_delsolver(solver);
+
     solver = am_newsolver(debug_allocf, NULL);
     xl = am_newvariable(solver);
     xm = am_newvariable(solver);
     xr = am_newvariable(solver);
+
+    assert(am_variableid(NULL) == -1);
+    assert(am_variableid(xl) == 1);
+    assert(am_variableid(xm) == 2);
+    assert(am_variableid(xr) == 3);
+    assert(!am_hasvariable(NULL));
+    assert(!am_hasvariable(xl));
+    assert(!am_hasvariable(xm));
+    assert(!am_hasvariable(xr));
+    assert(!am_hasedit(NULL));
+    assert(!am_hasedit(xl));
+    assert(!am_hasedit(xm));
+    assert(!am_hasedit(xr));
+    assert(!am_hasconstraint(NULL));
+
+    xd = am_newvariable(solver);
+    am_delvariable(xd);
 
     c1 = am_newconstraint(solver, AM_REQUIRED);
     am_addterm(c1, xl, 1.0);
@@ -96,6 +124,10 @@ static void test_all(void) {
     ret = am_add(c1);
     assert(ret == AM_OK);
     am_dumpsolver(solver);
+
+    assert(am_hasvariable(xl));
+    assert(am_hasconstraint(c1));
+    assert(!am_hasedit(xl));
 
     c2 = am_newconstraint(solver, AM_REQUIRED);
     am_addterm(c2, xl, 1.0);
@@ -202,6 +234,8 @@ static void test_all(void) {
             am_value(xl),
             am_value(xm),
             am_value(xr));
+
+    assert(am_hasedit(xm));
 
     printf("suggest to 0.0\n");
     am_suggest(xm, 0.0);
@@ -383,4 +417,4 @@ int main(void)
     test_all();
     return 0;
 }
-/* cc: flags='-Wall -O3 -Wextra -pedantic -std=c89' */
+/* cc: flags='-Wall -fprofile-arcs -ftest-coverage -O0 -Wextra -pedantic -std=c89' */

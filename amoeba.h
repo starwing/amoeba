@@ -474,9 +474,9 @@ static void am_substitute(am_Solver *solver, am_Row *row, am_Symbol entry, const
 
 /* variables & constraints */
 
-AM_API int am_variableid(am_Variable *var) { return am_key(var).id; }
-AM_API double am_value(am_Variable *var) { return var->value; }
-AM_API void am_usevariable(am_Variable *var) { ++var->refcount; }
+AM_API int am_variableid(am_Variable *var) { return var ? am_key(var).id : -1; }
+AM_API double am_value(am_Variable *var) { return var ? var->value : 0.0; }
+AM_API void am_usevariable(am_Variable *var) { if (var) ++var->refcount; }
 
 AM_API am_Variable *am_newvariable(am_Solver *solver) {
     am_Variable *var = (am_Variable*)am_alloc(solver, &solver->varpool);

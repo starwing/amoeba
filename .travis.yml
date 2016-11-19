@@ -1,0 +1,23 @@
+language: c
+
+compiler:
+    - gcc
+
+before_install:
+    - pip install --user cpp-coveralls
+
+install:
+    - gcc -shared -Wall -O3 -Wextra -pedantic -std=c89 -xc amoeba.h -o amoeba.so
+    - gcc -Wall -fprofile-arcs -ftest-coverage -O0 -Wextra -pedantic -std=c89 test.c -o test
+
+script:
+    - ./test
+
+after_success:
+    - coveralls
+
+notifications:
+    email:
+        on_success: change
+        on_failure: always
+
