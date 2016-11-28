@@ -79,6 +79,7 @@ static void test_all(void) {
     am_Variable *xd;
     am_Constraint *c1, *c2, *c3, *c4, *c5, *c6;
     int ret = setjmp(jbuf);
+    printf("\n\n==========\ntest all\n");
     printf("ret = %d\n", ret);
     if (ret < 0) {
         perror("setjmp");
@@ -279,6 +280,7 @@ static void test_binarytree(void) {
     am_Solver *pSolver;
     am_Variable **arrX, **arrY;
 
+    printf("\n\n==========\ntest binarytree\n");
     arrX = (am_Variable**)malloc(2048 * sizeof(am_Variable*));
     if (arrX == NULL) return;
     arrY = arrX + 1024;
@@ -370,9 +372,10 @@ static void test_binarytree(void) {
 
 static void test_unbounded(void) {
     am_Solver *solver;
-    am_Variable *x;
-    am_Constraint *c1, *c2;
+    am_Variable *x, *y;
+    am_Constraint *c;
     int ret = setjmp(jbuf);
+    printf("\n\n==========\ntest unbound\n");
     printf("ret = %d\n", ret);
     if (ret < 0) {
         perror("setjmp");
@@ -385,23 +388,112 @@ static void test_unbounded(void) {
 
     solver = am_newsolver(debug_allocf, NULL);
     x = am_newvariable(solver);
+    y = am_newvariable(solver);
 
-    c1 = am_newconstraint(solver, AM_REQUIRED);
-    am_addterm(c1, x, 1.0);
-    am_setrelation(c1, AM_GREATEQUAL);
-    am_addconstant(c1, 10);
-    ret = am_add(c1);
+    /* 10.0 == 0.0 */
+    c = am_newconstraint(solver, AM_REQUIRED);
+    am_addconstant(c, 10.0);
+    am_setrelation(c, AM_EQUAL);
+    ret = am_add(c);
+    printf("ret = %d\n", ret);
+    assert(ret == AM_UNSATISFIED);
+    am_dumpsolver(solver);
+
+    /* 0.0 == 0.0 */
+    c = am_newconstraint(solver, AM_REQUIRED);
+    am_addconstant(c, 0.0);
+    am_setrelation(c, AM_EQUAL);
+    ret = am_add(c);
+    printf("ret = %d\n", ret);
+    assert(ret == AM_UNBOUND);
+    am_dumpsolver(solver);
+
+    am_resetsolver(solver, 1);
+
+    /* x >= 10.0 */
+    c = am_newconstraint(solver, AM_REQUIRED);
+    am_addterm(c, x, 1.0);
+    am_setrelation(c, AM_GREATEQUAL);
+    am_addconstant(c, 10.0);
+    ret = am_add(c);
+    printf("ret = %d\n", ret);
     assert(ret == AM_OK);
     am_dumpsolver(solver);
 
-    c2 = am_newconstraint(solver, AM_REQUIRED);
-    am_addterm(c2, x, 1.0);
-    am_setrelation(c2, AM_LESSEQUAL);
-    ret = am_add(c2);
+    /* x == 2*y */
+    c = am_newconstraint(solver, AM_REQUIRED);
+    am_addterm(c, x, 1.0);
+    am_setrelation(c, AM_EQUAL);
+    am_addterm(c, y, 2.0);
+    ret = am_add(c);
+    printf("ret = %d\n", ret);
+    assert(ret == AM_OK);
+    am_dumpsolver(solver);
+
+    /* y == 3*x */
+    c = am_newconstraint(solver, AM_REQUIRED);
+    am_addterm(c, y, 1.0);
+    am_setrelation(c, AM_EQUAL);
+    am_addterm(c, x, 3.0);
+    ret = am_add(c);
+    printf("ret = %d\n", ret);
+    assert(ret == AM_UNBOUND);
+    am_dumpsolver(solver);
+
+    am_resetsolver(solver, 1);
+
+    /* x >= 10.0 */
+    c = am_newconstraint(solver, AM_REQUIRED);
+    am_addterm(c, x, 1.0);
+    am_setrelation(c, AM_GREATEQUAL);
+    am_addconstant(c, 10.0);
+    ret = am_add(c);
+    printf("ret = %d\n", ret);
+    assert(ret == AM_OK);
+    am_dumpsolver(solver);
+
+    /* x <= 0.0 */
+    c = am_newconstraint(solver, AM_REQUIRED);
+    am_addterm(c, x, 1.0);
+    am_setrelation(c, AM_LESSEQUAL);
+    ret = am_add(c);
+    printf("ret = %d\n", ret);
     assert(ret == AM_UNBOUND);
     am_dumpsolver(solver);
 
     printf("x: %f\n", am_value(x));
+
+    am_resetsolver(solver, 1);
+
+    /* x == 10.0 */
+    c = am_newconstraint(solver, AM_REQUIRED);
+    am_addterm(c, x, 1.0);
+    am_setrelation(c, AM_EQUAL);
+    am_addconstant(c, 10.0);
+    ret = am_add(c);
+    printf("ret = %d\n", ret);
+    assert(ret == AM_OK);
+    am_dumpsolver(solver);
+
+    /* x == 20.0 */
+    c = am_newconstraint(solver, AM_REQUIRED);
+    am_addterm(c, x, 1.0);
+    am_setrelation(c, AM_EQUAL);
+    am_addconstant(c, 20.0);
+    ret = am_add(c);
+    printf("ret = %d\n", ret);
+    assert(ret == AM_UNSATISFIED);
+    am_dumpsolver(solver);
+
+    /* x == 10.0 */
+    c = am_newconstraint(solver, AM_REQUIRED);
+    am_addterm(c, x, 1.0);
+    am_setrelation(c, AM_EQUAL);
+    am_addconstant(c, 10.0);
+    ret = am_add(c);
+    printf("ret = %d\n", ret);
+    assert(ret == AM_UNBOUND);
+    am_dumpsolver(solver);
 
     am_delsolver(solver);
     printf("allmem = %d\n", (int)allmem);
@@ -417,4 +509,4 @@ int main(void)
     test_all();
     return 0;
 }
-/* cc: flags='-Wall -fprofile-arcs -ftest-coverage -O0 -Wextra -pedantic -std=c89' */
+/* cc: flags='-ggdb -Wall -fprofile-arcs -ftest-coverage -O0 -Wextra -pedantic -std=c89' */

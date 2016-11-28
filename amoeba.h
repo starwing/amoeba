@@ -731,7 +731,7 @@ static void am_remove_errors(am_Solver *solver, am_Constraint *cons) {
     cons->marker = cons->other = am_null();
 }
 
-static int am_add_with_artificial(am_Solver *solver, am_Row *row) {
+static int am_add_with_artificial(am_Solver *solver, am_Row *row, am_Constraint *cons) {
     am_Symbol a = am_newsymbol(solver, AM_SLACK);
     am_Term *term = NULL;
     am_Row tmp;
@@ -760,6 +760,7 @@ static int am_add_with_artificial(am_Solver *solver, am_Row *row) {
     }
     term = (am_Term*)am_gettable(&solver->objective.terms, a);
     if (term) am_delkey(&solver->objective.terms, &term->entry);
+    if (ret != AM_OK) am_remove(cons);
     return ret;
 }
 
@@ -782,11 +783,10 @@ static int am_try_addrow(am_Solver *solver, am_Row *row, am_Constraint *cons) {
         while (am_nextentry(&row->terms, (am_Entry**)&term))
             if (!am_isdummy(term)) break;
         if (term == NULL && !am_nearzero(row->constant)) {
-            am_remove_errors(solver, cons);
             am_freerow(solver, row);
             return AM_UNSATISFIED;
         }
-        return am_add_with_artificial(solver, row);
+        return am_add_with_artificial(solver, row, cons);
     }
     am_solvefor(solver, row, subject, am_null());
     am_substitute_rows(solver, subject, row);
@@ -935,13 +935,13 @@ AM_API void am_resetsolver(am_Solver *solver, int clear_constrants) {
 }
 
 AM_API int am_add(am_Constraint *cons) {
-    am_Solver *solver = cons->solver;
+    am_Solver *solver = cons ? cons->solver : NULL;
     am_Row row;
-    int ret, oldsym = solver->symbol_count;
+    int ret, oldsym = solver ? solver->symbol_count : 0;
     if (cons == NULL || cons->marker.id != 0) return AM_FAILED;
     row = am_makerow(solver, cons);
     if ((ret = am_try_addrow(solver, &row, cons)) != AM_OK) {
-        am_remove(cons);
+        am_remove_errors(solver, cons);
         solver->symbol_count = oldsym;
     }
     else {
