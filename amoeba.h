@@ -171,9 +171,10 @@ typedef struct am_Term {
 } am_Term;
 
 typedef struct am_Row {
-    am_Entry entry;
-    am_Table terms;
-    double   constant;
+    am_Entry       entry;
+    am_Table       terms;
+    struct am_Row *infeasible_next;
+    double         constant;
 } am_Row;
 
 struct am_Variable {
@@ -201,10 +202,10 @@ struct am_Solver {
     unsigned   symbol_count;
     unsigned   constraint_count;
     am_Row     objective;
+    am_Row    *infeasible_rows;
     am_Table   vars;            /* symbol -> VarEntry */
     am_Table   constraints;     /* symbol -> ConsEntry */
     am_Table   rows;            /* symbol -> Row */
-    am_Table   infeasible_rows; /* symbol set */
     am_MemPool varpool;
     am_MemPool conspool;
 };
@@ -616,12 +617,17 @@ static void am_updatevars(am_Solver *solver) {
     }
 }
 
+static void am_infeasible(am_Solver *solver, am_Row *row) {
+    row->infeasible_next = solver->infeasible_rows;
+    solver->infeasible_rows = row;
+}
+
 static void am_substitute_rows(am_Solver *solver, am_Symbol var, am_Row *expr) {
     am_Row *row = NULL;
     while (am_nextentry(&solver->rows, (am_Entry**)&row)) {
         am_substitute(solver, row, var, expr);
         if (am_isrestricted(row) && row->constant < 0.0)
-            am_settable(solver, &solver->infeasible_rows, am_key(row));
+            am_infeasible(solver, row);
     }
     am_substitute(solver, &solver->objective, var, expr);
 }
@@ -817,36 +823,29 @@ static am_Symbol am_get_leaving_row(am_Solver *solver, am_Symbol marker) {
 static void am_delta_edit_constant(am_Solver *solver, double delta, am_Constraint *cons) {
     am_Row *row;
     if ((row = (am_Row*)am_gettable(&solver->rows, cons->marker)) != NULL) {
-        if ((row->constant -= delta) < 0.0)
-            am_settable(solver, &solver->infeasible_rows, cons->marker);
+        if ((row->constant -= delta) < 0.0) am_infeasible(solver, row);
         return;
     }
     if ((row = (am_Row*)am_gettable(&solver->rows, cons->other)) != NULL) {
-        if ((row->constant += delta) < 0.0)
-            am_settable(solver, &solver->infeasible_rows, cons->other);
+        if ((row->constant += delta) < 0.0) am_infeasible(solver, row);
         return;
     }
     while (am_nextentry(&solver->rows, (am_Entry**)&row)) {
         am_Term *term = (am_Term*)am_gettable(&row->terms, cons->marker);
         if (term == NULL) continue;
         if ((row->constant += term->multiplier*delta) < 0.0
-                && am_key(row).type != AM_EXTERNAL)
-            am_settable(solver, &solver->infeasible_rows, am_key(row));
+                && am_isexternal(row))
+            am_infeasible(solver, row);
     }
 }
 
 static void am_dual_optimize(am_Solver *solver) {
-    for (;;) {
+    am_Row *row = solver->infeasible_rows, tmp;
+    for (; row != NULL; row = row->infeasible_next) {
         double min_ratio = DBL_MAX, r;
         am_Term *term = NULL, *oterm;
-        am_Entry *e = NULL;
-        am_Symbol enter = am_null(), exit;
-        am_Row *row, tmp;
-        if (!am_nextentry(&solver->infeasible_rows, &e)) return;
-        exit = am_key(e);
-        am_delkey(&solver->infeasible_rows, e);
-        row = (am_Row*)am_gettable(&solver->rows, exit);
-        if (row == NULL || row->constant >= 0.0) continue;
+        am_Symbol enter = am_null(), exit = am_key(row);
+        if (row->constant >= 0.0) continue;
         while (am_nextentry(&row->terms, (am_Entry**)&term)) {
             if (am_isdummy(term) || term->multiplier <= 0.0) continue;
             oterm = (am_Term*)am_gettable(&solver->objective.terms, am_key(term));
@@ -859,6 +858,7 @@ static void am_dual_optimize(am_Solver *solver) {
         am_substitute_rows(solver, enter, &tmp);
         am_putrow(solver, enter, &tmp);
     }
+    solver->infeasible_rows = NULL;
 }
 
 static void *am_default_allocf(void *ud, void *ptr, size_t nsize, size_t osize) {
@@ -882,7 +882,6 @@ AM_API am_Solver *am_newsolver(am_Allocf *allocf, void *ud) {
     am_inittable(&solver->vars, sizeof(am_VarEntry));
     am_inittable(&solver->constraints, sizeof(am_ConsEntry));
     am_inittable(&solver->rows, sizeof(am_Row));
-    am_inittable(&solver->infeasible_rows, sizeof(am_Entry));
     am_initpool(&solver->varpool, sizeof(am_Variable));
     am_initpool(&solver->conspool, sizeof(am_Constraint));
     return solver;
@@ -902,7 +901,6 @@ AM_API void am_delsolver(am_Solver *solver) {
     am_freetable(solver, &solver->vars);
     am_freetable(solver, &solver->constraints);
     am_freetable(solver, &solver->rows);
-    am_freetable(solver, &solver->infeasible_rows);
     am_freepool(solver, &solver->varpool);
     am_freepool(solver, &solver->conspool);
     solver->allocf(solver->ud, solver, 0, sizeof(*solver));
@@ -920,9 +918,9 @@ AM_API void am_resetsolver(am_Solver *solver, int clear_constrants) {
         return;
     }
     solver->objective.constant = 0.0;
+    solver->infeasible_rows = NULL;
     am_resettable(&solver->objective.terms);
     am_resettable(&solver->vars);
-    am_resettable(&solver->infeasible_rows);
     while (am_nextentry(&solver->constraints, &entry)) {
         am_Constraint *cons = ((am_ConsEntry*)entry)->constraint;
         if (cons->marker.id == 0) continue;
