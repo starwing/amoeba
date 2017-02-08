@@ -2,10 +2,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <setjmp.h>
+#include <stdarg.h>
 
 static jmp_buf jbuf;
 static size_t allmem = 0;
 static size_t maxmem = 0;
+static void *END = NULL;
 
 static void *debug_allocf(void *ud, void *ptr, size_t ns, size_t os) {
     void *newptr = NULL;
@@ -69,6 +71,31 @@ static void am_dumpsolver(am_Solver *solver) {
         am_dumprow(row);
     }
     printf("-------------------------------\n");
+}
+
+static am_Constraint* new_constraint(am_Solver* in_solver, double in_strength, am_Variable* in_term1, double in_factor1, int in_relation, double in_constant, ...) {
+    int result;
+    va_list argp;
+    am_Constraint* c;
+    assert(in_solver && in_term1);
+    c = am_newconstraint(in_solver, AM_MEDIUM);
+    if(!c) return 0;
+    am_addterm(c, in_term1, in_factor1);
+    am_setrelation(c, in_relation);
+    if(in_constant) am_addconstant(c, in_constant);
+    va_start(argp, in_constant);
+    while(1) {
+        am_Variable* va_term = va_arg(argp, am_Variable*);
+        double va_factor = va_arg(argp, double);
+        if(va_term == 0) break;
+        am_addterm(c, va_term, va_factor);
+    }
+    va_end(argp);
+    result = am_add(c);
+    assert(result == AM_OK);
+    result = am_setstrength(c, in_strength);
+    assert(result == AM_OK);
+    return c;
 }
 
 static void test_all(void) {
@@ -502,10 +529,96 @@ static void test_unbounded(void) {
     maxmem = 0;
 }
 
+static void test_suggest(void) {
+#if 1
+    /* This should be valid but fails the (enter.id != 0) assertion in am_dual_optimize() */
+    double strength1 = AM_REQUIRED;
+    double strength2 = AM_REQUIRED;
+    double width = 76;
+#else
+    /* This mostly works, but still insists on forcing left_child_l = 0 which it should not */
+    double strength1 = AM_STRONG;
+    double strength2 = AM_WEAK;
+    double width = 76;
+#endif
+    double delta = 0;
+    double pos;
+    am_Solver* solver = am_newsolver(0, NULL);
+    am_Variable* splitter_l = am_newvariable(solver);
+    am_Variable* splitter_w = am_newvariable(solver);
+    am_Variable* splitter_r = am_newvariable(solver);
+    am_Variable* left_child_l = am_newvariable(solver);
+    am_Variable* left_child_w = am_newvariable(solver);
+    am_Variable* left_child_r = am_newvariable(solver);
+    am_Variable* splitter_bar_l = am_newvariable(solver);
+    am_Variable* splitter_bar_w = am_newvariable(solver);
+    am_Variable* splitter_bar_r = am_newvariable(solver);
+    am_Variable* right_child_l = am_newvariable(solver);
+    am_Variable* right_child_w = am_newvariable(solver);
+    am_Variable* right_child_r = am_newvariable(solver);
+
+    /* splitter_r = splitter_l + splitter_w */
+    /* left_child_r = left_child_l + left_child_w */
+    /* splitter_bar_r = splitter_bar_l + splitter_bar_w */
+    /* right_child_r = right_child_l + right_child_w */
+    new_constraint(solver, AM_REQUIRED, splitter_r, 1.0, AM_EQUAL, 0.0,
+            splitter_l, 1.0, splitter_w, 1.0, END);
+    new_constraint(solver, AM_REQUIRED, left_child_r, 1.0, AM_EQUAL, 0.0,
+            left_child_l, 1.0, left_child_w, 1.0, END);
+    new_constraint(solver, AM_REQUIRED, splitter_bar_r, 1.0, AM_EQUAL, 0.0,
+            splitter_bar_l, 1.0, splitter_bar_w, 1.0, END);
+    new_constraint(solver, AM_REQUIRED, right_child_r, 1.0, AM_EQUAL, 0.0,
+            right_child_l, 1.0, right_child_w, 1.0, END);
+
+    /* splitter_bar_w = 6 */
+    /* splitter_bar_l >= splitter_l + delta */
+    /* splitter_bar_r <= splitter_r - delta */
+    /* left_child_r = splitter_bar_l */
+    /* right_child_l = splitter_bar_r */
+    new_constraint(solver, AM_REQUIRED, splitter_bar_w, 1.0, AM_EQUAL, 6.0, END);
+    new_constraint(solver, AM_REQUIRED, splitter_bar_l, 1.0, AM_GREATEQUAL,
+            delta, splitter_l, 1.0, END);
+    new_constraint(solver, AM_REQUIRED, splitter_bar_r, 1.0, AM_LESSEQUAL,
+            -delta, splitter_r, 1.0, END);
+    new_constraint(solver, AM_REQUIRED, left_child_r, 1.0, AM_EQUAL, 0.0,
+            splitter_bar_l, 1.0, END);
+    new_constraint(solver, AM_REQUIRED, right_child_l, 1.0, AM_EQUAL, 0.0,
+            splitter_bar_r, 1.0, END);
+
+    /* right_child_r >= splitter_r + 1 */
+    /* left_child_w = 256 */
+    new_constraint(solver, strength1, right_child_r, 1.0, AM_GREATEQUAL, 1.0,
+            splitter_r, 1.0, END);
+    new_constraint(solver, strength2, left_child_w, 1.0, AM_EQUAL, 256.0, END);
+
+    /* splitter_l = 0 */
+    /* splitter_r = 76 */
+    new_constraint(solver, AM_REQUIRED, splitter_l, 1.0, AM_EQUAL, 0.0, END);
+    new_constraint(solver, AM_REQUIRED, splitter_r, 1.0, AM_EQUAL, width, END);
+
+    printf("\n\n==========\ntest suggest\n");
+    for(pos = -10; pos < 86; pos++) {
+        am_suggest(splitter_bar_l, pos);
+        printf("pos: %4g | ", pos);
+        printf("splitter_l l=%2g, w=%2g, r=%2g | ", am_value(splitter_l),
+                am_value(splitter_w), am_value(splitter_r));
+        printf("left_child_l l=%2g, w=%2g, r=%2g | ", am_value(left_child_l),
+                am_value(left_child_w), am_value(left_child_r));
+        printf("splitter_bar_l l=%2g, w=%2g, r=%2g | ", am_value(splitter_bar_l),
+                am_value(splitter_bar_w), am_value(splitter_bar_r));
+        printf("right_child_l l=%2g, w=%2g, r=%2g | ", am_value(right_child_l),
+                am_value(right_child_w), am_value(right_child_r));
+        printf("\n");
+    }
+
+    am_delsolver(solver);
+}
+
 int main(void)
 {
     test_binarytree();
     test_unbounded();
+    test_suggest();
     test_all();
     return 0;
 }
