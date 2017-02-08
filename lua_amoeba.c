@@ -580,7 +580,6 @@ static int Ldelete(lua_State *L) {
 static int Ltostring(lua_State *L) {
     aml_Solver *S = (aml_Solver*)luaL_checkudata(L, 1, AML_SOLVER_TYPE);
     luaL_Buffer B;
-    int idx = 0;
     lua_settop(L, 1);
     lua_rawgeti(L, LUA_REGISTRYINDEX, S->ref_vars);
     luaL_buffinit(L, &B);
@@ -590,6 +589,7 @@ static int Ltostring(lua_State *L) {
     aml_dumprow(&B, 2, &S->solver->objective);
     if (S->solver->rows.count != 0) {
         am_Row *row = NULL;
+        int idx = 0;
         lua_pushfstring(L, "\n  rows(%d):", S->solver->rows.count);
         luaL_addvalue(&B);
         while (am_nextentry(&S->solver->rows, (am_Entry**)&row)) {
@@ -600,15 +600,13 @@ static int Ltostring(lua_State *L) {
             aml_dumprow(&B, 2, row);
         }
     }
-    if (S->solver->infeasible_rows.count != 0) {
-        am_Entry *entry = NULL;
-        lua_pushfstring(L, "\n  infeasible rows(%d): ",
-                S->solver->infeasible_rows.count);
-        luaL_addvalue(&B);
-        idx = 0;
-        while (am_nextentry(&S->solver->infeasible_rows, &entry)) {
-            if (++idx > 1) luaL_addstring(&B, ", ");
-            aml_dumpkey(&B, 2, am_key(entry));
+    if (S->solver->infeasible_rows != NULL) {
+        am_Row *row = S->solver->infeasible_rows;
+        luaL_addstring(&B, "\n  infeasible rows: ");
+        aml_dumpkey(&B, 2, am_key(row));
+        for (; row != NULL; row = row->infeasible_next) {
+            luaL_addstring(&B, ", ");
+            aml_dumpkey(&B, 2, am_key(row));
         }
     }
     luaL_addstring(&B, "\n}");
@@ -694,6 +692,6 @@ LUALIB_API int luaopen_amoeba(lua_State *L) {
     return 1;
 }
 
-/* maccc: flags+='-v -O2 -bundle -undefined dynamic_lookup' output='amoeba.so'
- * win32cc: flags+='-s -mdll -O3 -DLUA_BUILD_AS_DLL' output='amoeba.dll' */
+/* maccc: flags+='-undefined dynamic_lookup -bundle -O2' output='amoeba.so'
+ * win32cc: flags+='-DLUA_BUILD_AS_DLL -shared -O3' libs+='-llua53' output='amoeba.dll' */
 

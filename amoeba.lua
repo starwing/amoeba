@@ -536,7 +536,7 @@ function SimplexSolver:__tostring()
       local idx = 1
       for k, v in pairs(self.edits) do
          t[#t+1] = ("    %d. %s = %s; info = { %s, %s, %g }\n"):format(
-            idx, k.name, k.value, tostring(v.plus), tostring(v.minus),
+            idx, k.name, k.value, v.plus.name, v.minus.name,
             v.prev_constant)
          idx = idx + 1
       end
