@@ -385,7 +385,6 @@ static const am_Entry *am_gettable(const am_Table *t, am_Symbol key) {
         if (next == 0) return NULL;
         e = am_index(e, next);
     }
-    return NULL;
 }
 
 static am_Entry *am_settable(am_Solver *solver, am_Table *t, am_Symbol key) {
@@ -772,12 +771,12 @@ static int am_try_addrow(am_Solver *solver, am_Row *row, am_Constraint *cons) {
         { subject = am_key(term); break; }
     }
     if (subject.id == 0 && am_ispivotable(&cons->marker)) {
-        am_Term *term = (am_Term*)am_gettable(&row->terms, cons->marker);
-        if (term->multiplier < 0.0) subject = cons->marker;
+        am_Term *mterm = (am_Term*)am_gettable(&row->terms, cons->marker);
+        if (mterm->multiplier < 0.0) subject = cons->marker;
     }
     if (subject.id == 0 && am_ispivotable(&cons->other)) {
-        am_Term *term = (am_Term*)am_gettable(&row->terms, cons->other);
-        if (term->multiplier < 0.0) subject = cons->other;
+        am_Term *mterm = (am_Term*)am_gettable(&row->terms, cons->other);
+        if (mterm->multiplier < 0.0) subject = cons->other;
     }
     if (subject.id == 0) {
         while (am_nextentry(&row->terms, (am_Entry**)&term))
@@ -830,7 +829,8 @@ static void am_delta_edit_constant(am_Solver *solver, double delta, am_Constrain
     while (am_nextentry(&solver->rows, (am_Entry**)&row)) {
         am_Term *term = (am_Term*)am_gettable(&row->terms, cons->marker);
         if (term == NULL) continue;
-        if ((row->constant += term->multiplier*delta) < 0.0)
+        if ((row->constant += term->multiplier*delta) < 0.0
+                && am_key(row).type != AM_EXTERNAL)
             am_settable(solver, &solver->infeasible_rows, am_key(row));
     }
 }
