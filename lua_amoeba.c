@@ -121,7 +121,7 @@ static aml_Item aml_checkitem(lua_State *L, aml_Solver *S, int idx) {
         }
         /* FALLTHROUGHT */
     default:
-        aml_typeerror(L, idx, "number/string/variaale/constraint");
+        aml_typeerror(L, idx, "number/string/variable/constraint");
     }
     return item;
 }

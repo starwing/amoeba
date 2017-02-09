@@ -822,14 +822,10 @@ static am_Symbol am_get_leaving_row(am_Solver *solver, am_Symbol marker) {
 
 static void am_delta_edit_constant(am_Solver *solver, double delta, am_Constraint *cons) {
     am_Row *row;
-    if ((row = (am_Row*)am_gettable(&solver->rows, cons->marker)) != NULL) {
-        if ((row->constant -= delta) < 0.0) am_infeasible(solver, row);
-        return;
-    }
-    if ((row = (am_Row*)am_gettable(&solver->rows, cons->other)) != NULL) {
-        if ((row->constant += delta) < 0.0) am_infeasible(solver, row);
-        return;
-    }
+    if ((row = (am_Row*)am_gettable(&solver->rows, cons->marker)) != NULL)
+    { if ((row->constant -= delta) < 0.0) am_infeasible(solver, row); return; }
+    if ((row = (am_Row*)am_gettable(&solver->rows, cons->other)) != NULL)
+    { if ((row->constant += delta) < 0.0) am_infeasible(solver, row); return; }
     while (am_nextentry(&solver->rows, (am_Entry**)&row)) {
         am_Term *term = (am_Term*)am_gettable(&row->terms, cons->marker);
         if (term == NULL) continue;
@@ -969,8 +965,11 @@ AM_API void am_remove(am_Constraint *cons) {
 }
 
 AM_API int am_setstrength(am_Constraint *cons, double strength) {
+    if (cons == NULL) return AM_FAILED;
     strength = am_nearzero(strength) ? AM_REQUIRED : strength;
-    if (cons->strength >= AM_REQUIRED) return AM_FAILED;
+    if (cons->strength == strength) return AM_OK;
+    if (cons->strength >= AM_REQUIRED || strength >= AM_REQUIRED)
+    { am_remove(cons), cons->strength = strength; return am_add(cons); }
     if (cons->marker.id != 0) {
         am_Solver *solver = cons->solver;
         double diff = strength - cons->strength;
@@ -987,8 +986,9 @@ AM_API void am_addedit(am_Variable *var, double strength) {
     int ret;
     if (var == NULL) return;
     assert(am_key(var).id != 0);
-    if (var->constraint != NULL) return;
     if (strength >= AM_STRONG) strength = AM_STRONG;
+    if (var->constraint != NULL && strength != var->constraint->strength)
+    { am_setstrength(var->constraint, strength); return; }
     cons = am_newconstraint(solver, strength);
     am_setrelation(cons, AM_EQUAL);
     am_addterm(cons, var, 1.0); /* var must have positive signture */

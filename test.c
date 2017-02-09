@@ -78,7 +78,7 @@ static am_Constraint* new_constraint(am_Solver* in_solver, double in_strength, a
     va_list argp;
     am_Constraint* c;
     assert(in_solver && in_term1);
-    c = am_newconstraint(in_solver, AM_MEDIUM);
+    c = am_newconstraint(in_solver, in_strength);
     if(!c) return 0;
     am_addterm(c, in_term1, in_factor1);
     am_setrelation(c, in_relation);
@@ -93,8 +93,6 @@ static am_Constraint* new_constraint(am_Solver* in_solver, double in_strength, a
     va_end(argp);
     result = am_add(c);
     assert(result == AM_OK);
-    result = am_setstrength(c, in_strength);
-    assert(result == AM_OK);
     return c;
 }
 
@@ -108,14 +106,8 @@ static void test_all(void) {
     int ret = setjmp(jbuf);
     printf("\n\n==========\ntest all\n");
     printf("ret = %d\n", ret);
-    if (ret < 0) {
-        perror("setjmp");
-        return;
-    }
-    else if (ret != 0) {
-        printf("out of memory!\n");
-        return;
-    }
+    if (ret < 0) { perror("setjmp"); return; }
+    else if (ret != 0) { printf("out of memory!\n"); return; }
 
     solver = am_newsolver(null_allocf, NULL);
     assert(solver == NULL);
@@ -404,14 +396,8 @@ static void test_unbounded(void) {
     int ret = setjmp(jbuf);
     printf("\n\n==========\ntest unbound\n");
     printf("ret = %d\n", ret);
-    if (ret < 0) {
-        perror("setjmp");
-        return;
-    }
-    else if (ret != 0) {
-        printf("out of memory!\n");
-        return;
-    }
+    if (ret < 0) { perror("setjmp"); return; }
+    else if (ret != 0) { printf("out of memory!\n"); return; }
 
     solver = am_newsolver(debug_allocf, NULL);
     x = am_newvariable(solver);
@@ -529,6 +515,48 @@ static void test_unbounded(void) {
     maxmem = 0;
 }
 
+static void test_strength(void) {
+    am_Solver *solver;
+    am_Variable *x, *y;
+    am_Constraint *c1, *c2, *c3;
+    int ret = setjmp(jbuf);
+    printf("\n\n==========\ntest strength\n");
+    printf("ret = %d\n", ret);
+    if (ret < 0) { perror("setjmp"); return; }
+    else if (ret != 0) { printf("out of memory!\n"); return; }
+
+    solver = am_newsolver(debug_allocf, NULL);
+    x = am_newvariable(solver);
+    y = am_newvariable(solver);
+
+    /* x <= y */
+    c1 = new_constraint(solver, AM_STRONG, x, 1.0, AM_LESSEQUAL, 0.0,
+            y, 1.0, END);
+    c2 = new_constraint(solver, AM_MEDIUM, x, 1.0, AM_EQUAL, 50, END);
+    c3 = new_constraint(solver, AM_MEDIUM-10, y, 1.0, AM_EQUAL, 40, END);
+    printf("%f, %f\n", am_value(x), am_value(y));
+    assert(am_value(x) == 50);
+    assert(am_value(y) == 50);
+
+    am_setstrength(c3, AM_MEDIUM+10);
+    am_remove(c3), am_add(c3);
+    printf("%f, %f\n", am_value(x), am_value(y));
+    assert(am_value(x) == 40);
+    assert(am_value(y) == 40);
+
+    am_setstrength(c3, AM_MEDIUM-10);
+    am_remove(c3), am_add(c3);
+    printf("%f, %f\n", am_value(x), am_value(y));
+    assert(am_value(x) == 50);
+    assert(am_value(y) == 50);
+
+    am_delsolver(solver);
+    printf("allmem = %d\n", (int)allmem);
+    printf("maxmem = %d\n", (int)maxmem);
+    assert(allmem == 0);
+    maxmem = 0;
+}
+
 static void test_suggest(void) {
 #if 1
     /* This should be valid but fails the (enter.id != 0) assertion in am_dual_optimize() */
@@ -614,12 +642,13 @@ static void test_suggest(void) {
     am_delsolver(solver);
 }
 
-int main(void)
-{
+int main(void) {
     test_binarytree();
     test_unbounded();
+    test_strength();
     test_suggest();
     test_all();
     return 0;
 }
+
 /* cc: flags='-ggdb -Wall -fprofile-arcs -ftest-coverage -O0 -Wextra -pedantic -std=c89' */
