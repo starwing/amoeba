@@ -117,10 +117,10 @@ AM_NS_END
 #define AM_ERROR        (2)
 #define AM_DUMMY        (3)
 
-#define am_isexternal(key)   (am_key(key).type == AM_EXTERNAL)
-#define am_isslack(key)      (am_key(key).type == AM_SLACK)
-#define am_iserror(key)      (am_key(key).type == AM_ERROR)
-#define am_isdummy(key)      (am_key(key).type == AM_DUMMY)
+#define am_isexternal(key)   ((key).type == AM_EXTERNAL)
+#define am_isslack(key)      ((key).type == AM_SLACK)
+#define am_iserror(key)      ((key).type == AM_ERROR)
+#define am_isdummy(key)      ((key).type == AM_DUMMY)
 #define am_isrestricted(key) (!am_isexternal(key))
 #define am_ispivotable(key)  (am_isslack(key) || am_iserror(key))
 
@@ -627,7 +627,7 @@ static void am_substitute_rows(am_Solver *solver, am_Symbol var, am_Row *expr) {
     am_Row *row = NULL;
     while (am_nextentry(&solver->rows, (am_Entry**)&row)) {
         am_substitute(solver, row, var, expr);
-        if (am_isrestricted(row) && row->constant < 0.0)
+        if (am_isrestricted(am_key(row)) && row->constant < 0.0)
             am_infeasible(solver, row);
     }
     am_substitute(solver, &solver->objective, var, expr);
@@ -664,14 +664,14 @@ static int am_optimize(am_Solver *solver, am_Row *objective) {
         am_Term *term = NULL;
 
         while (am_nextentry(&objective->terms, (am_Entry**)&term)) {
-            if (!am_isdummy(term) && term->multiplier < 0.0)
+            if (!am_isdummy(am_key(term)) && term->multiplier < 0.0)
             { enter = am_key(term); break; }
         }
         if (enter.id == 0) return AM_OK;
 
         while (am_nextentry(&solver->rows, (am_Entry**)&row)) {
             term = (am_Term*)am_gettable(&row->terms, enter);
-            if (term && am_ispivotable(row) && term->multiplier < 0.0) {
+            if (term && am_ispivotable(am_key(row)) && term->multiplier < 0.0) {
                 double r = -row->constant / term->multiplier;
                 if (r < min_ratio || (am_approx(r, min_ratio)
                             && am_key(row).id < exit.id))
@@ -728,9 +728,9 @@ static am_Row am_makerow(am_Solver *solver, am_Constraint *cons) {
 }
 
 static void am_remove_errors(am_Solver *solver, am_Constraint *cons) {
-    if (am_iserror(&cons->marker))
+    if (am_iserror(cons->marker))
         am_mergerow(solver, &solver->objective, cons->marker, -cons->strength);
-    if (am_iserror(&cons->other))
+    if (am_iserror(cons->other))
         am_mergerow(solver, &solver->objective, cons->other, -cons->strength);
     if (am_isconstant(&solver->objective))
         solver->objective.constant = 0.0;
@@ -754,7 +754,7 @@ static int am_add_with_artificial(am_Solver *solver, am_Row *row, am_Constraint 
         am_Symbol entry = am_null();
         if (am_isconstant(&tmp)) { am_freerow(solver, &tmp); return ret; }
         while (am_nextentry(&tmp.terms, (am_Entry**)&term))
-            if (am_ispivotable(term)) { entry = am_key(term); break; }
+            if (am_ispivotable(am_key(term))) { entry = am_key(term); break; }
         if (entry.id == 0) { am_freerow(solver, &tmp); return AM_UNBOUND; }
         am_solvefor(solver, &tmp, entry, a);
         am_substitute_rows(solver, entry, &tmp);
@@ -774,20 +774,20 @@ static int am_try_addrow(am_Solver *solver, am_Row *row, am_Constraint *cons) {
     am_Symbol subject = am_null();
     am_Term *term = NULL;
     while (am_nextentry(&row->terms, (am_Entry**)&term)) {
-        if (am_isexternal(term))
+        if (am_isexternal(am_key(term)))
         { subject = am_key(term); break; }
     }
-    if (subject.id == 0 && am_ispivotable(&cons->marker)) {
+    if (subject.id == 0 && am_ispivotable(cons->marker)) {
         am_Term *mterm = (am_Term*)am_gettable(&row->terms, cons->marker);
         if (mterm->multiplier < 0.0) subject = cons->marker;
     }
-    if (subject.id == 0 && am_ispivotable(&cons->other)) {
+    if (subject.id == 0 && am_ispivotable(cons->other)) {
         am_Term *mterm = (am_Term*)am_gettable(&row->terms, cons->other);
         if (mterm->multiplier < 0.0) subject = cons->other;
     }
     if (subject.id == 0) {
         while (am_nextentry(&row->terms, (am_Entry**)&term))
-            if (!am_isdummy(term)) break;
+            if (!am_isdummy(am_key(term))) break;
         if (term == NULL && !am_nearzero(row->constant)) {
             am_freerow(solver, row);
             return AM_UNSATISFIED;
@@ -807,8 +807,7 @@ static am_Symbol am_get_leaving_row(am_Solver *solver, am_Symbol marker) {
     while (am_nextentry(&solver->rows, (am_Entry**)&row)) {
         am_Term *term = (am_Term*)am_gettable(&row->terms, marker);
         if (!term) continue;
-        if (am_isexternal(row))
-            third = am_key(row);
+        if (am_isexternal(am_key(row))) third = am_key(row);
         else if (term->multiplier < 0.0) {
             double r = -row->constant / term->multiplier;
             if (r < r1) r1 = r, first = am_key(row);
@@ -831,7 +830,7 @@ static void am_delta_edit_constant(am_Solver *solver, double delta, am_Constrain
         am_Term *term = (am_Term*)am_gettable(&row->terms, cons->marker);
         if (term == NULL) continue;
         if ((row->constant += term->multiplier*delta) < 0.0
-                && am_isrestricted(row))
+                && am_isrestricted(am_key(row)))
             am_infeasible(solver, row);
     }
 }
@@ -846,7 +845,7 @@ static void am_dual_optimize(am_Solver *solver) {
         solver->infeasible_rows = row->infeasible_next;
         if (row->constant >= 0.0) continue;
         while (am_nextentry(&row->terms, (am_Entry**)&term)) {
-            if (am_isdummy(term) || term->multiplier <= 0.0) continue;
+            if (am_isdummy(am_key(term)) || term->multiplier <= 0.0) continue;
             objterm = (am_Term*)am_gettable(&solver->objective.terms, am_key(term));
             r = objterm ? objterm->multiplier / term->multiplier : 0.0;
             if (min_ratio > r) min_ratio = r, enter = am_key(term);
@@ -977,6 +976,8 @@ AM_API int am_setstrength(am_Constraint *cons, double strength) {
         double diff = strength - cons->strength;
         am_mergerow(solver, &solver->objective, cons->marker, diff);
         am_mergerow(solver, &solver->objective, cons->other,  diff);
+        am_optimize(solver, &solver->objective);
+        am_updatevars(solver);
     }
     cons->strength = strength;
     return AM_OK;

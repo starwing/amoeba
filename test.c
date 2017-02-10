@@ -539,13 +539,11 @@ static void test_strength(void) {
     assert(am_value(y) == 50);
 
     am_setstrength(c, AM_MEDIUM+10);
-    am_remove(c), am_add(c);
     printf("%f, %f\n", am_value(x), am_value(y));
     assert(am_value(x) == 40);
     assert(am_value(y) == 40);
 
     am_setstrength(c, AM_MEDIUM-10);
-    am_remove(c), am_add(c);
     printf("%f, %f\n", am_value(x), am_value(y));
     assert(am_value(x) == 50);
     assert(am_value(y) == 50);
