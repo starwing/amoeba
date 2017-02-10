@@ -518,7 +518,7 @@ static void test_unbounded(void) {
 static void test_strength(void) {
     am_Solver *solver;
     am_Variable *x, *y;
-    am_Constraint *c1, *c2, *c3;
+    am_Constraint *c;
     int ret = setjmp(jbuf);
     printf("\n\n==========\ntest strength\n");
     printf("ret = %d\n", ret);
@@ -530,22 +530,22 @@ static void test_strength(void) {
     y = am_newvariable(solver);
 
     /* x <= y */
-    c1 = new_constraint(solver, AM_STRONG, x, 1.0, AM_LESSEQUAL, 0.0,
+    new_constraint(solver, AM_STRONG, x, 1.0, AM_LESSEQUAL, 0.0,
             y, 1.0, END);
-    c2 = new_constraint(solver, AM_MEDIUM, x, 1.0, AM_EQUAL, 50, END);
-    c3 = new_constraint(solver, AM_MEDIUM-10, y, 1.0, AM_EQUAL, 40, END);
+    new_constraint(solver, AM_MEDIUM, x, 1.0, AM_EQUAL, 50, END);
+    c = new_constraint(solver, AM_MEDIUM-10, y, 1.0, AM_EQUAL, 40, END);
     printf("%f, %f\n", am_value(x), am_value(y));
     assert(am_value(x) == 50);
     assert(am_value(y) == 50);
 
-    am_setstrength(c3, AM_MEDIUM+10);
-    am_remove(c3), am_add(c3);
+    am_setstrength(c, AM_MEDIUM+10);
+    am_remove(c), am_add(c);
     printf("%f, %f\n", am_value(x), am_value(y));
     assert(am_value(x) == 40);
     assert(am_value(y) == 40);
 
-    am_setstrength(c3, AM_MEDIUM-10);
-    am_remove(c3), am_add(c3);
+    am_setstrength(c, AM_MEDIUM-10);
+    am_remove(c), am_add(c);
     printf("%f, %f\n", am_value(x), am_value(y));
     assert(am_value(x) == 50);
     assert(am_value(y) == 50);

@@ -143,8 +143,8 @@ typedef struct am_MemPool {
 } am_MemPool;
 
 typedef struct am_Entry {
-    am_Symbol key;
     ptrdiff_t next;
+    am_Symbol key;
 } am_Entry;
 
 typedef struct am_Table {
@@ -171,10 +171,10 @@ typedef struct am_Term {
 } am_Term;
 
 typedef struct am_Row {
-    am_Entry       entry;
-    am_Table       terms;
-    struct am_Row *infeasible_next;
-    double         constant;
+    am_Entry  entry;
+    am_Symbol infeasible_next;
+    am_Table  terms;
+    double    constant;
 } am_Row;
 
 struct am_Variable {
@@ -201,8 +201,8 @@ struct am_Solver {
     void      *ud;
     unsigned   symbol_count;
     unsigned   constraint_count;
+    am_Symbol  infeasible_rows;
     am_Row     objective;
-    am_Row    *infeasible_rows;
     am_Table   vars;            /* symbol -> VarEntry */
     am_Table   constraints;     /* symbol -> ConsEntry */
     am_Table   rows;            /* symbol -> Row */
@@ -421,6 +421,7 @@ static void am_freerow(am_Solver *solver, am_Row *row)
 
 static void am_initrow(am_Row *row) {
     am_key(row) = am_null();
+    row->infeasible_next = am_null();
     row->constant = 0.0;
     am_inittable(&row->terms, sizeof(am_Term));
 }
@@ -474,14 +475,14 @@ static void am_substitute(am_Solver *solver, am_Row *row, am_Symbol entry, const
 
 /* variables & constraints */
 
-AM_API int am_variableid(am_Variable *var) { return var ? am_key(var).id : -1; }
+AM_API int am_variableid(am_Variable *var) { return var ? var->sym.id : -1; }
 AM_API double am_value(am_Variable *var) { return var ? var->value : 0.0; }
 AM_API void am_usevariable(am_Variable *var) { if (var) ++var->refcount; }
 
 AM_API am_Variable *am_newvariable(am_Solver *solver) {
     am_Variable *var = (am_Variable*)am_alloc(solver, &solver->varpool);
     memset(var, 0, sizeof(*var));
-    am_key(var)   = am_newsymbol(solver, AM_EXTERNAL);
+    var->sym      = am_newsymbol(solver, AM_EXTERNAL);
     var->refcount = 1;
     var->solver   = solver;
     return var;
@@ -569,7 +570,7 @@ AM_API int am_addterm(am_Constraint *cons, am_Variable *var, double multiplier) 
     am_VarEntry *ve;
     if (cons == NULL || cons->marker.id != 0 || cons->solver != var->solver)
         return AM_FAILED;
-    assert(am_key(var).id != 0);
+    assert(var->sym.id != 0);
     assert(var->solver == cons->solver);
     if (cons->relation == AM_GREATEQUAL) multiplier = -multiplier;
     am_addvar(cons->solver, &cons->expression, var->sym, multiplier);
@@ -601,7 +602,7 @@ AM_API int am_setrelation(am_Constraint *cons, int relation) {
 /* Cassowary algorithm */
 
 AM_API int am_hasvariable(am_Variable *var)
-{ return var != NULL && am_gettable(&var->solver->vars,am_key(var)) != NULL; }
+{ return var != NULL && am_gettable(&var->solver->vars,var->sym) != NULL; }
 
 AM_API int am_hasedit(am_Variable *var)
 { return var != NULL && var->constraint != NULL; }
@@ -619,7 +620,7 @@ static void am_updatevars(am_Solver *solver) {
 
 static void am_infeasible(am_Solver *solver, am_Row *row) {
     row->infeasible_next = solver->infeasible_rows;
-    solver->infeasible_rows = row;
+    solver->infeasible_rows = am_key(row);
 }
 
 static void am_substitute_rows(am_Solver *solver, am_Symbol var, am_Row *expr) {
@@ -830,22 +831,24 @@ static void am_delta_edit_constant(am_Solver *solver, double delta, am_Constrain
         am_Term *term = (am_Term*)am_gettable(&row->terms, cons->marker);
         if (term == NULL) continue;
         if ((row->constant += term->multiplier*delta) < 0.0
-                && am_isexternal(row))
+                && am_isrestricted(row))
             am_infeasible(solver, row);
     }
 }
 
 static void am_dual_optimize(am_Solver *solver) {
-    am_Row *row = solver->infeasible_rows, tmp;
-    for (; row != NULL; row = row->infeasible_next) {
-        double min_ratio = DBL_MAX, r;
-        am_Term *term = NULL, *oterm;
+    while (solver->infeasible_rows.id != 0) {
+        am_Row tmp, *row =
+            (am_Row*)am_gettable(&solver->rows, solver->infeasible_rows);
         am_Symbol enter = am_null(), exit = am_key(row);
+        am_Term *objterm, *term = NULL;
+        double r, min_ratio = DBL_MAX;
+        solver->infeasible_rows = row->infeasible_next;
         if (row->constant >= 0.0) continue;
         while (am_nextentry(&row->terms, (am_Entry**)&term)) {
             if (am_isdummy(term) || term->multiplier <= 0.0) continue;
-            oterm = (am_Term*)am_gettable(&solver->objective.terms, am_key(term));
-            r = oterm ? oterm->multiplier / term->multiplier : 0.0;
+            objterm = (am_Term*)am_gettable(&solver->objective.terms, am_key(term));
+            r = objterm ? objterm->multiplier / term->multiplier : 0.0;
             if (min_ratio > r) min_ratio = r, enter = am_key(term);
         }
         assert(enter.id != 0);
@@ -854,7 +857,6 @@ static void am_dual_optimize(am_Solver *solver) {
         am_substitute_rows(solver, enter, &tmp);
         am_putrow(solver, enter, &tmp);
     }
-    solver->infeasible_rows = NULL;
 }
 
 static void *am_default_allocf(void *ud, void *ptr, size_t nsize, size_t osize) {
@@ -914,7 +916,7 @@ AM_API void am_resetsolver(am_Solver *solver, int clear_constrants) {
         return;
     }
     solver->objective.constant = 0.0;
-    solver->infeasible_rows = NULL;
+    solver->infeasible_rows = am_null();
     am_resettable(&solver->objective.terms);
     am_resettable(&solver->vars);
     while (am_nextentry(&solver->constraints, &entry)) {
@@ -930,9 +932,9 @@ AM_API void am_resetsolver(am_Solver *solver, int clear_constrants) {
 
 AM_API int am_add(am_Constraint *cons) {
     am_Solver *solver = cons ? cons->solver : NULL;
-    am_Row row;
     int ret, oldsym = solver ? solver->symbol_count : 0;
-    if (cons == NULL || cons->marker.id != 0) return AM_FAILED;
+    am_Row row;
+    if (cons == NULL || solver == NULL || cons->marker.id != 0) return AM_FAILED;
     row = am_makerow(solver, cons);
     if ((ret = am_try_addrow(solver, &row, cons)) != AM_OK) {
         am_remove_errors(solver, cons);
@@ -985,7 +987,7 @@ AM_API void am_addedit(am_Variable *var, double strength) {
     am_Constraint *cons;
     int ret;
     if (var == NULL) return;
-    assert(am_key(var).id != 0);
+    assert(var->sym.id != 0);
     if (strength >= AM_STRONG) strength = AM_STRONG;
     if (var->constraint != NULL && strength != var->constraint->strength)
     { am_setstrength(var->constraint, strength); return; }
