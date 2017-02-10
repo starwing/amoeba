@@ -619,8 +619,11 @@ static void am_updatevars(am_Solver *solver) {
 }
 
 static void am_infeasible(am_Solver *solver, am_Row *row) {
-    row->infeasible_next = solver->infeasible_rows;
-    solver->infeasible_rows = am_key(row);
+    if (!am_isdummy(row->infeasible_next)) {
+        row->infeasible_next.id = solver->infeasible_rows.id;
+        row->infeasible_next.type = AM_DUMMY;
+        solver->infeasible_rows = am_key(row);
+    }
 }
 
 static void am_substitute_rows(am_Solver *solver, am_Symbol var, am_Row *expr) {
