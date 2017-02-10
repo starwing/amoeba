@@ -182,6 +182,7 @@ struct am_Variable {
     unsigned       refcount;
     am_Solver     *solver;
     am_Constraint *constraint;
+    double         edit_value;
     double         value;
 };
 
@@ -1018,12 +1019,14 @@ AM_API void am_addedit(am_Variable *var, double strength) {
     ret = am_add(cons);
     assert(ret == AM_OK);
     var->constraint = cons;
+    var->edit_value = var->value;
 }
 
 AM_API void am_deledit(am_Variable *var) {
     if (var == NULL || var->constraint == NULL) return;
     am_delconstraint(var->constraint);
     var->constraint = NULL;
+    var->edit_value = 0.0;
 }
 
 AM_API void am_suggest(am_Variable *var, double value) {
@@ -1034,7 +1037,8 @@ AM_API void am_suggest(am_Variable *var, double value) {
         am_addedit(var, AM_MEDIUM);
         assert(var->constraint != NULL);
     }
-    delta = value - var->value;
+    delta = value - var->edit_value;
+    var->edit_value = value;
     am_delta_edit_constant(solver, delta, var->constraint);
     am_dual_optimize(solver);
     am_updatevars(solver);
