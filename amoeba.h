@@ -142,7 +142,7 @@ typedef struct am_MemPool {
 } am_MemPool;
 
 typedef struct am_Entry {
-    ptrdiff_t next;
+    int       next;
     am_Symbol key;
 } am_Entry;
 
@@ -282,7 +282,7 @@ static am_Symbol am_newsymbol(am_Solver *solver, int type) {
 
 #define am_key(entry) (((am_Entry*)(entry))->key)
 
-#define am_offset(lhs, rhs) ((char*)(lhs) - (char*)(rhs))
+#define am_offset(lhs, rhs) ((int)((char*)(lhs) - (char*)(rhs)))
 #define am_index(h, i)      ((am_Entry*)((char*)(h) + (i)))
 
 static am_Entry *am_newkey(am_Solver *solver, am_Table *t, am_Symbol key);
