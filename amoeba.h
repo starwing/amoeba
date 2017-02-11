@@ -47,15 +47,21 @@
 #define AM_EQUAL        (2)
 #define AM_GREATEQUAL   (3)
 
-#define AM_REQUIRED     (1000.0*1000.0*1000.0)
-#define AM_STRONG       (1000.0*1000.0)
-#define AM_MEDIUM       (1000.0)
-#define AM_WEAK         (1.0)
+#define AM_REQUIRED     ((am_Float)1000000000)
+#define AM_STRONG       ((am_Float)1000000)
+#define AM_MEDIUM       ((am_Float)1000)
+#define AM_WEAK         ((am_Float)1)
 
 #include <stddef.h>
 
 
 AM_NS_BEGIN
+
+#ifdef AM_USE_FLOAT
+typedef float  am_Float;
+#else
+typedef double am_Float;
+#endif
 
 typedef struct am_Solver     am_Solver;
 typedef struct am_Variable   am_Variable;
@@ -74,28 +80,28 @@ AM_API int am_hasconstraint (am_Constraint *cons);
 AM_API int  am_add    (am_Constraint *cons);
 AM_API void am_remove (am_Constraint *cons);
 
-AM_API void am_addedit (am_Variable *var, double strength);
-AM_API void am_suggest (am_Variable *var, double value);
+AM_API void am_addedit (am_Variable *var, am_Float strength);
+AM_API void am_suggest (am_Variable *var, am_Float value);
 AM_API void am_deledit (am_Variable *var);
 
 AM_API am_Variable *am_newvariable (am_Solver *solver);
 AM_API void         am_usevariable (am_Variable *var);
 AM_API void         am_delvariable (am_Variable *var);
 AM_API int          am_variableid  (am_Variable *var);
-AM_API double       am_value       (am_Variable *var);
+AM_API am_Float     am_value       (am_Variable *var);
 
-AM_API am_Constraint *am_newconstraint   (am_Solver *solver, double strength);
-AM_API am_Constraint *am_cloneconstraint (am_Constraint *other, double strength);
+AM_API am_Constraint *am_newconstraint   (am_Solver *solver, am_Float strength);
+AM_API am_Constraint *am_cloneconstraint (am_Constraint *other, am_Float strength);
 
 AM_API void am_resetconstraint (am_Constraint *cons);
 AM_API void am_delconstraint   (am_Constraint *cons);
 
-AM_API int am_addterm     (am_Constraint *cons, am_Variable *var, double multiplier);
+AM_API int am_addterm     (am_Constraint *cons, am_Variable *var, am_Float multiplier);
 AM_API int am_setrelation (am_Constraint *cons, int relation);
-AM_API int am_addconstant (am_Constraint *cons, double constant);
-AM_API int am_setstrength (am_Constraint *cons, double strength);
+AM_API int am_addconstant (am_Constraint *cons, am_Float constant);
+AM_API int am_setstrength (am_Constraint *cons, am_Float strength);
 
-AM_API int am_mergeconstraint (am_Constraint *cons, am_Constraint *other, double multiplier);
+AM_API int am_mergeconstraint (am_Constraint *cons, am_Constraint *other, am_Float multiplier);
 
 AM_NS_END
 
@@ -127,6 +133,13 @@ AM_NS_END
 #define AM_MIN_HASHSIZE 4
 #define AM_MAX_SIZET    ((~(size_t)0)-100)
 
+#ifdef AM_USE_FLOAT
+# define AM_FLOAT_MAX FLT_MAX
+# define AM_FLOAT_EPS 1e-4f
+#else
+# define AM_FLOAT_MAX DBL_MAX
+# define AM_FLOAT_EPS 1e-6
+#endif
 
 AM_NS_BEGIN
 
@@ -166,14 +179,14 @@ typedef struct am_ConsEntry {
 
 typedef struct am_Term {
     am_Entry entry;
-    double   multiplier;
+    am_Float multiplier;
 } am_Term;
 
 typedef struct am_Row {
     am_Entry  entry;
     am_Symbol infeasible_next;
     am_Table  terms;
-    double    constant;
+    am_Float  constant;
 } am_Row;
 
 struct am_Variable {
@@ -182,8 +195,8 @@ struct am_Variable {
     unsigned       refcount;
     am_Solver     *solver;
     am_Constraint *constraint;
-    double         edit_value;
-    double         value;
+    am_Float       edit_value;
+    am_Float       value;
 };
 
 struct am_Constraint {
@@ -193,7 +206,7 @@ struct am_Constraint {
     am_Symbol  other;
     int        relation;
     am_Solver *solver;
-    double     strength;
+    am_Float   strength;
 };
 
 struct am_Solver {
@@ -216,11 +229,11 @@ struct am_Solver {
 
 static am_Symbol am_newsymbol(am_Solver *solver, int type);
 
-static int am_approx(double a, double b)
-{ return a > b ? a - b < 1e-6 : b - a < 1e-6; }
+static int am_approx(am_Float a, am_Float b)
+{ return a > b ? a - b < AM_FLOAT_EPS : b - a < AM_FLOAT_EPS; }
 
-static int am_nearzero(double a)
-{ return am_approx(a, 0.0); }
+static int am_nearzero(am_Float a)
+{ return am_approx(a, 0.0f); }
 
 static am_Symbol am_null()
 { am_Symbol null = { 0, 0 }; return null; }
@@ -423,25 +436,25 @@ static void am_freerow(am_Solver *solver, am_Row *row)
 static void am_initrow(am_Row *row) {
     am_key(row) = am_null();
     row->infeasible_next = am_null();
-    row->constant = 0.0;
+    row->constant = 0.0f;
     am_inittable(&row->terms, sizeof(am_Term));
 }
 
 static void am_resetrow(am_Row *row) {
     am_Term *term = NULL;
-    row->constant = 0.0;
+    row->constant = 0.0f;
     while (am_nextentry(&row->terms, (am_Entry**)&term))
         am_delkey(&row->terms, &term->entry);
 }
 
-static void am_multiply(am_Row *row, double multiplier) {
+static void am_multiply(am_Row *row, am_Float multiplier) {
     am_Term *term = NULL;
     row->constant *= multiplier;
     while (am_nextentry(&row->terms, (am_Entry**)&term))
         term->multiplier *= multiplier;
 }
 
-static void am_addvar(am_Solver *solver, am_Row *row, am_Symbol sym, double value) {
+static void am_addvar(am_Solver *solver, am_Row *row, am_Symbol sym, am_Float value) {
     am_Term *term;
     if (sym.id == 0) return;
     if ((term = (am_Term*)am_gettable(&row->terms, sym)) == NULL)
@@ -450,7 +463,7 @@ static void am_addvar(am_Solver *solver, am_Row *row, am_Symbol sym, double valu
         am_delkey(&row->terms, &term->entry);
 }
 
-static void am_addrow(am_Solver *solver, am_Row *row, const am_Row *other, double multiplier) {
+static void am_addrow(am_Solver *solver, am_Row *row, const am_Row *other, am_Float multiplier) {
     am_Term *term = NULL;
     row->constant += other->constant*multiplier;
     while (am_nextentry(&other->terms, (am_Entry**)&term))
@@ -459,7 +472,7 @@ static void am_addrow(am_Solver *solver, am_Row *row, const am_Row *other, doubl
 
 static void am_solvefor(am_Solver *solver, am_Row *row, am_Symbol entry, am_Symbol exit) {
     am_Term *term = (am_Term*)am_gettable(&row->terms, entry);
-    double reciprocal = 1.0 / term->multiplier;
+    am_Float reciprocal = 1.0f / term->multiplier;
     assert(entry.id != exit.id && !am_nearzero(term->multiplier));
     am_delkey(&row->terms, &term->entry);
     am_multiply(row, -reciprocal);
@@ -477,7 +490,7 @@ static void am_substitute(am_Solver *solver, am_Row *row, am_Symbol entry, const
 /* variables & constraints */
 
 AM_API int am_variableid(am_Variable *var) { return var ? var->sym.id : -1; }
-AM_API double am_value(am_Variable *var) { return var ? var->value : 0.0; }
+AM_API am_Float am_value(am_Variable *var) { return var ? var->value : 0.0f; }
 AM_API void am_usevariable(am_Variable *var) { if (var) ++var->refcount; }
 
 AM_API am_Variable *am_newvariable(am_Solver *solver) {
@@ -499,7 +512,7 @@ AM_API void am_delvariable(am_Variable *var) {
     }
 }
 
-AM_API am_Constraint *am_newconstraint(am_Solver *solver, double strength) {
+AM_API am_Constraint *am_newconstraint(am_Solver *solver, am_Float strength) {
     am_ConsEntry *ce;
     am_Constraint *cons = (am_Constraint*)am_alloc(solver, &solver->conspool);
     memset(cons, 0, sizeof(*cons));
@@ -530,17 +543,17 @@ AM_API void am_delconstraint(am_Constraint *cons) {
     am_free(&solver->conspool, cons);
 }
 
-AM_API am_Constraint *am_cloneconstraint(am_Constraint *other, double strength) {
+AM_API am_Constraint *am_cloneconstraint(am_Constraint *other, am_Float strength) {
     am_Constraint *cons;
     if (other == NULL) return NULL;
     cons = am_newconstraint(other->solver,
             am_nearzero(strength) ? other->strength : strength);
-    am_mergeconstraint(cons, other, 1.0);
+    am_mergeconstraint(cons, other, 1.0f);
     cons->relation = other->relation;
     return cons;
 }
 
-AM_API int am_mergeconstraint(am_Constraint *cons, am_Constraint *other, double multiplier) {
+AM_API int am_mergeconstraint(am_Constraint *cons, am_Constraint *other, am_Float multiplier) {
     am_VarEntry *ve = NULL, *nve;
     if (cons == NULL || other == NULL || cons->marker.id != 0
             || cons->solver != other->solver)
@@ -567,7 +580,7 @@ AM_API void am_resetconstraint(am_Constraint *cons) {
     am_resetrow(&cons->expression);
 }
 
-AM_API int am_addterm(am_Constraint *cons, am_Variable *var, double multiplier) {
+AM_API int am_addterm(am_Constraint *cons, am_Variable *var, am_Float multiplier) {
     am_VarEntry *ve;
     if (cons == NULL || cons->marker.id != 0 || cons->solver != var->solver)
         return AM_FAILED;
@@ -581,7 +594,7 @@ AM_API int am_addterm(am_Constraint *cons, am_Variable *var, double multiplier) 
     return AM_OK;
 }
 
-AM_API int am_addconstant(am_Constraint *cons, double constant) {
+AM_API int am_addconstant(am_Constraint *cons, am_Float constant) {
     if (cons == NULL || cons->marker.id != 0) return AM_FAILED;
     if (cons->relation == AM_GREATEQUAL)
         cons->expression.constant -= constant;
@@ -594,7 +607,7 @@ AM_API int am_setrelation(am_Constraint *cons, int relation) {
     assert(relation >= AM_LESSEQUAL && relation <= AM_GREATEQUAL);
     if (cons == NULL || cons->marker.id != 0 || cons->relation != 0)
         return AM_FAILED;
-    if (relation != AM_GREATEQUAL) am_multiply(&cons->expression, -1.0);
+    if (relation != AM_GREATEQUAL) am_multiply(&cons->expression, -1.0f);
     cons->relation = relation;
     return AM_OK;
 }
@@ -632,7 +645,7 @@ static void am_updatevars(am_Solver *solver) {
         am_Row *row = (am_Row*)am_gettable(&solver->rows, ve->variable->sym);
         solver->dirty_vars = ve->variable->dirty_next;
         ve->variable->dirty_next = am_null();
-        ve->variable->value = row ? row->constant : 0.0;
+        ve->variable->value = row ? row->constant : 0.0f;
     }
 }
 
@@ -643,7 +656,7 @@ static void am_substitute_rows(am_Solver *solver, am_Symbol var, am_Row *expr) {
         if (am_isexternal(am_key(row)))
             am_markdirty(solver, ((am_VarEntry*)
                 am_gettable(&solver->vars, am_key(row)))->variable);
-        else if (row->constant < 0.0)
+        else if (row->constant < 0.0f)
             am_infeasible(solver, row);
     }
     am_substitute(solver, &solver->objective, var, expr);
@@ -666,7 +679,7 @@ static int am_putrow(am_Solver *solver, am_Symbol sym, const am_Row *src) {
     return AM_OK;
 }
 
-static void am_mergerow(am_Solver *solver, am_Row *row, am_Symbol var, double multiplier) {
+static void am_mergerow(am_Solver *solver, am_Row *row, am_Symbol var, am_Float multiplier) {
     am_Row *oldrow = (am_Row*)am_gettable(&solver->rows, var);
     if (oldrow) am_addrow(solver, row, oldrow, multiplier);
     else am_addvar(solver, row, var, multiplier);
@@ -675,12 +688,12 @@ static void am_mergerow(am_Solver *solver, am_Row *row, am_Symbol var, double mu
 static int am_optimize(am_Solver *solver, am_Row *objective) {
     for (;;) {
         am_Symbol enter = am_null(), exit = am_null();
-        double r, min_ratio = DBL_MAX;
+        am_Float r, min_ratio = AM_FLOAT_MAX;
         am_Row tmp, *row = NULL;
         am_Term *term = NULL;
 
         while (am_nextentry(&objective->terms, (am_Entry**)&term)) {
-            if (!am_isdummy(am_key(term)) && term->multiplier < 0.0)
+            if (!am_isdummy(am_key(term)) && term->multiplier < 0.0f)
             { enter = am_key(term); break; }
         }
         if (enter.id == 0) return AM_OK;
@@ -688,7 +701,7 @@ static int am_optimize(am_Solver *solver, am_Row *objective) {
         while (am_nextentry(&solver->rows, (am_Entry**)&row)) {
             term = (am_Term*)am_gettable(&row->terms, enter);
             if (term == NULL || !am_ispivotable(am_key(row))
-                    || term->multiplier > 0.0) continue;
+                    || term->multiplier > 0.0f) continue;
             r = -row->constant / term->multiplier;
             if (r < min_ratio || (am_approx(r, min_ratio)
                         && am_key(row).id < exit.id))
@@ -721,26 +734,26 @@ static am_Row am_makerow(am_Solver *solver, am_Constraint *cons) {
         am_mergerow(solver, &row, am_key(term), term->multiplier);
     if (cons->relation != AM_EQUAL) {
         am_initsymbol(solver, &cons->marker, AM_SLACK);
-        am_addvar(solver, &row, cons->marker, -1.0);
+        am_addvar(solver, &row, cons->marker, -1.0f);
         if (cons->strength < AM_REQUIRED) {
             am_initsymbol(solver, &cons->other, AM_ERROR);
-            am_addvar(solver, &row, cons->other, 1.0);
+            am_addvar(solver, &row, cons->other, 1.0f);
             am_addvar(solver, &solver->objective, cons->other, cons->strength);
         }
     }
     else if (cons->strength >= AM_REQUIRED) {
         am_initsymbol(solver, &cons->marker, AM_DUMMY);
-        am_addvar(solver, &row, cons->marker, 1.0);
+        am_addvar(solver, &row, cons->marker, 1.0f);
     }
     else {
         am_initsymbol(solver, &cons->marker, AM_ERROR);
         am_initsymbol(solver, &cons->other,  AM_ERROR);
-        am_addvar(solver, &row, cons->marker, -1.0);
-        am_addvar(solver, &row, cons->other,   1.0);
+        am_addvar(solver, &row, cons->marker, -1.0f);
+        am_addvar(solver, &row, cons->other,   1.0f);
         am_addvar(solver, &solver->objective, cons->marker, cons->strength);
         am_addvar(solver, &solver->objective, cons->other,  cons->strength);
     }
-    if (row.constant < 0.0) am_multiply(&row, -1.0);
+    if (row.constant < 0.0f) am_multiply(&row, -1.0f);
     return row;
 }
 
@@ -750,7 +763,7 @@ static void am_remove_errors(am_Solver *solver, am_Constraint *cons) {
     if (am_iserror(cons->other))
         am_mergerow(solver, &solver->objective, cons->other, -cons->strength);
     if (am_isconstant(&solver->objective))
-        solver->objective.constant = 0.0;
+        solver->objective.constant = 0.0f;
     cons->marker = cons->other = am_null();
 }
 
@@ -761,9 +774,9 @@ static int am_add_with_artificial(am_Solver *solver, am_Row *row, am_Constraint 
     int ret;
     --solver->symbol_count; /* artificial variable will be removed */
     am_initrow(&tmp);
-    am_addrow(solver, &tmp, row, 1.0);
+    am_addrow(solver, &tmp, row, 1.0f);
     am_putrow(solver, a, row);
-    am_initrow(row); row = NULL; /* row is useless */
+    am_initrow(row), row = NULL; /* row is useless */
     am_optimize(solver, &tmp);
     ret = am_nearzero(tmp.constant) ? AM_OK : AM_UNBOUND;
     am_freerow(solver, &tmp);
@@ -794,11 +807,11 @@ static int am_try_addrow(am_Solver *solver, am_Row *row, am_Constraint *cons) {
         if (am_isexternal(am_key(term))) { subject = am_key(term); break; }
     if (subject.id == 0 && am_ispivotable(cons->marker)) {
         am_Term *mterm = (am_Term*)am_gettable(&row->terms, cons->marker);
-        if (mterm->multiplier < 0.0) subject = cons->marker;
+        if (mterm->multiplier < 0.0f) subject = cons->marker;
     }
     if (subject.id == 0 && am_ispivotable(cons->other)) {
         am_Term *mterm = (am_Term*)am_gettable(&row->terms, cons->other);
-        if (mterm->multiplier < 0.0) subject = cons->other;
+        if (mterm->multiplier < 0.0f) subject = cons->other;
     }
     if (subject.id == 0) {
         while (am_nextentry(&row->terms, (am_Entry**)&term))
@@ -817,30 +830,30 @@ static int am_try_addrow(am_Solver *solver, am_Row *row, am_Constraint *cons) {
 
 static am_Symbol am_get_leaving_row(am_Solver *solver, am_Symbol marker) {
     am_Symbol first = am_null(), second = am_null(), third = am_null();
-    double r1 = DBL_MAX, r2 = DBL_MAX;
+    am_Float r1 = AM_FLOAT_MAX, r2 = AM_FLOAT_MAX;
     am_Row *row = NULL;
     while (am_nextentry(&solver->rows, (am_Entry**)&row)) {
         am_Term *term = (am_Term*)am_gettable(&row->terms, marker);
         if (term == NULL) continue;
         if (am_isexternal(am_key(row))) third = am_key(row);
-        else if (term->multiplier < 0.0) {
-            double r = -row->constant / term->multiplier;
+        else if (term->multiplier < 0.0f) {
+            am_Float r = -row->constant / term->multiplier;
             if (r < r1) r1 = r, first = am_key(row);
         }
         else {
-            double r = row->constant / term->multiplier;
+            am_Float r = row->constant / term->multiplier;
             if (r < r2) r2 = r, second = am_key(row);
         }
     }
     return first.id ? first : second.id ? second : third;
 }
 
-static void am_delta_edit_constant(am_Solver *solver, double delta, am_Constraint *cons) {
+static void am_delta_edit_constant(am_Solver *solver, am_Float delta, am_Constraint *cons) {
     am_Row *row;
     if ((row = (am_Row*)am_gettable(&solver->rows, cons->marker)) != NULL)
-    { if ((row->constant -= delta) < 0.0) am_infeasible(solver, row); return; }
+    { if ((row->constant -= delta) < 0.0f) am_infeasible(solver, row); return; }
     if ((row = (am_Row*)am_gettable(&solver->rows, cons->other)) != NULL)
-    { if ((row->constant += delta) < 0.0) am_infeasible(solver, row); return; }
+    { if ((row->constant += delta) < 0.0f) am_infeasible(solver, row); return; }
     while (am_nextentry(&solver->rows, (am_Entry**)&row)) {
         am_Term *term = (am_Term*)am_gettable(&row->terms, cons->marker);
         if (term == NULL) continue;
@@ -848,7 +861,7 @@ static void am_delta_edit_constant(am_Solver *solver, double delta, am_Constrain
         if (am_isexternal(am_key(row)))
             am_markdirty(solver, ((am_VarEntry*)
                 am_gettable(&solver->vars, am_key(row)))->variable);
-        else if (row->constant < 0.0)
+        else if (row->constant < 0.0f)
             am_infeasible(solver, row);
     }
 }
@@ -859,14 +872,14 @@ static void am_dual_optimize(am_Solver *solver) {
             (am_Row*)am_gettable(&solver->rows, solver->infeasible_rows);
         am_Symbol enter = am_null(), exit = am_key(row);
         am_Term *objterm, *term = NULL;
-        double r, min_ratio = DBL_MAX;
+        am_Float r, min_ratio = AM_FLOAT_MAX;
         solver->infeasible_rows = row->infeasible_next;
         row->infeasible_next = am_null();
-        if (row->constant >= 0.0) continue;
+        if (row->constant >= 0.0f) continue;
         while (am_nextentry(&row->terms, (am_Entry**)&term)) {
-            if (am_isdummy(am_key(term)) || term->multiplier <= 0.0) continue;
+            if (am_isdummy(am_key(term)) || term->multiplier <= 0.0f) continue;
             objterm = (am_Term*)am_gettable(&solver->objective.terms, am_key(term));
-            r = objterm ? objterm->multiplier / term->multiplier : 0.0;
+            r = objterm ? objterm->multiplier / term->multiplier : 0.0f;
             if (min_ratio > r) min_ratio = r, enter = am_key(term);
         }
         assert(enter.id != 0);
@@ -933,7 +946,7 @@ AM_API void am_resetsolver(am_Solver *solver, int clear_constrants) {
         assert(am_nearzero(solver->objective.constant));
         return;
     }
-    solver->objective.constant = 0.0;
+    solver->objective.constant = 0.0f;
     assert(solver->infeasible_rows.id == 0);
     assert(solver->dirty_vars.id == 0);
     am_resettable(&solver->objective.terms);
@@ -985,7 +998,7 @@ AM_API void am_remove(am_Constraint *cons) {
     am_updatevars(solver);
 }
 
-AM_API int am_setstrength(am_Constraint *cons, double strength) {
+AM_API int am_setstrength(am_Constraint *cons, am_Float strength) {
     if (cons == NULL) return AM_FAILED;
     strength = am_nearzero(strength) ? AM_REQUIRED : strength;
     if (cons->strength == strength) return AM_OK;
@@ -993,7 +1006,7 @@ AM_API int am_setstrength(am_Constraint *cons, double strength) {
     { am_remove(cons), cons->strength = strength; return am_add(cons); }
     if (cons->marker.id != 0) {
         am_Solver *solver = cons->solver;
-        double diff = strength - cons->strength;
+        am_Float diff = strength - cons->strength;
         am_mergerow(solver, &solver->objective, cons->marker, diff);
         am_mergerow(solver, &solver->objective, cons->other,  diff);
         am_optimize(solver, &solver->objective);
@@ -1003,7 +1016,7 @@ AM_API int am_setstrength(am_Constraint *cons, double strength) {
     return AM_OK;
 }
 
-AM_API void am_addedit(am_Variable *var, double strength) {
+AM_API void am_addedit(am_Variable *var, am_Float strength) {
     am_Solver *solver = var ? var->solver : NULL;
     am_Constraint *cons;
     int ret;
@@ -1014,7 +1027,7 @@ AM_API void am_addedit(am_Variable *var, double strength) {
     { am_setstrength(var->constraint, strength); return; }
     cons = am_newconstraint(solver, strength);
     am_setrelation(cons, AM_EQUAL);
-    am_addterm(cons, var, 1.0); /* var must have positive signture */
+    am_addterm(cons, var, 1.0f); /* var must have positive signture */
     am_addconstant(cons, -var->value);
     ret = am_add(cons);
     assert(ret == AM_OK);
@@ -1026,12 +1039,12 @@ AM_API void am_deledit(am_Variable *var) {
     if (var == NULL || var->constraint == NULL) return;
     am_delconstraint(var->constraint);
     var->constraint = NULL;
-    var->edit_value = 0.0;
+    var->edit_value = 0.0f;
 }
 
-AM_API void am_suggest(am_Variable *var, double value) {
+AM_API void am_suggest(am_Variable *var, am_Float value) {
     am_Solver *solver = var ? var->solver : NULL;
-    double delta;
+    am_Float delta;
     if (var == NULL) return;
     if (var->constraint == NULL) {
         am_addedit(var, AM_MEDIUM);

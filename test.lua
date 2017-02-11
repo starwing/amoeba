@@ -1,8 +1,9 @@
+package.path = ""
 local amoeba = require "amoeba"
 
 local S = amoeba.new()
 print(S)
-local xl, xm, xr = 
+local xl, xm, xr =
    S:var "xl", S:var "xm", S:var "xr"
 print(xl)
 print(xm)

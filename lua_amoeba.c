@@ -15,26 +15,26 @@ enum aml_ItemType { AML_VAR, AML_CONS, AML_CONSTANT };
 
 typedef struct aml_Solver {
     am_Solver *solver;
-    int ref_vars;
-    int ref_cons;
+    int        ref_vars;
+    int        ref_cons;
 } aml_Solver;
 
 typedef struct aml_Var {
     am_Variable *var;
-    aml_Solver *S;
-    const char *name;
+    aml_Solver  *S;
+    const char  *name;
 } aml_Var;
 
 typedef struct aml_Cons {
     am_Constraint *cons;
-    aml_Solver *S;
+    aml_Solver    *S;
 } aml_Cons;
 
 typedef struct aml_Item {
-    int type;
+    int            type;
     am_Variable   *var;
     am_Constraint *cons;
-    double         value;
+    am_Float       value;
 } aml_Item;
 
 
@@ -79,7 +79,7 @@ static am_Variable *aml_checkvar(lua_State *L, aml_Solver *S, int idx) {
     return NULL;
 }
 
-static aml_Cons *aml_newcons(lua_State *L, aml_Solver *S, double strength) {
+static aml_Cons *aml_newcons(lua_State *L, aml_Solver *S, am_Float strength) {
     aml_Cons *lcons = (aml_Cons*)lua_newuserdata(L, sizeof(aml_Cons));
     lcons->cons = am_newconstraint(S->solver, strength);
     lcons->S    = S;
@@ -155,7 +155,7 @@ static aml_Solver *aml_checkitems(lua_State *L, int start, aml_Item *items) {
     return NULL;
 }
 
-static int aml_performitem(am_Constraint *cons, aml_Item *item, double multiplier) {
+static int aml_performitem(am_Constraint *cons, aml_Item *item, am_Float multiplier) {
     switch (item->type) {
     case AML_CONSTANT: return am_addconstant(cons, item->value*multiplier); break;
     case AML_VAR:      return am_addterm(cons, item->var, multiplier); break;
@@ -164,7 +164,7 @@ static int aml_performitem(am_Constraint *cons, aml_Item *item, double multiplie
     return AM_FAILED;
 }
 
-static double aml_checkstrength(lua_State *L, int idx, double def) {
+static am_Float aml_checkstrength(lua_State *L, int idx, am_Float def) {
     int type = lua_type(L, idx);
     const char *s;
     switch (type) {
@@ -181,7 +181,7 @@ static double aml_checkstrength(lua_State *L, int idx, double def) {
     case LUA_TNUMBER: return lua_tonumber(L, idx);
     }
     aml_typeerror(L, idx, "number/string");
-    return 0.0;
+    return 0.0f;
 }
 
 static int aml_checkrelation(lua_State *L, int idx) {
@@ -198,13 +198,13 @@ static int aml_checkrelation(lua_State *L, int idx) {
 static aml_Cons *aml_makecons(lua_State *L, aml_Solver *S, int start) {
     aml_Cons *lcons;
     int op = aml_checkrelation(L, start);
-    double strength = aml_checkstrength(L, start+3, AM_REQUIRED);
+    am_Float strength = aml_checkstrength(L, start+3, AM_REQUIRED);
     aml_Item items[2];
     aml_checkitems(L, start+1, items);
     lcons = aml_newcons(L, S, strength);
-    aml_performitem(lcons->cons, &items[0], 1.0);
+    aml_performitem(lcons->cons, &items[0], 1.0f);
     am_setrelation(lcons->cons, op);
-    aml_performitem(lcons->cons, &items[1], 1.0);
+    aml_performitem(lcons->cons, &items[1], 1.0f);
     return lcons;
 }
 
@@ -234,11 +234,11 @@ static void aml_dumprow(luaL_Buffer *B, int idx, am_Row *row) {
     lua_pushfstring(L, "%f", row->constant);
     luaL_addvalue(B);
     while ((am_nextentry(&row->terms, (am_Entry**)&term))) {
-        double multiplier = term->multiplier;
-        lua_pushfstring(L, " %c ", multiplier > 0.0 ? '+' : '-');
+        am_Float multiplier = term->multiplier;
+        lua_pushfstring(L, " %c ", multiplier > 0.0f ? '+' : '-');
         luaL_addvalue(B);
-        if (multiplier < 0.0) multiplier = -multiplier;
-        if (!am_approx(multiplier, 1.0)) {
+        if (multiplier < 0.0f) multiplier = -multiplier;
+        if (!am_approx(multiplier, 1.0f)) {
             lua_pushfstring(L, "%f*", multiplier);
             luaL_addvalue(B);
         }
@@ -252,7 +252,7 @@ static void aml_dumprow(luaL_Buffer *B, int idx, am_Row *row) {
 static int Lexpr_neg(lua_State *L) {
     aml_Cons *lcons = (aml_Cons*)luaL_checkudata(L, 1, AML_CONS_TYPE);
     aml_Cons *newcons = aml_newcons(L, lcons->S, AM_REQUIRED);
-    am_mergeconstraint(newcons->cons, lcons->cons, -1.0);
+    am_mergeconstraint(newcons->cons, lcons->cons, -1.0f);
     return 1;
 }
 
@@ -261,8 +261,8 @@ static int Lexpr_add(lua_State *L) {
     aml_Item items[2];
     aml_Solver *S = aml_checkitems(L, 1, items);
     lcons = aml_newcons(L, S, AM_REQUIRED);
-    aml_performitem(lcons->cons, &items[0], 1.0);
-    aml_performitem(lcons->cons, &items[1], 1.0);
+    aml_performitem(lcons->cons, &items[0], 1.0f);
+    aml_performitem(lcons->cons, &items[1], 1.0f);
     return 1;
 }
 
@@ -271,8 +271,8 @@ static int Lexpr_sub(lua_State *L) {
     aml_Item items[2];
     aml_Solver *S = aml_checkitems(L, 1, items);
     lcons = aml_newcons(L, S, AM_REQUIRED);
-    aml_performitem(lcons->cons, &items[0], 1.0);
-    aml_performitem(lcons->cons, &items[1], -1.0);
+    aml_performitem(lcons->cons, &items[0], 1.0f);
+    aml_performitem(lcons->cons, &items[1], -1.0f);
     return 1;
 }
 
@@ -298,7 +298,7 @@ static int Lexpr_div(lua_State *L) {
         luaL_error(L, "attempt to divide a expression");
     if (items[1].type == AML_CONSTANT) {
         aml_Cons *lcons = aml_newcons(L, S, AM_REQUIRED);
-        aml_performitem(lcons->cons, &items[0], 1.0/items[1].value);
+        aml_performitem(lcons->cons, &items[0], 1.0f/items[1].value);
     }
     else luaL_error(L, "attempt to divide two expression");
     return 1;
@@ -308,9 +308,9 @@ static int Lexpr_cmp(lua_State *L, int op) {
     aml_Item items[2];
     aml_Solver *S = aml_checkitems(L, 1, items);
     aml_Cons *lcons = aml_newcons(L, S, AM_REQUIRED);
-    aml_performitem(lcons->cons, &items[0], 1.0);
+    aml_performitem(lcons->cons, &items[0], 1.0f);
     am_setrelation(lcons->cons, op);
-    aml_performitem(lcons->cons, &items[1], 1.0);
+    aml_performitem(lcons->cons, &items[1], 1.0f);
     return 1;
 }
 
@@ -448,7 +448,7 @@ static int Lcons_add(lua_State *L) {
         }
     }
     item = aml_checkitem(L, lcons->S, 2);
-    ret = aml_performitem(lcons->cons, &item, 1.0);
+    ret = aml_performitem(lcons->cons, &item, 1.0f);
 out:
     if (ret != AM_OK) luaL_error(L, "constraint has been added to solver!");
     lua_settop(L, 1); return 1;
@@ -465,7 +465,7 @@ static int Lcons_relation(lua_State *L) {
 
 static int Lcons_strength(lua_State *L) {
     aml_Cons *lcons = (aml_Cons*)luaL_checkudata(L, 1, AML_CONS_TYPE);
-    double strength = aml_checkstrength(L, 2, AM_REQUIRED);
+    am_Float strength = aml_checkstrength(L, 2, AM_REQUIRED);
     if (lcons->cons == NULL) luaL_argerror(L, 1, "invalid constraint");
     if (am_setstrength(lcons->cons, strength) != AM_OK)
         luaL_error(L, "constraint has been added to solver!");
@@ -600,13 +600,15 @@ static int Ltostring(lua_State *L) {
             aml_dumprow(&B, 2, row);
         }
     }
-    if (S->solver->infeasible_rows != NULL) {
-        am_Row *row = S->solver->infeasible_rows;
+    if (S->solver->infeasible_rows.id != 0) {
+        am_Row *row = (am_Row*)am_gettable(&S->solver->rows,
+                S->solver->infeasible_rows);
         luaL_addstring(&B, "\n  infeasible rows: ");
         aml_dumpkey(&B, 2, am_key(row));
-        for (; row != NULL; row = row->infeasible_next) {
+        while (row != NULL) {
             luaL_addstring(&B, ", ");
             aml_dumpkey(&B, 2, am_key(row));
+            row = (am_Row*)am_gettable(&S->solver->rows, row->infeasible_next);
         }
     }
     luaL_addstring(&B, "\n}");
@@ -645,7 +647,7 @@ static int Ldelconstraint(lua_State *L) {
 static int Laddedit(lua_State *L) {
     aml_Solver *S = (aml_Solver*)luaL_checkudata(L, 1, AML_SOLVER_TYPE);
     am_Variable *var = aml_checkvar(L, S, 2);
-    double strength = aml_checkstrength(L, 3, AM_MEDIUM);
+    am_Float strength = aml_checkstrength(L, 3, AM_MEDIUM);
     am_addedit(var, strength);
     lua_settop(L, 1); return 1;
 }
@@ -660,7 +662,7 @@ static int Ldeledit(lua_State *L) {
 static int Lsuggest(lua_State *L) {
     aml_Solver *S = (aml_Solver*)luaL_checkudata(L, 1, AML_SOLVER_TYPE);
     am_Variable *var = aml_checkvar(L, S, 2);
-    double value = (double)luaL_checknumber(L, 3);
+    am_Float value = (am_Float)luaL_checknumber(L, 3);
     am_suggest(var, value);
     lua_settop(L, 1); return 1;
 }

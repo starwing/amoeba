@@ -47,10 +47,10 @@ static void am_dumprow(am_Row *row) {
     am_Term *term = NULL;
     printf("%g", row->constant);
     while (am_nextentry(&row->terms, (am_Entry**)&term)) {
-        double multiplier = term->multiplier;
+        am_Float multiplier = term->multiplier;
         printf(" %c ", multiplier > 0.0 ? '+' : '-');
         if (multiplier < 0.0) multiplier = -multiplier;
-        if (!am_approx(multiplier, 1.0))
+        if (!am_approx(multiplier, 1.0f))
             printf("%g*", multiplier);
         am_dumpkey(am_key(term));
     }
@@ -73,22 +73,25 @@ static void am_dumpsolver(am_Solver *solver) {
     printf("-------------------------------\n");
 }
 
-static am_Constraint* new_constraint(am_Solver* in_solver, double in_strength, am_Variable* in_term1, double in_factor1, int in_relation, double in_constant, ...) {
+static am_Constraint* new_constraint(am_Solver* in_solver, double in_strength,
+        am_Variable* in_term1, double in_factor1, int in_relation,
+        double in_constant, ...)
+{
     int result;
     va_list argp;
     am_Constraint* c;
     assert(in_solver && in_term1);
-    c = am_newconstraint(in_solver, in_strength);
+    c = am_newconstraint(in_solver, (am_Float)in_strength);
     if(!c) return 0;
-    am_addterm(c, in_term1, in_factor1);
+    am_addterm(c, in_term1, (am_Float)in_factor1);
     am_setrelation(c, in_relation);
-    if(in_constant) am_addconstant(c, in_constant);
+    if(in_constant) am_addconstant(c, (am_Float)in_constant);
     va_start(argp, in_constant);
     while(1) {
         am_Variable* va_term = va_arg(argp, am_Variable*);
         double va_factor = va_arg(argp, double);
         if(va_term == 0) break;
-        am_addterm(c, va_term, va_factor);
+        am_addterm(c, va_term, (am_Float)va_factor);
     }
     va_end(argp);
     result = am_add(c);
@@ -320,8 +323,8 @@ static void test_binarytree(void) {
     arrY[0] = am_newvariable(pSolver);
     am_addedit(arrX[0], AM_STRONG);
     am_addedit(arrY[0], AM_STRONG);
-    am_suggest(arrX[0], 500.0 + X_OFFSET);
-    am_suggest(arrY[0], 10.0);
+    am_suggest(arrX[0], 500.0f + X_OFFSET);
+    am_suggest(arrY[0], 10.0f);
 
     for (nRow = 1; nRow < NUM_ROWS; nRow++) {
         int nPreviousRowFirstPointIndex = nCurrentRowFirstPointIndex;
@@ -558,17 +561,17 @@ static void test_strength(void) {
 static void test_suggest(void) {
 #if 1
     /* This should be valid but fails the (enter.id != 0) assertion in am_dual_optimize() */
-    double strength1 = AM_REQUIRED;
-    double strength2 = AM_REQUIRED;
-    double width = 76;
+    am_Float strength1 = AM_REQUIRED;
+    am_Float strength2 = AM_REQUIRED;
+    am_Float width = 76;
 #else
     /* This mostly works, but still insists on forcing left_child_l = 0 which it should not */
-    double strength1 = AM_STRONG;
-    double strength2 = AM_WEAK;
-    double width = 76;
+    am_Float strength1 = AM_STRONG;
+    am_Float strength2 = AM_WEAK;
+    am_Float width = 76;
 #endif
-    double delta = 0;
-    double pos;
+    am_Float delta = 0;
+    am_Float pos;
     am_Solver* solver = am_newsolver(0, NULL);
     am_Variable* splitter_l = am_newvariable(solver);
     am_Variable* splitter_w = am_newvariable(solver);
