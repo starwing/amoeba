@@ -128,10 +128,6 @@ static void test_all(void) {
     assert(am_variableid(xl) == 1);
     assert(am_variableid(xm) == 2);
     assert(am_variableid(xr) == 3);
-    assert(!am_hasvariable(NULL));
-    assert(!am_hasvariable(xl));
-    assert(!am_hasvariable(xm));
-    assert(!am_hasvariable(xr));
     assert(!am_hasedit(NULL));
     assert(!am_hasedit(xl));
     assert(!am_hasedit(xm));
@@ -148,7 +144,6 @@ static void test_all(void) {
     assert(ret == AM_OK);
     am_dumpsolver(solver);
 
-    assert(am_hasvariable(xl));
     assert(am_hasconstraint(c1));
     assert(!am_hasedit(xl));
 
