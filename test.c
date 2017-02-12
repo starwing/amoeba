@@ -137,12 +137,18 @@ static void test_all(void) {
     xd = am_newvariable(solver);
     am_delvariable(xd);
 
+    assert(am_setrelation(NULL, AM_GREATEQUAL) == AM_FAILED);
+
     c1 = am_newconstraint(solver, AM_REQUIRED);
     am_addterm(c1, xl, 1.0);
     am_setrelation(c1, AM_GREATEQUAL);
     ret = am_add(c1);
     assert(ret == AM_OK);
     am_dumpsolver(solver);
+
+    assert(am_setrelation(c1, AM_GREATEQUAL) == AM_FAILED);
+    assert(am_setstrength(c1, AM_REQUIRED-10) == AM_OK);
+    assert(am_setstrength(c1, AM_REQUIRED) == AM_OK);
 
     assert(am_hasconstraint(c1));
     assert(!am_hasedit(xl));
