@@ -1,3 +1,6 @@
+#define AM_IMPLEMENTATION
+#include "amoeba.h"
+
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,9 +31,6 @@ static void *debug_allocf(void *ud, void *ptr, size_t ns, size_t os) {
 
 static void *null_allocf(void *ud, void *ptr, size_t ns, size_t os)
 { (void)ud, (void)ptr, (void)ns, (void)os; return NULL; }
-
-#define AM_IMPLEMENTATION
-#include "amoeba.h"
 
 static void am_dumpkey(am_Symbol sym) {
     int ch = 'v';
@@ -573,19 +573,30 @@ static void test_suggest(void) {
 #endif
     am_Float delta = 0;
     am_Float pos;
-    am_Solver* solver = am_newsolver(0, NULL);
-    am_Variable* splitter_l = am_newvariable(solver);
-    am_Variable* splitter_w = am_newvariable(solver);
-    am_Variable* splitter_r = am_newvariable(solver);
-    am_Variable* left_child_l = am_newvariable(solver);
-    am_Variable* left_child_w = am_newvariable(solver);
-    am_Variable* left_child_r = am_newvariable(solver);
-    am_Variable* splitter_bar_l = am_newvariable(solver);
-    am_Variable* splitter_bar_w = am_newvariable(solver);
-    am_Variable* splitter_bar_r = am_newvariable(solver);
-    am_Variable* right_child_l = am_newvariable(solver);
-    am_Variable* right_child_w = am_newvariable(solver);
-    am_Variable* right_child_r = am_newvariable(solver);
+    am_Solver *solver;
+    am_Variable *splitter_l,     *splitter_w,     *splitter_r;
+    am_Variable *left_child_l,   *left_child_w,   *left_child_r;
+    am_Variable *splitter_bar_l, *splitter_bar_w, *splitter_bar_r;
+    am_Variable *right_child_l,  *right_child_w,  *right_child_r;
+    int ret = setjmp(jbuf);
+    printf("\n\n==========\ntest suggest\n");
+    printf("ret = %d\n", ret);
+    if (ret < 0) { perror("setjmp"); return; }
+    else if (ret != 0) { printf("out of memory!\n"); return; }
+
+    solver = am_newsolver(debug_allocf, NULL);
+    splitter_l = am_newvariable(solver);
+    splitter_w = am_newvariable(solver);
+    splitter_r = am_newvariable(solver);
+    left_child_l = am_newvariable(solver);
+    left_child_w = am_newvariable(solver);
+    left_child_r = am_newvariable(solver);
+    splitter_bar_l = am_newvariable(solver);
+    splitter_bar_w = am_newvariable(solver);
+    splitter_bar_r = am_newvariable(solver);
+    right_child_l = am_newvariable(solver);
+    right_child_w = am_newvariable(solver);
+    right_child_r = am_newvariable(solver);
 
     /* splitter_r = splitter_l + splitter_w */
     /* left_child_r = left_child_l + left_child_w */
@@ -642,6 +653,10 @@ static void test_suggest(void) {
     }
 
     am_delsolver(solver);
+    printf("allmem = %d\n", (int)allmem);
+    printf("maxmem = %d\n", (int)maxmem);
+    assert(allmem == 0);
+    maxmem = 0;
 }
 
 int main(void) {
