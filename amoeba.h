@@ -316,7 +316,7 @@ static size_t am_hashsize(am_Table *t, size_t len) {
     const size_t max_size = (AM_MAX_SIZET / 2) / t->entry_size;
     while (newsize < max_size && newsize < len)
         newsize <<= 1;
-    assert((newsize & (newsize- 1)) == 0);
+    assert((newsize & (newsize - 1)) == 0);
     return newsize < len ? 0 : newsize;
 }
 
@@ -365,12 +365,12 @@ static am_Entry *am_newkey(am_Solver *solver, am_Table *t, am_Symbol key) {
                     othern = next;
                 othern->next = am_offset(f, othern);
                 memcpy(f, mp, t->entry_size);
-                if (mp->next) { f->next += am_offset(mp, f); mp->next = 0; }
+                if (mp->next) f->next += am_offset(mp, f), mp->next = 0;
             }
             else {
                 if (mp->next != 0) f->next = am_offset(mp, f) + mp->next;
                 else assert(f->next == 0);
-                mp->next = am_offset(f, mp); mp = f;
+                mp->next = am_offset(f, mp), mp = f;
             }
         }
         mp->key = key;
@@ -382,12 +382,9 @@ static const am_Entry *am_gettable(const am_Table *t, am_Symbol key) {
     const am_Entry *e;
     if (t->size == 0 || key.id == 0) return NULL;
     e = am_mainposition(t, key);
-    while (1) {
-        ptrdiff_t next = e->next;
-        if (e->key.id == key.id) return e;
-        if (next == 0) return NULL;
-        e = am_index(e, next);
-    }
+    for (; e->key.id != key.id; e = am_index(e, e->next))
+        if (e->next == 0) return NULL;
+    return e;
 }
 
 static am_Entry *am_settable(am_Solver *solver, am_Table *t, am_Symbol key) {
