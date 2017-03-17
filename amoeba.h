@@ -70,7 +70,7 @@ typedef struct am_Constraint am_Constraint;
 typedef void *am_Allocf (void *ud, void *ptr, size_t nsize, size_t osize);
 
 AM_API am_Solver *am_newsolver   (am_Allocf *allocf, void *ud);
-AM_API void       am_resetsolver (am_Solver *solver, int clear_constrants);
+AM_API void       am_resetsolver (am_Solver *solver, int clear_constraints);
 AM_API void       am_delsolver   (am_Solver *solver);
 
 AM_API int am_hasedit       (am_Variable *var);
@@ -907,7 +907,7 @@ AM_API void am_delsolver(am_Solver *solver) {
     solver->allocf(solver->ud, solver, 0, sizeof(*solver));
 }
 
-AM_API void am_resetsolver(am_Solver *solver, int clear_constrants) {
+AM_API void am_resetsolver(am_Solver *solver, int clear_constraints) {
     am_Entry *entry = NULL;
     while (am_nextentry(&solver->vars, &entry)) {
         am_Constraint **cons = &((am_VarEntry*)entry)->variable->constraint;
@@ -917,7 +917,7 @@ AM_API void am_resetsolver(am_Solver *solver, int clear_constrants) {
     assert(am_nearzero(solver->objective.constant));
     assert(solver->infeasible_rows.id == 0);
     assert(solver->dirty_vars.id == 0);
-    if (!clear_constrants) return;
+    if (!clear_constraints) return;
     am_resetrow(&solver->objective);
     while (am_nextentry(&solver->constraints, &entry)) {
         am_Constraint *cons = ((am_ConsEntry*)entry)->constraint;
