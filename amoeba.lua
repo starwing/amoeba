@@ -32,8 +32,8 @@ Constraint.STRONG   = 1000000.0
 Constraint.MEDIUM   = 1000.0
 Constraint.WEAK     = 1.0
 
-function Variable:__neg(other) return Expression.new(self, -1.0) end
-function Expression:__neg() self:multiply(-1.0) end
+function Variable:__unm() return Expression.new(self, -1.0) end
+function Expression:__unm() return Expression.new(self):multiply(-1) end
 
 function Variable:__add(other) return Expression.new(self) + other end
 function Variable:__sub(other) return Expression.new(self) - other end
