@@ -382,8 +382,8 @@ static void test_binarytree(void) {
     }
     nPointsCount = nCurrentRowFirstPointIndex + nCurrentRowPointsCount;
 
-    for (i = 0; i < nPointsCount; i++)
-        printf("Point %d: (%f, %f)\n", i, am_value(arrX[i]), am_value(arrY[i]));
+    /*for (i = 0; i < nPointsCount; i++)*/
+        /*printf("Point %d: (%f, %f)\n", i, am_value(arrX[i]), am_value(arrY[i]));*/
 
     am_delsolver(pSolver);
     printf("allmem = %d\n", (int)allmem);
@@ -422,7 +422,7 @@ static void test_unbounded(void) {
     am_setrelation(c, AM_EQUAL);
     ret = am_add(c);
     printf("ret = %d\n", ret);
-    assert(ret == AM_UNBOUND);
+    assert(ret == AM_OK);
     am_dumpsolver(solver);
 
     am_resetsolver(solver, 1);
@@ -509,7 +509,7 @@ static void test_unbounded(void) {
     am_addconstant(c, 10.0);
     ret = am_add(c);
     printf("ret = %d\n", ret);
-    assert(ret == AM_UNBOUND);
+    assert(ret == AM_OK);
     am_dumpsolver(solver);
 
     am_delsolver(solver);
@@ -659,11 +659,73 @@ static void test_suggest(void) {
     maxmem = 0;
 }
 
+void test_cycling() {
+    am_Solver * solver = am_newsolver(NULL, NULL);
+
+    am_Variable * va = am_newvariable(solver);
+    am_Variable * vb = am_newvariable(solver);
+    am_Variable * vc = am_newvariable(solver);
+    am_Variable * vd = am_newvariable(solver);
+
+    am_addedit(va, AM_STRONG);
+    printf("after edit\n");
+    am_dumpsolver(solver);
+
+    /* vb == va */
+    {
+        am_Constraint * c = am_newconstraint(solver, AM_REQUIRED);
+        int ret = 0;
+        ret |= am_addterm(c, vb, 1.0);
+        ret |= am_setrelation(c, AM_EQUAL);
+        ret |= am_addterm(c, va, 1.0);
+        ret |= am_add(c);
+        assert(ret == AM_OK);
+        am_dumpsolver(solver);
+    }
+
+    /* vb == vc */
+    {
+        am_Constraint * c = am_newconstraint(solver, AM_REQUIRED);
+        int ret = 0;
+        ret |= am_addterm(c, vb, 1.0);
+        ret |= am_setrelation(c, AM_EQUAL);
+        ret |= am_addterm(c, vc, 1.0);
+        ret |= am_add(c);
+        assert(ret == AM_OK);
+        am_dumpsolver(solver);
+    }
+
+    /* vc == vd */
+    {
+        am_Constraint * c = am_newconstraint(solver, AM_REQUIRED);
+        int ret = 0;
+        ret |= am_addterm(c, vc, 1.0);
+        ret |= am_setrelation(c, AM_EQUAL);
+        ret |= am_addterm(c, vd, 1.0);
+        ret |= am_add(c);
+        assert(ret == AM_OK);
+        am_dumpsolver(solver);
+    }
+
+    /* vd == va */
+    {
+        am_Constraint * c = am_newconstraint(solver, AM_REQUIRED);
+        int ret = 0;
+        ret |= am_addterm(c, vd, 1.0);
+        ret |= am_setrelation(c, AM_EQUAL);
+        ret |= am_addterm(c, va, 1.0);
+        ret |= am_add(c);
+        assert(ret == AM_OK); /* asserts here */
+        am_dumpsolver(solver);
+    }
+}
+
 int main(void) {
     test_binarytree();
     test_unbounded();
     test_strength();
     test_suggest();
+    test_cycling();
     test_all();
     return 0;
 }

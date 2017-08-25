@@ -791,12 +791,17 @@ static int am_try_addrow(am_Solver *solver, am_Row *row, am_Constraint *cons) {
     if (subject.id == 0) {
         while (am_nextentry(&row->terms, (am_Entry**)&term))
             if (!am_isdummy(am_key(term))) break;
-        if (term == NULL && !am_nearzero(row->constant)) {
-            am_freerow(solver, row);
-            return AM_UNSATISFIED;
+        if (term == NULL) {
+            if (am_nearzero(row->constant))
+                subject = cons->marker;
+            else {
+                am_freerow(solver, row);
+                return AM_UNSATISFIED;
+            }
         }
-        return am_add_with_artificial(solver, row, cons);
     }
+    if (subject.id == 0)
+        return am_add_with_artificial(solver, row, cons);
     am_solvefor(solver, row, subject, am_null());
     am_substitute_rows(solver, subject, row);
     am_putrow(solver, subject, row);
