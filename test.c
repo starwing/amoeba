@@ -247,6 +247,7 @@ static void test_all(void) {
 
     printf("after initialize\n");
     am_dumpsolver(solver);
+    am_updatevars(solver);
     printf("xl: %f, xm: %f, xr: %f\n",
             am_value(xl),
             am_value(xm),
@@ -254,6 +255,7 @@ static void test_all(void) {
 
     am_addedit(xm, AM_MEDIUM);
     am_dumpsolver(solver);
+    am_updatevars(solver);
     printf("xl: %f, xm: %f, xr: %f\n",
             am_value(xl),
             am_value(xm),
@@ -264,6 +266,7 @@ static void test_all(void) {
     printf("suggest to 0.0\n");
     am_suggest(xm, 0.0);
     am_dumpsolver(solver);
+    am_updatevars(solver);
     printf("xl: %f, xm: %f, xr: %f\n",
             am_value(xl),
             am_value(xm),
@@ -271,6 +274,7 @@ static void test_all(void) {
 
     printf("suggest to 70.0\n");
     am_suggest(xm, 70.0);
+    am_updatevars(solver);
     am_dumpsolver(solver);
 
     printf("xl: %f, xm: %f, xr: %f\n",
@@ -279,6 +283,7 @@ static void test_all(void) {
             am_value(xr));
 
     am_deledit(xm);
+    am_updatevars(solver);
     am_dumpsolver(solver);
 
     printf("xl: %f, xm: %f, xr: %f\n",
@@ -296,7 +301,7 @@ static void test_all(void) {
 static void test_binarytree(void) {
     const int NUM_ROWS = 9;
     const int X_OFFSET = 0;
-    int i, nPointsCount, nResult, nRow;
+    int nPointsCount, nResult, nRow;
     int nCurrentRowPointsCount = 1;
     int nCurrentRowFirstPointIndex = 0;
     am_Constraint *pC;
@@ -382,8 +387,12 @@ static void test_binarytree(void) {
     }
     nPointsCount = nCurrentRowFirstPointIndex + nCurrentRowPointsCount;
 
-    /*for (i = 0; i < nPointsCount; i++)*/
-        /*printf("Point %d: (%f, %f)\n", i, am_value(arrX[i]), am_value(arrY[i]));*/
+    /*{
+        int i;
+        for (i = 0; i < nPointsCount; i++)
+            printf("Point %d: (%f, %f)\n", i,
+                    am_value(arrX[i]), am_value(arrY[i]));
+    }*/
 
     am_delsolver(pSolver);
     printf("allmem = %d\n", (int)allmem);
@@ -530,6 +539,7 @@ static void test_strength(void) {
     else if (ret != 0) { printf("out of memory!\n"); return; }
 
     solver = am_newsolver(debug_allocf, NULL);
+    am_autoupdate(solver, 1);
     x = am_newvariable(solver);
     y = am_newvariable(solver);
 

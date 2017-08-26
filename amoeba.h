@@ -73,6 +73,9 @@ AM_API am_Solver *am_newsolver   (am_Allocf *allocf, void *ud);
 AM_API void       am_resetsolver (am_Solver *solver, int clear_constraints);
 AM_API void       am_delsolver   (am_Solver *solver);
 
+AM_API void am_updatevars(am_Solver *solver);
+AM_API void am_autoupdate(am_Solver *solver, int auto_update);
+
 AM_API int am_hasedit       (am_Variable *var);
 AM_API int am_hasconstraint (am_Constraint *cons);
 
@@ -210,16 +213,17 @@ struct am_Constraint {
 struct am_Solver {
     am_Allocf *allocf;
     void      *ud;
-    unsigned   symbol_count;
-    unsigned   constraint_count;
-    am_Symbol  infeasible_rows;
-    am_Symbol  dirty_vars;
     am_Row     objective;
     am_Table   vars;            /* symbol -> VarEntry */
     am_Table   constraints;     /* symbol -> ConsEntry */
     am_Table   rows;            /* symbol -> Row */
     am_MemPool varpool;
     am_MemPool conspool;
+    unsigned   symbol_count;
+    unsigned   constraint_count;
+    unsigned   auto_update;
+    am_Symbol  infeasible_rows;
+    am_Symbol  dirty_vars;
 };
 
 
@@ -604,6 +608,9 @@ AM_API int am_hasedit(am_Variable *var)
 AM_API int am_hasconstraint(am_Constraint *cons)
 { return cons != NULL && cons->marker.id != 0; }
 
+AM_API void am_autoupdate(am_Solver *solver, int auto_update)
+{ solver->auto_update = auto_update; }
+
 static void am_infeasible(am_Solver *solver, am_Row *row) {
     if (am_isdummy(row->infeasible_next)) return;
     row->infeasible_next.id = solver->infeasible_rows.id;
@@ -616,16 +623,6 @@ static void am_markdirty(am_Solver *solver, am_Variable *var) {
     var->dirty_next.id = solver->dirty_vars.id;
     var->dirty_next.type = AM_DUMMY;
     solver->dirty_vars = var->sym;
-}
-
-static void am_updatevars(am_Solver *solver) {
-    while (solver->dirty_vars.id != 0) {
-        am_Variable *var = am_sym2var(solver, solver->dirty_vars);
-        am_Row *row = (am_Row*)am_gettable(&solver->rows, var->sym);
-        solver->dirty_vars = var->dirty_next;
-        var->dirty_next = am_null();
-        var->value = row ? row->constant : 0.0f;
-    }
 }
 
 static void am_substitute_rows(am_Solver *solver, am_Symbol var, am_Row *expr) {
@@ -914,6 +911,7 @@ AM_API void am_delsolver(am_Solver *solver) {
 
 AM_API void am_resetsolver(am_Solver *solver, int clear_constraints) {
     am_Entry *entry = NULL;
+    if (!solver->auto_update) am_updatevars(solver);
     while (am_nextentry(&solver->vars, &entry)) {
         am_Constraint **cons = &((am_VarEntry*)entry)->variable->constraint;
         am_remove(*cons);
@@ -935,6 +933,16 @@ AM_API void am_resetsolver(am_Solver *solver, int clear_constraints) {
     }
 }
 
+AM_API void am_updatevars(am_Solver *solver) {
+    while (solver->dirty_vars.id != 0) {
+        am_Variable *var = am_sym2var(solver, solver->dirty_vars);
+        am_Row *row = (am_Row*)am_gettable(&solver->rows, var->sym);
+        solver->dirty_vars = var->dirty_next;
+        var->dirty_next = am_null();
+        var->value = row ? row->constant : 0.0f;
+    }
+}
+
 AM_API int am_add(am_Constraint *cons) {
     am_Solver *solver = cons ? cons->solver : NULL;
     int ret, oldsym = solver ? solver->symbol_count : 0;
@@ -947,7 +955,7 @@ AM_API int am_add(am_Constraint *cons) {
     }
     else {
         am_optimize(solver, &solver->objective);
-        am_updatevars(solver);
+        if (solver->auto_update) am_updatevars(solver);
     }
     return ret;
 }
@@ -968,7 +976,7 @@ AM_API void am_remove(am_Constraint *cons) {
     }
     am_freerow(solver, &tmp);
     am_optimize(solver, &solver->objective);
-    am_updatevars(solver);
+    if (solver->auto_update) am_updatevars(solver);
 }
 
 AM_API int am_setstrength(am_Constraint *cons, am_Float strength) {
@@ -983,7 +991,7 @@ AM_API int am_setstrength(am_Constraint *cons, am_Float strength) {
         am_mergerow(solver, &solver->objective, cons->marker, diff);
         am_mergerow(solver, &solver->objective, cons->other,  diff);
         am_optimize(solver, &solver->objective);
-        am_updatevars(solver);
+        if (solver->auto_update) am_updatevars(solver);
     }
     cons->strength = strength;
     return AM_OK;
@@ -1024,7 +1032,7 @@ AM_API void am_suggest(am_Variable *var, am_Float value) {
     var->edit_value = value;
     am_delta_edit_constant(solver, delta, var->constraint);
     am_dual_optimize(solver);
-    am_updatevars(solver);
+    if (solver->auto_update) am_updatevars(solver);
 }
 
 AM_NS_END
