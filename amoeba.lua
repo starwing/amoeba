@@ -1,6 +1,6 @@
 
 local function meta(name, parent)
-   t = {}
+   local t = {}
    t.__name  = name
    t.__index = t
    return setmetatable(t, parent)
