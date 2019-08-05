@@ -54,8 +54,8 @@
 
 #include <stddef.h>
 
-
 AM_NS_BEGIN
+
 
 #ifdef AM_USE_FLOAT
 typedef float  am_Float;
@@ -73,8 +73,8 @@ AM_API am_Solver *am_newsolver   (am_Allocf *allocf, void *ud);
 AM_API void       am_resetsolver (am_Solver *solver, int clear_constraints);
 AM_API void       am_delsolver   (am_Solver *solver);
 
-AM_API void am_updatevars(am_Solver *solver);
-AM_API void am_autoupdate(am_Solver *solver, int auto_update);
+AM_API void am_updatevars (am_Solver *solver);
+AM_API void am_autoupdate (am_Solver *solver, int auto_update);
 
 AM_API int am_hasedit       (am_Variable *var);
 AM_API int am_hasconstraint (am_Constraint *cons);
@@ -103,10 +103,10 @@ AM_API int am_setrelation (am_Constraint *cons, int relation);
 AM_API int am_addconstant (am_Constraint *cons, am_Float constant);
 AM_API int am_setstrength (am_Constraint *cons, am_Float strength);
 
-AM_API int am_mergeconstraint (am_Constraint *cons, am_Constraint *other, am_Float multiplier);
+AM_API int am_mergeconstraint (am_Constraint *cons, const am_Constraint *other, am_Float multiplier);
+
 
 AM_NS_END
-
 
 #endif /* amoeba_h */
 
@@ -144,6 +144,7 @@ AM_NS_END
 #endif
 
 AM_NS_BEGIN
+
 
 typedef struct am_Symbol {
     unsigned id   : 30;
@@ -298,8 +299,8 @@ static am_Symbol am_newsymbol(am_Solver *solver, int type) {
 
 #define am_key(entry) (((am_Entry*)(entry))->key)
 
-#define am_offset(lhs, rhs) ((int)((char*)(lhs) - (char*)(rhs)))
-#define am_index(h, i)      ((am_Entry*)((char*)(h) + (i)))
+#define am_offset(lhs,rhs) ((int)((char*)(lhs) - (char*)(rhs)))
+#define am_index(h,i)      ((am_Entry*)((char*)(h) + (i)))
 
 static am_Entry *am_newkey(am_Solver *solver, am_Table *t, am_Symbol key);
 
@@ -546,7 +547,7 @@ AM_API am_Constraint *am_cloneconstraint(am_Constraint *other, am_Float strength
     return cons;
 }
 
-AM_API int am_mergeconstraint(am_Constraint *cons, am_Constraint *other, am_Float multiplier) {
+AM_API int am_mergeconstraint(am_Constraint *cons, const am_Constraint *other, am_Float multiplier) {
     am_Term *term = NULL;
     if (cons == NULL || other == NULL || cons->marker.id != 0
             || cons->solver != other->solver) return AM_FAILED;
@@ -924,8 +925,8 @@ AM_API void am_resetsolver(am_Solver *solver, int clear_constraints) {
     am_resetrow(&solver->objective);
     while (am_nextentry(&solver->constraints, &entry)) {
         am_Constraint *cons = ((am_ConsEntry*)entry)->constraint;
-        if (cons->marker.id == 0) continue;
-        cons->marker = cons->other = am_null();
+        if (cons->marker.id != 0)
+            cons->marker = cons->other = am_null();
     }
     while (am_nextentry(&solver->rows, &entry)) {
         am_delkey(&solver->rows, entry);
@@ -1035,8 +1036,8 @@ AM_API void am_suggest(am_Variable *var, am_Float value) {
     if (solver->auto_update) am_updatevars(solver);
 }
 
-AM_NS_END
 
+AM_NS_END
 
 #endif /* AM_IMPLEMENTATION */
 

@@ -185,7 +185,7 @@ static am_Float aml_checkstrength(lua_State *L, int idx, am_Float def) {
 }
 
 static int aml_checkrelation(lua_State *L, int idx) {
-    const char *op = luaL_checkstring(L, 2);
+    const char *op = luaL_checkstring(L, idx);
     if (strcmp(op, "==") == 0)      return AM_EQUAL;
     else if (strcmp(op, "<=") == 0) return AM_LESSEQUAL;
     else if (strcmp(op, ">=") == 0) return AM_GREATEQUAL;
@@ -543,6 +543,7 @@ static int Lnew(lua_State *L) {
     lua_createtable(L, 0, 4); aml_setweak(L, "v");
     S->ref_cons = luaL_ref(L, LUA_REGISTRYINDEX);
     luaL_setmetatable(L, AML_SOLVER_TYPE);
+    am_autoupdate(S->solver, lua_toboolean(L, 1));
     return 1;
 }
 
@@ -623,6 +624,12 @@ static int Lreset(lua_State *L) {
     lua_settop(L, 1); return 1;
 }
 
+static int Lautoupdate(lua_State *L) {
+    aml_Solver *S = (aml_Solver*)luaL_checkudata(L, 1, AML_SOLVER_TYPE);
+    am_autoupdate(S->solver, lua_toboolean(L, 2));
+    return 0;
+}
+
 static int Laddconstraint(lua_State *L) {
     aml_Solver *S = (aml_Solver*)luaL_checkudata(L, 1, AML_SOLVER_TYPE);
     aml_Cons *lcons = (aml_Cons*)luaL_testudata(L, 2, AML_CONS_TYPE);
@@ -675,6 +682,7 @@ LUALIB_API int luaopen_amoeba(lua_State *L) {
 #define ENTRY(name) { #name, L##name }
         ENTRY(new),
         ENTRY(delete),
+        ENTRY(autoupdate),
         ENTRY(reset),
         ENTRY(addconstraint),
         ENTRY(delconstraint),
