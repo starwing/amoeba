@@ -15,12 +15,6 @@ local function near_zero(n)
    return approx(n, 0.0)
 end
 
-local function default(t, k, nv)
-   local v = t[k]
-   if not v then v = nv or {}; t[k] = v end
-   return v
-end
-
 local Variable, Expression, Constraint do
 
 Variable   = meta "Variable"
@@ -112,11 +106,11 @@ function Expression:add(other, multiplier, constant)
    end
    local mt = getmetatable(other)
    if mt == Variable then
-      local multiplier = (self[other] or 0.0) + multiplier
+      multiplier = (self[other] or 0.0) + multiplier
       self[other] = not near_zero(multiplier) and multiplier or nil
    elseif mt == Expression then
       for k, v in pairs(other) do
-         local multiplier = (self[k] or 0.0) + multiplier * v
+         multiplier = (self[k] or 0.0) + multiplier * v
          self[k] = not near_zero(multiplier) and multiplier or nil
       end
       self.constant = self.constant or 0.0
@@ -151,7 +145,7 @@ function Expression:multiply(other)
 end
 
 function Expression:choose_pivotable()
-   for k, v in pairs(self) do
+   for k in pairs(self) do
       if k.is_pivotable then
          return k
       end
@@ -159,10 +153,8 @@ function Expression:choose_pivotable()
 end
 
 function Expression:is_constant()
-   for k, v in self:iter_vars() do
-      return false
-   end
-   return true
+   local f, state = self:iter_vars()
+   return f(state) == nil
 end
 
 function Expression:solve_for(new, old)
@@ -186,10 +178,10 @@ function Expression:substitute_out(var, expr)
 end
 
 function Expression:iter_vars()
-   return function(self, k)
-      local k, v = next(self, k)
+   return function(self1, k1)
+      local k, v = next(self1, k1)
       if k == 'constant' then
-         return next(self, k)
+         return next(self1, k1)
       end
       return k, v
    end, self
@@ -301,7 +293,7 @@ local function optimize(self, objective)
       end
       if not entry then return end
 
-      local r = 0.0
+      local r
       local min_ratio = math.huge
       for var, row in pairs(self.rows) do
          local multiplier = row[entry]
@@ -378,13 +370,13 @@ local function make_expression(self, cons)
    return expr, var1, var2
 end
 
-local function choose_subject(self, expr, var1, var2)
-   for k, v in expr:iter_vars() do
+local function choose_subject(_, expr, var1, var2)
+   for k in expr:iter_vars() do
       if k.is_external then return k end
    end
    if var1 and var1.is_pivotable then return var1 end
    if var2 and var2.is_pivotable then return var2 end
-   for k, v in expr:iter_vars() do
+   for k in expr:iter_vars() do
       if not k.is_dummy then return nil end -- no luck
    end
    if not near_zero(expr.constant) then
@@ -413,8 +405,8 @@ local function add_with_artificial_variable(self, expr)
       row:solve_for(entering, a)
       self.rows[entering] = row
    end
-   
-   for var, row in pairs(self.rows) do row[a] = nil end
+
+   for _, r in pairs(self.rows) do r[a] = nil end
    self.objective[a] = nil
    return success
 end
@@ -448,7 +440,7 @@ local function delta_edit_constant(self, delta, var1, var2)
       end
       return
    end
-   local row = self.rows[var2]
+   row = self.rows[var2]
    if row then
       row.constant = row.constant + delta
       if row.constant < 0.0 then
@@ -456,9 +448,9 @@ local function delta_edit_constant(self, delta, var1, var2)
       end
       return
    end
-   for var, row in pairs(self.rows) do
-      row.constant = row.constant + (row[var1] or 0.0)*delta
-      if var.is_restricted and row.constant < 0.0 then
+   for var, r in pairs(self.rows) do
+      r.constant = r.constant + (r[var1] or 0.0)*delta
+      if var.is_restricted and r.constant < 0.0 then
          self.infeasible_rows[#self.infeasible_rows+1] = var
       end
    end
@@ -499,8 +491,8 @@ end
 function SimplexSolver:hasvariable(var) return self.vars[var] end
 function SimplexSolver:hasconstraint(cons) return self.constraints[cons] end
 function SimplexSolver:hasedit(var) return self.edits[var] end
-function SimplexSolver:var(...) return Variable.new(...) end
-function SimplexSolver:constraint(...) return Constraint.new(...) end
+function SimplexSolver.var(_, ...) return Variable.new(...) end
+function SimplexSolver.constraint(_, ...) return Constraint.new(...) end
 
 function SimplexSolver.new()
    local self = {}
@@ -523,7 +515,7 @@ function SimplexSolver:__tostring()
    if next(self.rows) then
       t[#t+1] =  "  rows:\n"
       local keys = {}
-      for k, v in pairs(self.rows) do
+      for k in pairs(self.rows) do
          keys[#keys+1] = k
       end
       table.sort(keys, function(a, b) return a.id < b.id end)
@@ -606,7 +598,7 @@ function SimplexSolver:delconstraint(cons)
    else
       local var = assert(get_marker_leaving_row(self, info.marker),
                          "failed to find leaving row")
-      local row = self.rows[var]
+      row = self.rows[var]
       self.rows[var] = nil
       row:solve_for(info.marker, var)
       substitute_out(self, info.marker, row)
@@ -627,7 +619,7 @@ function SimplexSolver:addedit(var, strength)
    self.edits[var] = {
       constraint = cons,
       plus = info.marker,
-      minus = info.other, 
+      minus = info.other,
       prev_constant = var.value or 0.0,
    }
    return self
