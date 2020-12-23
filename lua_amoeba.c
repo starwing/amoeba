@@ -20,9 +20,9 @@ typedef struct aml_Solver {
 } aml_Solver;
 
 typedef struct aml_Var {
-    am_Variable *var;
-    aml_Solver  *S;
-    const char  *name;
+    am_Var     *var;
+    aml_Solver *S;
+    const char *name;
 } aml_Var;
 
 typedef struct aml_Cons {
@@ -32,9 +32,9 @@ typedef struct aml_Cons {
 
 typedef struct aml_Item {
     int            type;
-    am_Variable   *var;
+    am_Var        *var;
     am_Constraint *cons;
-    am_Float       value;
+    am_Num         value;
 } aml_Item;
 
 
@@ -60,7 +60,7 @@ static void aml_setweak(lua_State *L, const char *mode) {
     lua_setmetatable(L, -2);
 }
 
-static am_Variable *aml_checkvar(lua_State *L, aml_Solver *S, int idx) {
+static am_Var *aml_checkvar(lua_State *L, aml_Solver *S, int idx) {
     aml_Var *lvar = (aml_Var*)luaL_testudata(L, idx, AML_VAR_TYPE);
     const char *name;
     if (lvar != NULL) {
@@ -79,7 +79,7 @@ static am_Variable *aml_checkvar(lua_State *L, aml_Solver *S, int idx) {
     return NULL;
 }
 
-static aml_Cons *aml_newcons(lua_State *L, aml_Solver *S, am_Float strength) {
+static aml_Cons *aml_newcons(lua_State *L, aml_Solver *S, am_Num strength) {
     aml_Cons *lcons = (aml_Cons*)lua_newuserdata(L, sizeof(aml_Cons));
     lcons->cons = am_newconstraint(S->solver, strength);
     lcons->S    = S;
@@ -155,7 +155,7 @@ static aml_Solver *aml_checkitems(lua_State *L, int start, aml_Item *items) {
     return NULL;
 }
 
-static int aml_performitem(am_Constraint *cons, aml_Item *item, am_Float multiplier) {
+static int aml_performitem(am_Constraint *cons, aml_Item *item, am_Num multiplier) {
     switch (item->type) {
     case AML_CONSTANT: return am_addconstant(cons, item->value*multiplier); break;
     case AML_VAR:      return am_addterm(cons, item->var, multiplier); break;
@@ -164,7 +164,7 @@ static int aml_performitem(am_Constraint *cons, aml_Item *item, am_Float multipl
     return AM_FAILED;
 }
 
-static am_Float aml_checkstrength(lua_State *L, int idx, am_Float def) {
+static am_Num aml_checkstrength(lua_State *L, int idx, am_Num def) {
     int type = lua_type(L, idx);
     const char *s;
     switch (type) {
@@ -198,7 +198,7 @@ static int aml_checkrelation(lua_State *L, int idx) {
 static aml_Cons *aml_makecons(lua_State *L, aml_Solver *S, int start) {
     aml_Cons *lcons;
     int op = aml_checkrelation(L, start);
-    am_Float strength = aml_checkstrength(L, start+3, AM_REQUIRED);
+    am_Num strength = aml_checkstrength(L, start+3, AM_REQUIRED);
     aml_Item items[2];
     aml_checkitems(L, start+1, items);
     lcons = aml_newcons(L, S, strength);
@@ -234,7 +234,7 @@ static void aml_dumprow(luaL_Buffer *B, int idx, am_Row *row) {
     lua_pushfstring(L, "%f", row->constant);
     luaL_addvalue(B);
     while ((am_nextentry(&row->terms, (am_Entry**)&term))) {
-        am_Float multiplier = term->multiplier;
+        am_Num multiplier = term->multiplier;
         lua_pushfstring(L, " %c ", multiplier > 0.0f ? '+' : '-');
         luaL_addvalue(B);
         if (multiplier < 0.0f) multiplier = -multiplier;
@@ -465,7 +465,7 @@ static int Lcons_relation(lua_State *L) {
 
 static int Lcons_strength(lua_State *L) {
     aml_Cons *lcons = (aml_Cons*)luaL_checkudata(L, 1, AML_CONS_TYPE);
-    am_Float strength = aml_checkstrength(L, 2, AM_REQUIRED);
+    am_Num strength = aml_checkstrength(L, 2, AM_REQUIRED);
     if (lcons->cons == NULL) luaL_argerror(L, 1, "invalid constraint");
     if (am_setstrength(lcons->cons, strength) != AM_OK)
         luaL_error(L, "constraint has been added to solver!");
@@ -653,30 +653,30 @@ static int Ldelconstraint(lua_State *L) {
 
 static int Laddedit(lua_State *L) {
     aml_Solver *S = (aml_Solver*)luaL_checkudata(L, 1, AML_SOLVER_TYPE);
-    am_Variable *var = aml_checkvar(L, S, 2);
-    am_Float strength = aml_checkstrength(L, 3, AM_MEDIUM);
+    am_Var *var = aml_checkvar(L, S, 2);
+    am_Num strength = aml_checkstrength(L, 3, AM_MEDIUM);
     am_addedit(var, strength);
     lua_settop(L, 1); return 1;
 }
 
 static int Ldeledit(lua_State *L) {
     aml_Solver *S = (aml_Solver*)luaL_checkudata(L, 1, AML_SOLVER_TYPE);
-    am_Variable *var = aml_checkvar(L, S, 2);
+    am_Var *var = aml_checkvar(L, S, 2);
     am_deledit(var);
     lua_settop(L, 1); return 1;
 }
 
 static int Lsuggest(lua_State *L) {
     aml_Solver *S = (aml_Solver*)luaL_checkudata(L, 1, AML_SOLVER_TYPE);
-    am_Variable *var = aml_checkvar(L, S, 2);
-    am_Float value = (am_Float)luaL_checknumber(L, 3);
+    am_Var *var = aml_checkvar(L, S, 2);
+    am_Num value = (am_Num)luaL_checknumber(L, 3);
     am_suggest(var, value);
     lua_settop(L, 1); return 1;
 }
 
 LUALIB_API int luaopen_amoeba(lua_State *L) {
     luaL_Reg libs[] = {
-        { "var", Lvar_new },
+        { "var",        Lvar_new  },
         { "constraint", Lcons_new },
         { "__tostring", Ltostring },
 #define ENTRY(name) { #name, L##name }
@@ -703,5 +703,5 @@ LUALIB_API int luaopen_amoeba(lua_State *L) {
 }
 
 /* maccc: flags+='-undefined dynamic_lookup -bundle -O2' output='amoeba.so'
- * win32cc: flags+='-DLUA_BUILD_AS_DLL -shared -O3' libs+='-llua53' output='amoeba.dll' */
+ * win32cc: flags+='-DLUA_BUILD_AS_DLL -shared -O3' libs+='-llua54' output='amoeba.dll' */
 
