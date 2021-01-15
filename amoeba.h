@@ -182,14 +182,14 @@ typedef struct am_ConsEntry {
 
 typedef struct am_Term {
     am_Entry entry;
-    am_Num multiplier;
+    am_Num   multiplier;
 } am_Term;
 
 typedef struct am_Row {
     am_Entry  entry;
     am_Symbol infeasible_next;
     am_Table  terms;
-    am_Num  constant;
+    am_Num    constant;
 } am_Row;
 
 struct am_Var {
@@ -198,8 +198,8 @@ struct am_Var {
     unsigned       refcount;
     am_Solver     *solver;
     am_Constraint *constraint;
-    am_Num       edit_value;
-    am_Num       value;
+    am_Num         edit_value;
+    am_Num         value;
 };
 
 struct am_Constraint {
@@ -208,7 +208,7 @@ struct am_Constraint {
     am_Symbol  other;
     int        relation;
     am_Solver *solver;
-    am_Num   strength;
+    am_Num     strength;
 };
 
 struct am_Solver {
