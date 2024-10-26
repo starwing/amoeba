@@ -413,6 +413,20 @@ static int am_nextentry(const am_Table *t, am_Entry **pentry) {
     return *pentry = NULL, 0;
 }
 
+static int am_nextterm(const am_Table *t, am_Term **pterm) {
+    am_Entry *ent = (am_Entry*)*pterm;
+    int r = am_nextentry(t, &ent);
+    *pterm = (am_Term*)ent;
+    return r;
+}
+
+static int am_nextrow(const am_Table *t, am_Row **prow) {
+    am_Entry *ent = (am_Entry*)*prow;
+    int r = am_nextentry(t, &ent);
+    *prow = (am_Row*)ent;
+    return r;
+}
+
 
 /* expression (row) */
 
@@ -435,7 +449,7 @@ static void am_initrow(am_Row *row) {
 static void am_multiply(am_Row *row, am_Num multiplier) {
     am_Term *term = NULL;
     row->constant *= multiplier;
-    while (am_nextentry(&row->terms, (am_Entry**)&term))
+    while (am_nextterm(&row->terms, &term))
         term->multiplier *= multiplier;
 }
 
@@ -450,7 +464,7 @@ static void am_addvar(am_Solver *solver, am_Row *row, am_Symbol sym, am_Num valu
 static void am_addrow(am_Solver *solver, am_Row *row, const am_Row *other, am_Num multiplier) {
     am_Term *term = NULL;
     row->constant += other->constant*multiplier;
-    while (am_nextentry(&other->terms, (am_Entry**)&term))
+    while (am_nextterm(&other->terms, &term))
         am_addvar(solver, row, am_key(term), term->multiplier*multiplier);
 }
 
@@ -529,7 +543,7 @@ AM_API void am_delconstraint(am_Constraint *cons) {
     ce = (am_ConsEntry*)am_gettable(&solver->constraints, am_key(cons));
     assert(ce != NULL);
     am_delkey(&solver->constraints, &ce->entry);
-    while (am_nextentry(&cons->expression.terms, (am_Entry**)&term))
+    while (am_nextterm(&cons->expression.terms, &term))
         am_delvariable(am_sym2var(solver, am_key(term)));
     am_freerow(solver, &cons->expression);
     am_free(&solver->conspool, cons);
@@ -551,7 +565,7 @@ AM_API int am_mergeconstraint(am_Constraint *cons, const am_Constraint *other, a
             || cons->solver != other->solver) return AM_FAILED;
     if (cons->relation == AM_GREATEQUAL) multiplier = -multiplier;
     cons->expression.constant += other->expression.constant*multiplier;
-    while (am_nextentry(&other->expression.terms, (am_Entry**)&term)) {
+    while (am_nextterm(&other->expression.terms, &term)) {
         am_usevariable(am_sym2var(cons->solver, am_key(term)));
         am_addvar(cons->solver, &cons->expression, am_key(term),
                 term->multiplier*multiplier);
@@ -564,7 +578,7 @@ AM_API void am_resetconstraint(am_Constraint *cons) {
     if (cons == NULL) return;
     am_remove(cons);
     cons->relation = 0;
-    while (am_nextentry(&cons->expression.terms, (am_Entry**)&term))
+    while (am_nextterm(&cons->expression.terms, &term))
         am_delvariable(am_sym2var(cons->solver, am_key(term)));
     am_resetrow(&cons->expression);
 }
@@ -625,7 +639,7 @@ static void am_markdirty(am_Solver *solver, am_Var *var) {
 
 static void am_substitute_rows(am_Solver *solver, am_Symbol var, am_Row *expr) {
     am_Row *row = NULL;
-    while (am_nextentry(&solver->rows, (am_Entry**)&row)) {
+    while (am_nextrow(&solver->rows, &row)) {
         am_substitute(solver, row, var, expr);
         if (am_isexternal(am_key(row)))
             am_markdirty(solver, am_sym2var(solver, am_key(row)));
@@ -668,13 +682,13 @@ static int am_optimize(am_Solver *solver, am_Row *objective) {
         am_Term *term = NULL;
 
         assert(solver->infeasible_rows.id == 0);
-        while (am_nextentry(&objective->terms, (am_Entry**)&term)) {
+        while (am_nextterm(&objective->terms, &term)) {
             if (!am_isdummy(am_key(term)) && term->multiplier < 0.0f)
             { enter = am_key(term); break; }
         }
         if (enter.id == 0) return AM_OK;
 
-        while (am_nextentry(&solver->rows, (am_Entry**)&row)) {
+        while (am_nextrow(&solver->rows, &row)) {
             term = (am_Term*)am_gettable(&row->terms, enter);
             if (term == NULL || !am_ispivotable(am_key(row))
                     || term->multiplier > 0.0f) continue;
@@ -700,7 +714,7 @@ static am_Row am_makerow(am_Solver *solver, am_Constraint *cons) {
     am_Row row;
     am_initrow(&row);
     row.constant = cons->expression.constant;
-    while (am_nextentry(&cons->expression.terms, (am_Entry**)&term)) {
+    while (am_nextterm(&cons->expression.terms, &term)) {
         am_markdirty(solver, am_sym2var(solver, am_key(term)));
         am_mergerow(solver, &row, am_key(term), term->multiplier);
     }
@@ -753,14 +767,14 @@ static int am_add_with_artificial(am_Solver *solver, am_Row *row, am_Constraint 
     if (am_takerow(solver, a, &tmp) == AM_OK) {
         am_Symbol entry = am_null();
         if (am_isconstant(&tmp)) { am_freerow(solver, &tmp); return ret; }
-        while (am_nextentry(&tmp.terms, (am_Entry**)&term))
+        while (am_nextterm(&tmp.terms, &term))
             if (am_ispivotable(am_key(term))) { entry = am_key(term); break; }
         if (entry.id == 0) { am_freerow(solver, &tmp); return AM_UNBOUND; }
         am_solvefor(solver, &tmp, entry, a);
         am_substitute_rows(solver, entry, &tmp);
         am_putrow(solver, entry, &tmp);
     }
-    while (am_nextentry(&solver->rows, (am_Entry**)&row)) {
+    while (am_nextrow(&solver->rows, &row)) {
         term = (am_Term*)am_gettable(&row->terms, a);
         if (term) am_delkey(&row->terms, &term->entry);
     }
@@ -773,7 +787,7 @@ static int am_add_with_artificial(am_Solver *solver, am_Row *row, am_Constraint 
 static int am_try_addrow(am_Solver *solver, am_Row *row, am_Constraint *cons) {
     am_Symbol subject = am_null();
     am_Term *term = NULL;
-    while (am_nextentry(&row->terms, (am_Entry**)&term))
+    while (am_nextterm(&row->terms, &term))
         if (am_isexternal(am_key(term))) { subject = am_key(term); break; }
     if (subject.id == 0 && am_ispivotable(cons->marker)) {
         am_Term *mterm = (am_Term*)am_gettable(&row->terms, cons->marker);
@@ -784,7 +798,7 @@ static int am_try_addrow(am_Solver *solver, am_Row *row, am_Constraint *cons) {
         if (mterm->multiplier < 0.0f) subject = cons->other;
     }
     if (subject.id == 0) {
-        while (am_nextentry(&row->terms, (am_Entry**)&term))
+        while (am_nextterm(&row->terms, &term))
             if (!am_isdummy(am_key(term))) break;
         if (term == NULL) {
             if (am_nearzero(row->constant))
@@ -807,7 +821,7 @@ static am_Symbol am_get_leaving_row(am_Solver *solver, am_Symbol marker) {
     am_Symbol first = am_null(), second = am_null(), third = am_null();
     am_Num r1 = AM_NUM_MAX, r2 = AM_NUM_MAX;
     am_Row *row = NULL;
-    while (am_nextentry(&solver->rows, (am_Entry**)&row)) {
+    while (am_nextrow(&solver->rows, &row)) {
         am_Term *term = (am_Term*)am_gettable(&row->terms, marker);
         if (term == NULL) continue;
         if (am_isexternal(am_key(row)))
@@ -829,7 +843,7 @@ static void am_delta_edit_constant(am_Solver *solver, am_Num delta, am_Constrain
     { row->constant -= delta; am_infeasible(solver, row); return; }
     if ((row = (am_Row*)am_gettable(&solver->rows, cons->other)) != NULL)
     { row->constant += delta; am_infeasible(solver, row); return; }
-    while (am_nextentry(&solver->rows, (am_Entry**)&row)) {
+    while (am_nextrow(&solver->rows, &row)) {
         am_Term *term = (am_Term*)am_gettable(&row->terms, cons->marker);
         if (term == NULL) continue;
         row->constant += term->multiplier*delta;
@@ -852,7 +866,7 @@ static void am_dual_optimize(am_Solver *solver) {
         solver->infeasible_rows = row->infeasible_next;
         row->infeasible_next = am_null();
         if (am_nearzero(row->constant) || row->constant >= 0.0f) continue;
-        while (am_nextentry(&row->terms, (am_Entry**)&term)) {
+        while (am_nextterm(&row->terms, &term)) {
             if (am_isdummy(cur = am_key(term)) || term->multiplier <= 0.0f)
                 continue;
             objterm = (am_Term*)am_gettable(&solver->objective.terms, cur);
@@ -894,12 +908,11 @@ AM_API am_Solver *am_newsolver(am_Allocf *allocf, void *ud) {
 }
 
 AM_API void am_delsolver(am_Solver *solver) {
-    am_ConsEntry *ce = NULL;
-    am_Row *row = NULL;
-    while (am_nextentry(&solver->constraints, (am_Entry**)&ce))
-        am_freerow(solver, &ce->constraint->expression);
-    while (am_nextentry(&solver->rows, (am_Entry**)&row))
-        am_freerow(solver, row);
+    am_Entry *ent = NULL;
+    while (am_nextentry(&solver->constraints, &ent))
+        am_freerow(solver, &((am_ConsEntry*)ent)->constraint->expression);
+    while (am_nextentry(&solver->rows, &ent))
+        am_freerow(solver, (am_Row*)ent);
     am_freerow(solver, &solver->objective);
     am_freetable(solver, &solver->vars);
     am_freetable(solver, &solver->constraints);
