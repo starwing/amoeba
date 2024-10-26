@@ -119,6 +119,7 @@ AM_NS_END
 #include <float.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 #define AM_EXTERNAL     (0)
 #define AM_SLACK        (1)
@@ -135,6 +136,8 @@ AM_NS_END
 #define AM_MIN_HASHSIZE 4
 #define AM_MAX_SIZET    ((~(size_t)0)-100)
 
+#define AM_UNSIGNED_BITS (sizeof(unsigned)*CHAR_BIT)
+
 #ifdef AM_USE_FLOAT
 # define AM_NUM_MAX FLT_MAX
 # define AM_NUM_EPS 1e-4f
@@ -147,7 +150,7 @@ AM_NS_BEGIN
 
 
 typedef struct am_Symbol {
-    unsigned id   : 30;
+    unsigned id   : AM_UNSIGNED_BITS - 2;
     unsigned type : 2;
 } am_Symbol;
 
@@ -195,7 +198,8 @@ typedef struct am_Row {
 struct am_Var {
     am_Symbol      sym;
     am_Symbol      dirty_next;
-    unsigned       refcount;
+    unsigned       dirty;
+    unsigned       refcount : AM_UNSIGNED_BITS - 1;
     am_Solver     *solver;
     am_Constraint *constraint;
     am_Num         edit_value;
@@ -513,7 +517,9 @@ AM_API am_Var *am_newvariable(am_Solver *solver) {
 AM_API void am_delvariable(am_Var *var) {
     if (var && --var->refcount <= 0) {
         am_Solver *solver = var->solver;
-        am_VarEntry *e = (am_VarEntry*)am_gettable(&solver->vars, var->sym);
+        am_VarEntry *e;
+        if (var->dirty) am_updatevars(solver);
+        e = (am_VarEntry*)am_gettable(&solver->vars, var->sym);
         assert(e != NULL);
         am_delkey(&solver->vars, &e->entry);
         am_remove(var->constraint);
@@ -634,6 +640,7 @@ static void am_markdirty(am_Solver *solver, am_Var *var) {
     if (var->dirty_next.type == AM_DUMMY) return;
     var->dirty_next.id = solver->dirty_vars.id;
     var->dirty_next.type = AM_DUMMY;
+    var->dirty = 1;
     solver->dirty_vars = var->sym;
 }
 
@@ -952,6 +959,7 @@ AM_API void am_updatevars(am_Solver *solver) {
         am_Row *row = (am_Row*)am_gettable(&solver->rows, var->sym);
         solver->dirty_vars = var->dirty_next;
         var->dirty_next = am_null();
+        var->dirty = 0;
         var->value = row ? row->constant : 0.0f;
     }
 }
