@@ -517,6 +517,7 @@ AM_API void am_delvariable(am_Var *var) {
     if (var && --var->refcount <= 0) {
         am_Solver *solver = var->solver;
         am_VarEntry *e;
+        if (solver->dirty_vars.id != 0) am_updatevars(solver);
         e = (am_VarEntry*)am_gettable(&solver->vars, var->sym);
         assert(e != NULL);
         am_delkey(&solver->vars, &e->entry);
@@ -638,7 +639,6 @@ static void am_markdirty(am_Solver *solver, am_Var *var) {
     if (var->dirty_next.type == AM_DUMMY) return;
     var->dirty_next.id = solver->dirty_vars.id;
     var->dirty_next.type = AM_DUMMY;
-    ++var->refcount;
     solver->dirty_vars = var->sym;
 }
 
@@ -958,7 +958,6 @@ AM_API void am_updatevars(am_Solver *solver) {
         solver->dirty_vars = var->dirty_next;
         var->dirty_next = am_null();
         var->value = row ? row->constant : 0.0f;
-        am_delvariable(var);
     }
 }
 
