@@ -198,8 +198,8 @@ typedef struct am_Row {
 struct am_Var {
     am_Symbol      sym;
     am_Symbol      dirty_next;
-    unsigned       dirty;
     unsigned       refcount : AM_UNSIGNED_BITS - 1;
+    unsigned       dirty : 1;
     am_Solver     *solver;
     am_Constraint *constraint;
     am_Num         edit_value;
