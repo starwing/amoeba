@@ -198,8 +198,7 @@ typedef struct am_Row {
 struct am_Var {
     am_Symbol      sym;
     am_Symbol      dirty_next;
-    unsigned       refcount : AM_UNSIGNED_BITS - 1;
-    unsigned       dirty : 1;
+    unsigned       refcount;
     am_Solver     *solver;
     am_Constraint *constraint;
     am_Num         edit_value;
@@ -518,7 +517,6 @@ AM_API void am_delvariable(am_Var *var) {
     if (var && --var->refcount <= 0) {
         am_Solver *solver = var->solver;
         am_VarEntry *e;
-        if (var->dirty) am_updatevars(solver);
         e = (am_VarEntry*)am_gettable(&solver->vars, var->sym);
         assert(e != NULL);
         am_delkey(&solver->vars, &e->entry);
@@ -640,7 +638,7 @@ static void am_markdirty(am_Solver *solver, am_Var *var) {
     if (var->dirty_next.type == AM_DUMMY) return;
     var->dirty_next.id = solver->dirty_vars.id;
     var->dirty_next.type = AM_DUMMY;
-    var->dirty = 1;
+    ++var->refcount;
     solver->dirty_vars = var->sym;
 }
 
@@ -959,8 +957,8 @@ AM_API void am_updatevars(am_Solver *solver) {
         am_Row *row = (am_Row*)am_gettable(&solver->rows, var->sym);
         solver->dirty_vars = var->dirty_next;
         var->dirty_next = am_null();
-        var->dirty = 0;
         var->value = row ? row->constant : 0.0f;
+        am_delvariable(var);
     }
 }
 
