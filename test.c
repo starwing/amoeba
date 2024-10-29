@@ -670,13 +670,89 @@ static void test_suggest(void) {
     maxmem = 0;
 }
 
-void test_cycling() {
-    am_Solver * solver = am_newsolver(NULL, NULL);
+static void test_dirty(void) {
+    am_Solver *solver;
+    am_Var *xl, *xr, *xw, *xwc;
+    am_Constraint *c1, *c2;
+    int ret = setjmp(jbuf);
+    printf("\n\n==========\ntest dirty\n");
+    printf("ret = %d\n", ret);
+    if (ret < 0) { perror("setjmp"); return; }
+    else if (ret != 0) { printf("out of memory!\n"); return; }
 
-    am_Var * va = am_newvariable(solver);
-    am_Var * vb = am_newvariable(solver);
-    am_Var * vc = am_newvariable(solver);
-    am_Var * vd = am_newvariable(solver);
+    solver = am_newsolver(debug_allocf, NULL);
+
+    xl = am_newvariable(solver);
+    xr = am_newvariable(solver);
+    xw = am_newvariable(solver);
+    xwc = am_newvariable(solver);
+
+
+    /* c1: xw == xr -xl */
+    c1 = am_newconstraint(solver, AM_REQUIRED);
+    ret = 0;
+    ret |= am_addterm(c1, xw, 1.0);
+    ret |= am_setrelation(c1, AM_EQUAL);
+    ret |= am_addterm(c1, xr, 1.0);
+    ret |= am_addterm(c1, xl, -1.0);
+    ret |= am_add(c1);
+    assert(ret == AM_OK);
+
+    am_updatevars(solver);
+    printf("xl: %f, xr:%f, xw:%f\n", am_value(xl), am_value(xr), am_value(xw));
+
+    /* c1: xwc == xw */
+    c2 = am_newconstraint(solver, AM_REQUIRED);
+    ret = 0;
+    ret |= am_addterm(c2, xwc, 1.0);
+    ret |= am_setrelation(c2, AM_EQUAL);
+    ret |= am_addterm(c2, xw, 1.0);
+    ret |= am_add(c2);
+    assert(ret == AM_OK);
+
+    /* Sets dirty bit? Related to crash. */
+    am_suggest(xwc, 10);
+
+    am_updatevars(solver);
+    printf("xl:%f, xr:%f, xw:%f, xwc:%f\n", am_value(xl), am_value(xr), am_value(xw), am_value(xwc));
+
+    /* Remove xwc and c2 */
+    am_deledit(xwc);
+    am_remove(c2);
+    /* Adding an am_updatevars(solver); here somehow solves the issue. */
+    am_delconstraint(c2);
+    am_delvariable(xwc);
+
+    /* Causes crash: amoeba.h:482: am_sym2var: Assertion `ve != NULL' failed. */
+    am_updatevars(solver);
+    printf("xl:%f, xr:%f, xw:%f\n", am_value(xl), am_value(xr), am_value(xw));
+
+    /* Manual cleanup */
+    am_delconstraint(c1);
+    am_remove(c1);
+
+    am_delvariable(xl);
+    am_delvariable(xr);
+    am_delvariable(xw);
+
+    am_delsolver(solver);
+}
+
+void test_cycling() {
+    am_Solver *solver;
+    am_Var *va, *vb, *vc, *vd;
+
+    int ret = setjmp(jbuf);
+    printf("\n\n==========\ntest cycling\n");
+    printf("ret = %d\n", ret);
+    if (ret < 0) { perror("setjmp"); return; }
+    else if (ret != 0) { printf("out of memory!\n"); return; }
+
+    solver = am_newsolver(debug_allocf, NULL);
+    va = am_newvariable(solver);
+    vb = am_newvariable(solver);
+    vc = am_newvariable(solver);
+    vd = am_newvariable(solver);
 
     am_addedit(va, AM_STRONG);
     printf("after edit\n");
@@ -729,6 +805,8 @@ void test_cycling() {
         assert(ret == AM_OK); /* asserts here */
         am_dumpsolver(solver);
     }
+
+    am_delsolver(solver);
 }
 
 int main(void) {
@@ -737,8 +815,9 @@ int main(void) {
     test_strength();
     test_suggest();
     test_cycling();
+    test_dirty();
     test_all();
     return 0;
 }
 
-/* cc: flags='-ggdb -Wall -fprofile-arcs -ftest-coverage -O0 -Wextra -pedantic -std=c89' */
+/* cc: flags='-ggdb -Wall -fprofile-arcs -ftest-coverage -O2 -Wextra -pedantic -std=c89' */

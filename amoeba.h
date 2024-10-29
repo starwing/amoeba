@@ -197,8 +197,9 @@ typedef struct am_Row {
 
 struct am_Var {
     am_Symbol      sym;
-    am_Symbol      dirty_next;
-    unsigned       refcount;
+    unsigned       refcount : AM_UNSIGNED_BITS - 1;
+    unsigned       dirty    : 1;
+    am_Var        *next;
     am_Solver     *solver;
     am_Constraint *constraint;
     am_Num         edit_value;
@@ -227,7 +228,7 @@ struct am_Solver {
     unsigned   constraint_count;
     unsigned   auto_update;
     am_Symbol  infeasible_rows;
-    am_Symbol  dirty_vars;
+    am_Var    *dirty_vars;
 };
 
 
@@ -514,11 +515,10 @@ AM_API am_Var *am_newvariable(am_Solver *solver) {
 }
 
 AM_API void am_delvariable(am_Var *var) {
-    if (var && --var->refcount <= 0) {
+    if (var && --var->refcount == 0) {
         am_Solver *solver = var->solver;
-        am_VarEntry *e;
-        e = (am_VarEntry*)am_gettable(&solver->vars, var->sym);
-        assert(e != NULL);
+        am_VarEntry *e = (am_VarEntry*)am_gettable(&solver->vars, var->sym);
+        assert(!var->dirty && e != NULL);
         am_delkey(&solver->vars, &e->entry);
         am_remove(var->constraint);
         am_free(&solver->varpool, var);
@@ -635,11 +635,11 @@ static void am_infeasible(am_Solver *solver, am_Row *row) {
 }
 
 static void am_markdirty(am_Solver *solver, am_Var *var) {
-    if (var->dirty_next.type == AM_DUMMY) return;
-    var->dirty_next.id = solver->dirty_vars.id;
-    var->dirty_next.type = AM_DUMMY;
+    if (var->dirty) return;
+    var->next = solver->dirty_vars;
+    solver->dirty_vars = var;
+    var->dirty = 1;
     ++var->refcount;
-    solver->dirty_vars = var->sym;
 }
 
 static void am_substitute_rows(am_Solver *solver, am_Symbol var, am_Row *expr) {
@@ -937,7 +937,7 @@ AM_API void am_resetsolver(am_Solver *solver, int clear_constraints) {
     }
     assert(am_nearzero(solver->objective.constant));
     assert(solver->infeasible_rows.id == 0);
-    assert(solver->dirty_vars.id == 0);
+    assert(solver->dirty_vars == NULL);
     if (!clear_constraints) return;
     am_resetrow(&solver->objective);
     while (am_nextentry(&solver->constraints, &entry)) {
@@ -952,12 +952,21 @@ AM_API void am_resetsolver(am_Solver *solver, int clear_constraints) {
 }
 
 AM_API void am_updatevars(am_Solver *solver) {
-    while (solver->dirty_vars.id != 0) {
-        am_Var *var = am_sym2var(solver, solver->dirty_vars);
-        am_Row *row = (am_Row*)am_gettable(&solver->rows, var->sym);
-        solver->dirty_vars = var->dirty_next;
-        var->dirty_next = am_null();
-        var->value = row ? row->constant : 0.0f;
+    am_Var *var, *dead_vars = NULL;
+    while (solver->dirty_vars != NULL) {
+        var = solver->dirty_vars;
+        solver->dirty_vars = var->next;
+        var->dirty = 0;
+        if (var->refcount == 1)
+            var->next = dead_vars, dead_vars = var;
+        else {
+            am_Row *row = (am_Row*)am_gettable(&solver->rows, var->sym);
+            var->value = row ? row->constant : 0.0f;
+            --var->refcount;
+        }
+    }
+    while (dead_vars != NULL) {
+        var = dead_vars, dead_vars = var->next;
         am_delvariable(var);
     }
 }
