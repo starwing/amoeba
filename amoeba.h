@@ -114,7 +114,6 @@ AM_NS_END
 #if defined(AM_IMPLEMENTATION) && !defined(am_implemented)
 #define am_implemented
 
-
 #include <assert.h>
 #include <float.h>
 #include <stdlib.h>
@@ -146,13 +145,39 @@ AM_NS_END
 # define AM_NUM_EPS 1e-6
 #endif
 
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wlong-long"
+#endif
+
 AM_NS_BEGIN
 
+#if defined(__SSE2__) || (!defined(_M_ARM64EC) && \
+    (defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)))
+# include <emmintrin.h>
+# define AM_USE_SSE2 1
+//# ifdef __SSSE3__
+#   include <tmmintrin.h>
+#   define AM_HAVE_SSSE3 1
+//# endif /* __SSSE3__ */
+#elif defined(__ARM_NEON) && !(defined(__NVCC__) && defined(__CUDACC__))
+# include <arm_neon.h>
+# define AM_USE_NEON 1
+#endif
 
-typedef struct am_Symbol {
-    unsigned id   : AM_UNSIGNED_BITS - 2;
-    unsigned type : 2;
-} am_Symbol;
+#if AM_USE_SSE2
+typedef __m128i            am_Group;
+typedef unsigned __int16   am_BitMask;
+#elif AM_USE_NEON
+typedef uint8x8_t          am_Group;
+typedef uint64_t           am_BitMask;
+#else
+typedef unsigned long long am_Group; /* at least 64bit */
+typedef unsigned long long am_BitMask;
+#endif
+typedef unsigned           am_Size;  /* size should less than symbol count */
+typedef unsigned           am_Hash;
+typedef unsigned char      am_Ctrl;
 
 typedef struct am_MemPool {
     size_t size;
@@ -160,22 +185,30 @@ typedef struct am_MemPool {
     void  *pages;
 } am_MemPool;
 
-typedef struct am_Entry {
-    int       next;
-    am_Symbol key;
-} am_Entry;
+typedef struct am_Symbol {
+    unsigned id   : AM_UNSIGNED_BITS - 2;
+    unsigned type : 2;
+} am_Symbol;
 
 typedef struct am_Table {
-    size_t    size;
-    size_t    count;
-    size_t    entry_size;
-    size_t    lastfree;
-    am_Entry *hash;
+    am_Size   mask;
+    am_Size   count;
+    am_Size   entry_size;
+    am_Size   growth_left : AM_UNSIGNED_BITS - 1;
+    am_Size   deleted     : 1;
+    am_Ctrl  *ctrl;
 } am_Table;
+
+typedef struct am_Entry {
+    am_Hash   hash;
+    am_Symbol key;
+} am_Entry;
 
 typedef struct am_Iterator {
     const am_Table *t;
     const am_Entry *entry;
+    am_BitMask      group;
+    am_Size         offset;
 } am_Iterator;
 
 typedef struct am_VarEntry {
@@ -196,8 +229,8 @@ typedef struct am_Term {
 typedef struct am_Row {
     am_Entry  entry;
     am_Symbol infeasible_next;
-    am_Table  terms;
     am_Num    constant;
+    am_Table  terms;
 } am_Row;
 
 struct am_Var {
@@ -236,7 +269,6 @@ struct am_Solver {
     am_Var    *dirty_vars;
 };
 
-
 /* utils */
 
 static am_Symbol am_newsymbol(am_Solver *solver, int type);
@@ -274,6 +306,7 @@ static void *am_alloc(am_Solver *solver, am_MemPool *pool) {
     if (obj == NULL) {
         const size_t offset = AM_POOLSIZE - sizeof(void*);
         void *end, *newpage = solver->allocf(solver->ud, NULL, AM_POOLSIZE, 0);
+        assert(newpage != NULL);
         *(void**)((char*)newpage + offset) = pool->pages;
         pool->pages = newpage;
         end = (char*)newpage + (offset/pool->size-1)*pool->size;
@@ -303,128 +336,440 @@ static am_Symbol am_newsymbol(am_Solver *solver, int type) {
     return sym;
 }
 
-
 /* hash table */
 
-#define am_key(entry) (((am_Entry*)(entry))->key)
+#define AM_EMPTY   ((am_Ctrl)0x80)
+#define AM_DELETED ((am_Ctrl)0xFF)
 
-#define am_offset(lhs,rhs) ((int)((char*)(lhs) - (char*)(rhs)))
-#define am_index(h,i)      ((am_Entry*)((char*)(h) + (i)))
+#if AM_USE_SSE2
+# define AM_WIDTH 16
+#else
+# define AM_WIDTH 8
+#endif
+typedef char AM_STATIC_ASSERT0[sizeof(am_Group) >= AM_WIDTH ? 1 : -1];
 
-static am_Entry *am_newkey(am_Solver *solver, am_Table *t, am_Symbol key);
+#define AM_MAX_ENTRYSIZE sizeof(am_Row)
 
-static void am_delkey(am_Table *t, am_Entry *entry)
-{ entry->key = am_null(), --t->count; }
+#define am_key(e)         (((am_Entry*)(e))->key)
+#define am_offset(t,e)    (((t)->ctrl - (am_Ctrl*)(e))/(t)->entry_size - 1)
+#define am_fullmark(h)    ((h) >> (AM_UNSIGNED_BITS - CHAR_BIT + 1))
+#define am_alignsize(c,s) (((c)*(s) + AM_WIDTH-1) & ~(AM_WIDTH-1))
+
+static am_Iterator am_itertable(const am_Table *t)
+{ am_Iterator it = {NULL, NULL, 0, (am_Size)-AM_WIDTH}; it.t = t; return it; }
 
 static void am_inittable(am_Table *t, size_t entry_size)
-{ memset(t, 0, sizeof(*t)), t->entry_size = entry_size; }
+{ memset(t, 0, sizeof(am_Table)); t->entry_size = (am_Size)entry_size; }
 
-static am_Entry *am_mainposition(const am_Table *t, am_Symbol key)
-{ return am_index(t->hash, (key.id & (t->size - 1))*t->entry_size); }
+static const am_Entry *am_entry(const am_Table *t, am_Size idx)
+{ return (const am_Entry*)(t->ctrl - ((idx & t->mask)+1)*t->entry_size); }
 
-static void am_resettable(am_Table *t)
-{ t->count = 0; memset(t->hash, 0, t->lastfree = t->size * t->entry_size); }
+static am_Ctrl *am_ctrl(am_Table *t, const am_Entry *e)
+{ return (assert(t->ctrl), &t->ctrl[am_offset(t, e)]); }
 
-static size_t am_hashsize(am_Table *t, size_t len) {
-    size_t newsize = AM_MIN_HASHSIZE;
-    const size_t max_size = (AM_MAX_SIZET / 2) / t->entry_size;
-    while (newsize < max_size && newsize < len)
-        newsize <<= 1;
-    assert((newsize & (newsize - 1)) == 0);
-    return newsize < len ? 0 : newsize;
+static void am_writectrl(am_Table *t, am_Ctrl *c, am_Ctrl v)
+{ t->ctrl[(((c - t->ctrl) - AM_WIDTH) & t->mask) + AM_WIDTH] = *c = v; }
+
+#if AM_USE_SSE2
+static am_Group am_group(const am_Ctrl* c)
+{ return _mm_loadu_si128((const am_Group*)(c)); }
+
+static am_BitMask am_group_load(const am_Ctrl *c)
+{ return _mm_movemask_epi8(_mm_loadu_si128((const am_Group*)c)); }
+
+static am_BitMask am_group_empty(am_Group g) {
+#if AM_HAVE_SSSE3
+    return _mm_movemask_epi8(_mm_sign_epi8(g, g));
+#else
+    return _mm_movemask_epi8(_mm_cmpeq_epi8(_mm_set1_epi8(AM_EMPTY), g));
+#endif
 }
 
-static void am_freetable(am_Solver *solver, am_Table *t) {
-    size_t size = t->size*t->entry_size;
-    if (size) solver->allocf(solver->ud, t->hash, 0, size);
-    am_inittable(t, t->entry_size);
+static am_BitMask am_group_match(am_Group g, am_Hash h)
+{ return _mm_movemask_epi8(_mm_cmpeq_epi8(_mm_set1_epi8((char)h), g)); }
+
+static am_BitMask am_group_deleted(const am_Ctrl *c)
+{ return _mm_movemask_epi8(_mm_cmpeq_epi8(_mm_set1_epi8(AM_DELETED), am_group(c))); }
+
+static am_BitMask am_group_full(const am_Ctrl *c)
+{ return _mm_movemask_epi8(am_group(c)) ^ 0xffff; }
+
+static am_BitMask am_group_nonfull(am_Ctrl *c)
+{ return _mm_movemask_epi8(am_group(c)); }
+
+static am_Size am_ctz(am_BitMask g) {
+#if _MSC_VER
+    unsigned long n = 0;
+    unsigned char r = _BitScanForward(&n, g);
+    assert(r);
+    return (am_Size)n;
+#elif defined(__has_builtin) && __has_builtin(__builtin_ctz)
+    return __builtin_ctz(g);
+#else
+    am_Size n = 31;
+    am_BitMask og = g;
+    g &= ~g + 1;
+    n -= (am_Size)!!(g & 0x0000FFFFULL) << 4;
+    n -= (am_Size)!!(g & 0x00FF00FFULL) << 3;
+    n -= (am_Size)!!(g & 0x0F0F0F0FULL) << 2;
+    n -= (am_Size)!!(g & 0x33333333ULL) << 1;
+    n -= (am_Size)!!(g & 0x55555555ULL);
+    return n;
+#endif
 }
 
-static size_t am_resizetable(am_Solver *solver, am_Table *t, size_t len) {
-    size_t i, oldsize = t->size * t->entry_size;
-    am_Table nt = *t;
-    nt.size = am_hashsize(t, len);
-    nt.lastfree = nt.size*nt.entry_size;
-    nt.hash = (am_Entry*)solver->allocf(solver->ud, NULL, nt.lastfree, 0);
-    memset(nt.hash, 0, nt.size*nt.entry_size);
-    for (i = 0; i < oldsize; i += nt.entry_size) {
-        am_Entry *e = am_index(t->hash, i);
-        if (e->key.id != 0) {
-            am_Entry *ne = am_newkey(solver, &nt, e->key);
-            if (t->entry_size > sizeof(am_Entry))
-                memcpy(ne + 1, e + 1, t->entry_size-sizeof(am_Entry));
-        }
-    }
-    if (oldsize) solver->allocf(solver->ud, t->hash, 0, oldsize);
-    *t = nt;
-    return t->size;
+static am_Size am_clz(am_BitMask g) {
+#if _MSC_VER
+    unsigned long n = 0;
+    return _BitScanReverse(&n, g) ? n : 32;
+#elif defined(__has_builtin) && __has_builtin(__builtin_clzll)
+    return __builtin_clzll(g);
+#else
+    am_Size n = 28;
+    if (g >> 16) n -= 16, g >>= 16;
+    if (g >>  8) n -=  8, g >>=  8;
+    if (g >>  4) n -=  4, g >>=  4;
+    return "\4\3\2\2\1\1\1\1\0\0\0\0\0\0\0"[g] + n;
+#endif
 }
 
-static am_Entry *am_newkey(am_Solver *solver, am_Table *t, am_Symbol key) {
-    if (t->size == 0) am_resizetable(solver, t, AM_MIN_HASHSIZE);
-    for (;;) {
-        am_Entry *mp = am_mainposition(t, key);
-        if (mp->key.id != 0) {
-            am_Entry *f = NULL, *othern;
-            while (t->lastfree > 0) {
-                am_Entry *e = am_index(t->hash, t->lastfree -= t->entry_size);
-                if (e->key.id == 0 && e->next == 0)  { f = e; break; }
-            }
-            if (!f) { am_resizetable(solver, t, t->count*2); continue; }
-            assert(f->key.id == 0);
-            othern = am_mainposition(t, mp->key);
-            if (othern != mp) {
-                am_Entry *next;
-                while ((next = am_index(othern, othern->next)) != mp)
-                    othern = next;
-                othern->next = am_offset(f, othern);
-                memcpy(f, mp, t->entry_size);
-                if (mp->next) f->next += am_offset(mp, f), mp->next = 0;
-            } else {
-                if (mp->next != 0)
-                    f->next = am_offset(mp, f) + mp->next;
-                else
-                    assert(f->next == 0);
-                mp->next = am_offset(f, mp), mp = f;
-            }
-        }
-        mp->key = key;
-        return mp;
-    }
+static am_BitMask am_group_next(am_BitMask g, am_Size *pidx) {
+    if (g == 0) return 0;
+    *pidx = am_ctz(g);
+    return g & (g - 1);
 }
 
-static const am_Entry *am_gettable(const am_Table *t, am_Symbol key) {
-    const am_Entry *e;
-    if (t->size == 0 || key.id == 0) return NULL;
-    e = am_mainposition(t, key);
-    for (; e->key.id != key.id; e = am_index(e, e->next))
-        if (e->next == 0) return NULL;
-    return e;
+static __m128i _mm_cmpgt_epi8_fixed(__m128i a, __m128i b) {
+#if defined(__GNUC__) && !defined(__clang__)
+  if (CHAR_MIN == 0) {
+    const __m128i mask = _mm_set1_epi8(0x80);
+    const __m128i diff = _mm_subs_epi8(b, a);
+    return _mm_cmpeq_epi8(_mm_and_si128(diff, mask), mask);
+  }
+#endif
+  return _mm_cmpgt_epi8(a, b);
 }
 
-static am_Entry *am_settable(am_Solver *solver, am_Table *t, am_Symbol key) {
-    am_Entry *e;
-    assert(key.id != 0 && am_gettable(t, key) == NULL);
-    e = am_newkey(solver, t, key);
-    ++t->count;
-    return e;
+static void am_group_tidy(am_Ctrl *c) {
+    am_Group ctrl = am_group(c);
+    am_Group msbs = _mm_set1_epi8(AM_EMPTY);
+    am_Group dels = _mm_set1_epi8(AM_DELETED);
+#ifdef AM_HAVE_SSSE3
+    auto res = _mm_or_si128(_mm_shuffle_epi8(dels, ctrl), msbs);
+#else
+    auto zero = _mm_setzero_si128();
+    auto special_mask = _mm_cmpgt_epi8_fixed(zero, ctrl);
+    auto res = _mm_or_si128(msbs, _mm_andnot_si128(special_mask, dels));
+#endif
+    _mm_storeu_si128((am_Group*)c, res);
 }
 
-static am_Iterator am_itertable(const am_Table *t) {
-    am_Iterator it;
-    it.t = t;
-    it.entry = NULL;
-    return it;
+static int am_neverfull(am_Table *t, const am_Ctrl *c) {
+    am_BitMask before, after;
+    am_Size  before_offset;
+    if (t->mask+1 == AM_WIDTH) return 1;
+    before_offset = (((c-t->ctrl) & t->mask) - AM_WIDTH) & t->mask;
+    after  = am_group_empty(am_group(c));
+    before = am_group_empty(am_group(&t->ctrl[before_offset]));
+    return (before ? am_clz(before) : AM_WIDTH)
+        + (after ? am_ctz(after) : AM_WIDTH) < AM_WIDTH;
+}
+
+#else
+# define AM_LSBS  0x0101010101010101ULL
+# define AM_MSBS  0x8080808080808080ULL
+
+# if AM_USE_NEON
+static am_Group am_group(const am_Ctrl *c)
+{ return vld1_u8(c); }
+
+static am_BitMask am_group_load(const am_Ctrl *c)
+{ return vget_lane_u64(vld1_u8(c), 0); }
+
+static am_BitMask am_group_empty(am_Group g) {
+    return vget_lane_u64(vreinterpret_u64_u8(
+                vshr_n_u8(vceq_u8(vdup_n_u8(AM_EMPTY), g), 7)), 0);
+}
+
+static am_BitMask am_group_match(am_Group g, am_Hash h) {
+    return vget_lane_u64(vreinterpret_u64_u8(
+                vshr_n_u8(vceq_u8(vdup_n_u8(h), g), 7)), 0);
+}
+
+static am_BitMask am_group_deleted(const am_Ctrl *c) {
+    return vget_lane_u64(vreinterpret_u64_u8(
+                vshr_n_u8(vceq_u8(vdup_n_u8(AM_DELETED), vld1_u8(c)), 7)), 0);
+}
+# else
+static am_Group am_group(const am_Ctrl *c)
+{ am_Group g; memcpy(&g, c, AM_WIDTH); return g; }
+
+static am_BitMask am_group_load(const am_Ctrl *c)
+{ return am_group(c); }
+
+static am_BitMask am_group_empty(am_Group g)
+{ return g & ~(g << 1) & AM_MSBS; }
+
+static am_BitMask am_group_match(am_Group g, am_Hash h) {
+    am_BitMask x = g ^ (AM_LSBS * h);
+    return (x - AM_LSBS) & ~x & AM_MSBS;
+}
+
+static am_BitMask am_group_deleted(const am_Ctrl *c) {
+    am_BitMask g = am_group_load(c);
+    return g & (g << 1) & AM_MSBS;
+}
+# endif
+
+static am_Size am_ctz64(am_BitMask g) {
+#if _MSC_VER
+    unsigned long n = 0;
+    unsigned char r = _BitScanForward64(&n, g);
+    assert(r);
+    return (am_Size)n;
+#elif defined(__has_builtin) && __has_builtin(__builtin_ctzll)
+    return __builtin_ctzll(g);
+#else
+    am_Size n = 63;
+    am_BitMask og = g;
+    g &= ~g + 1;
+    n -= (am_Size)!!(g & 0x00000000FFFFFFFFULL) << 5;
+    n -= (am_Size)!!(g & 0x0000FFFF0000FFFFULL) << 4;
+    n -= (am_Size)!!(g & 0x00FF00FF00FF00FFULL) << 3;
+    n -= (am_Size)!!(g & 0x0F0F0F0F0F0F0F0FULL) << 2;
+    n -= (am_Size)!!(g & 0x3333333333333333ULL) << 1;
+    n -= (am_Size)!!(g & 0x5555555555555555ULL);
+    return n;
+#endif
+}
+
+static am_Size am_clz64(am_BitMask g) {
+#if _MSC_VER
+    unsigned long n = 0;
+    return _BitScanReverse64(&n, g) ? n : 64;
+#elif defined(__has_builtin) && __has_builtin(__builtin_clzll)
+    return __builtin_clzll(g);
+#else
+    am_Size n = 60;
+    if (g >> 32) n -= 32, g >>= 32;
+    if (g >> 16) n -= 16, g >>= 16;
+    if (g >>  8) n -=  8, g >>=  8;
+    if (g >>  4) n -=  4, g >>=  4;
+    return "\4\3\2\2\1\1\1\1\0\0\0\0\0\0\0"[g] + n;
+#endif
+}
+
+static am_BitMask am_group_next(am_BitMask g, am_Size *pidx) {
+    if (g == 0) return 0;
+    *pidx = am_ctz64(g) / AM_WIDTH;
+    return g & (g - 1);
+}
+
+static am_BitMask am_group_full(const am_Ctrl *c)
+{ return ~am_group_load(c) & AM_MSBS; }
+
+static am_BitMask am_group_nonfull(am_Ctrl *c)
+{ return am_group_load(c) & AM_MSBS; }
+
+static void am_group_tidy(am_Ctrl *c) {
+    am_BitMask x = am_group_load(c) & AM_MSBS;
+    am_BitMask r = ~x + (x >> 7);
+    memcpy(c, &r, AM_WIDTH);
+}
+
+static int am_neverfull(am_Table *t, const am_Ctrl *c) {
+    am_BitMask before, after;
+    am_Size  before_offset;
+    if (t->mask+1 == AM_WIDTH) return 1;
+    before_offset = (((c-t->ctrl) & t->mask) - AM_WIDTH) & t->mask;
+    after  = am_group_empty(am_group(c));
+    before = am_group_empty(am_group(&t->ctrl[before_offset]));
+    return (am_clz64(before)/AM_WIDTH
+            + (after ? am_ctz64(after)/AM_WIDTH : AM_WIDTH)) < AM_WIDTH;
+}
+
+#endif
+
+static void am_resettable(am_Table *t) {
+    if (!t->ctrl) return;
+    memset(t->ctrl, AM_EMPTY, t->mask+AM_WIDTH);
+    t->count       = 0;
+    t->deleted     = 0;
+    t->growth_left = ((t->mask+1) / 8) * 7;
 }
 
 static const am_Entry *am_nextentry(am_Iterator *it) {
     const am_Table *t = it->t;
-    const am_Entry *end = am_index(t->hash, t->size*t->entry_size);
-    const am_Entry *e = it->entry;
-    e = e ? am_index(e, t->entry_size) : t->hash;
-    for (; e < end; e = am_index(e, t->entry_size))
-        if (e->key.id != 0) return it->entry = e;
-    return it->entry = NULL;
+    am_Size idx;
+    while (it->group == 0) {
+        if ((it->offset += AM_WIDTH) >= t->mask + (t->mask != 0))
+            return (*it = am_itertable(t)), (const am_Entry*)NULL;
+        it->group = am_group_full(&t->ctrl[it->offset]);
+    }
+    it->group = am_group_next(it->group, &idx);
+    return (it->entry = am_entry(t, it->offset + idx));
+}
+
+static void am_freetable(am_Solver *solver, am_Table *t) {
+    if (t->ctrl) {
+        size_t size = am_alignsize(t->mask + 1, t->entry_size);
+        void* mem = t->ctrl - size;
+        solver->allocf(solver->ud, mem, 0, size + t->mask+1 + AM_WIDTH);
+        am_inittable(t, t->entry_size);
+    }
+}
+
+static void am_delkey(am_Table *t, const am_Entry *e) {
+    am_Ctrl *c = am_ctrl(t, e);
+    am_writectrl(t, c, am_neverfull(t, c) ? AM_EMPTY : AM_DELETED);
+    t->deleted = 1, --t->count, t->growth_left += (*c == AM_EMPTY);
+}
+
+static am_Hash am_hash(am_Symbol key) {
+    am_Hash h = key.id;
+    h ^= h >> 16; h *= 0x85ebca6b;
+    h ^= h >> 13; h *= 0xc2b2ae35;
+    h ^= h >> 16;
+    return h;
+}
+
+static int am_find(am_Iterator *it, am_Symbol key, am_Hash h) {
+    const am_Table *t = it->t;
+    am_Size stride = 0;
+    if (!t->ctrl) return 0;
+    it->offset = h & t->mask;
+    for (;;) {
+        am_Group g = am_group(&t->ctrl[it->offset]);
+        it->group = am_group_match(g, am_fullmark(h));
+        while (it->group != 0)
+            if (am_nextentry(it)->key.id == key.id) return 1;
+        if (am_group_empty(g)) return 0;
+        stride += AM_WIDTH, it->offset = (it->offset + stride) & t->mask;
+    }
+}
+
+static const am_Entry *am_gettable(const am_Table *t, am_Symbol key) {
+    am_Iterator it = am_itertable((am_Table*)t);
+    return am_find(&it, key, am_hash(key)) ? it.entry : NULL;
+}
+
+static int am_alloctable(am_Table *t, am_Solver *solver, am_Size count, am_Size entry_size) {
+    size_t size = ((count + 1) * 8) / 7; /* 1/8 empty required */
+    size_t capacity;
+    void  *mem;
+    if (size > (~(am_Size)0 >> 2)/entry_size) return 0;
+    for (capacity = AM_WIDTH; capacity < size; capacity <<= 1)
+        ;
+    assert(count < capacity-1);
+    size = am_alignsize(capacity, entry_size);
+    mem = solver->allocf(solver->ud, NULL, size + capacity + AM_WIDTH, 0);
+    if (mem == NULL) return 0;
+    memset(t, 0, sizeof(am_Table));
+    t->count       = count;
+    t->mask        = (am_Size)capacity - 1;
+    t->ctrl        = (am_Ctrl*)mem + size;
+    t->growth_left = (capacity / 8) * 7 - count;
+    t->entry_size  = entry_size;
+    t->deleted     = 0;
+    memset(t->ctrl, AM_EMPTY, capacity+AM_WIDTH);
+    return 1;
+}
+
+static int am_resizetable(am_Solver *solver, am_Table *t) {
+    am_Iterator it = am_itertable(t);
+    const am_Entry *e;
+    am_Table nt;
+    if (!am_alloctable(&nt, solver, t->count, t->entry_size)) return 0;
+    while ((e = am_nextentry(&it))) {
+        am_Size offset = e->hash & nt.mask, stride = 0, idx;
+        am_BitMask m;
+        while ((m = am_group_empty(am_group(&nt.ctrl[offset]))) == 0)
+            stride += AM_WIDTH, offset = (offset + stride) & nt.mask;
+        am_group_next(m, &idx), offset = (offset + idx) & nt.mask;
+        am_writectrl(&nt, &nt.ctrl[offset], am_fullmark(e->hash));
+        memcpy((void*)am_entry(&nt, offset), e, nt.entry_size);
+    }
+    am_freetable(solver, t);
+    return *t = nt, 1;
+}
+
+static am_Entry *am_findinsert(am_Iterator *it, am_Hash h) {
+    const am_Table *t = it->t;
+    am_Size stride = 0;
+    it->offset = h & t->mask;
+    while (!(it->group = am_group_nonfull(&t->ctrl[it->offset])))
+        stride += AM_WIDTH, it->offset = (it->offset + stride) & t->mask;
+    return (am_Entry*)am_nextentry(it);
+}
+
+static void am_relocentry(am_Iterator *it, char *tmp) {
+    am_Table *t = (am_Table*)it->t;
+    am_Iterator newit = am_itertable(t);
+    am_Entry *ne, *e = (am_Entry*)it->entry;
+    am_Ctrl  *nc, *c = am_ctrl(t, e);
+    if (*c != AM_DELETED) return;
+    for (;;) {
+        am_Size offset = e->hash & t->mask;
+        am_Size mask = t->mask & ~(AM_WIDTH-1);
+        ne = am_findinsert(&newit, e->hash), nc = am_ctrl(t, ne);
+        if ((((am_Size)(c-t->ctrl) - offset) & mask) ==
+                (((am_Size)(nc-t->ctrl) - offset) & mask)) {
+            am_writectrl(t, c, am_fullmark(e->hash));
+            break;
+        }
+        if (*nc == AM_EMPTY) {
+            memcpy(ne, e, t->entry_size);
+            am_writectrl(t, c, AM_EMPTY);
+            am_writectrl(t, nc, am_fullmark(e->hash));
+            break;
+        }
+        assert(*nc == AM_DELETED);
+        memcpy(tmp, ne,  t->entry_size);
+        memcpy(ne,  e,   t->entry_size);
+        memcpy(e,   tmp, t->entry_size);
+        am_writectrl(t, nc, am_fullmark(ne->hash));
+    }
+}
+
+static void am_tidytable(am_Table *t) {
+    am_Iterator it = am_itertable(t);
+    am_Ctrl *ctrl, *end;
+    char buff[AM_MAX_ENTRYSIZE];
+    assert(t->deleted && t->entry_size <= AM_MAX_ENTRYSIZE);
+    for (ctrl = t->ctrl, end = ctrl + t->mask + 1; ctrl < end; ctrl += AM_WIDTH)
+        am_group_tidy(ctrl);
+    for (it.offset = 0; it.offset < t->mask; it.offset += AM_WIDTH) {
+        it.group = am_group_deleted(&t->ctrl[it.offset]);
+        while (it.group != 0) {
+            am_nextentry(&it);
+            am_relocentry(&it, buff);
+        }
+    }
+    t->growth_left = ((t->mask+1) / 8) * 7 - t->count;
+    t->deleted = 0;
+}
+
+static am_Entry *am_settable(am_Solver *solver, am_Table *t, am_Symbol key) {
+    am_Iterator it = am_itertable((am_Table*)t);
+    am_Hash h = am_hash(key);
+    am_Entry *e;
+    am_Ctrl *c;
+    if (t->growth_left == 0 || (t->deleted && t->count*32 >= 24*(t->mask+1))) {
+        /*if (t->growth_left != 0)
+            am_tidytable(t);
+        else */if (!am_resizetable(solver, t))
+            return NULL;
+    }
+    assert(t->growth_left > 0);
+    e = am_findinsert(&it, h), c = am_ctrl(t, e);
+    {
+        am_Ctrl *mem = t->ctrl - am_alignsize(t->mask + 1, t->entry_size);
+        assert((am_Ctrl*)e >= mem && (am_Ctrl*)e < t->ctrl);
+    }
+    ++t->count, t->growth_left -= (*c == AM_EMPTY);
+    am_writectrl(t, c, am_fullmark(h));
+    e->key = key, e->hash = h;
+    return e;
 }
 
 /* expression (row) */
@@ -1090,6 +1435,10 @@ AM_API void am_suggest(am_Var *var, am_Num value) {
 
 
 AM_NS_END
+
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
 
 #endif /* AM_IMPLEMENTATION */
 
