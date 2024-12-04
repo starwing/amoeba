@@ -44,9 +44,10 @@ static void am_dumpkey(am_Symbol sym) {
 }
 
 static void am_dumprow(am_Row *row) {
-    am_Term *term = NULL;
+    am_Iterator it = am_itertable(&row->terms);
+    am_Term *term;
     printf("%g", row->constant);
-    while (am_nextterm(&row->terms, &term)) {
+    while ((term = (am_Term*)am_nextentry(&it))) {
         am_Num multiplier = term->multiplier;
         printf(" %c ", multiplier > 0.0 ? '+' : '-');
         if (multiplier < 0.0) multiplier = -multiplier;
@@ -58,13 +59,14 @@ static void am_dumprow(am_Row *row) {
 }
 
 static void am_dumpsolver(am_Solver *solver) {
+    am_Iterator it = am_itertable(&solver->rows);
     am_Row *row = NULL;
     int idx = 0;
     printf("-------------------------------\n");
     printf("solver: ");
     am_dumprow(&solver->objective);
     printf("rows(%d):\n", (int)solver->rows.count);
-    while (am_nextrow(&solver->rows, &row)) {
+    while ((row = (am_Row*)am_nextentry(&it))) {
         printf("%d. ", ++idx);
         am_dumpkey(am_key(row));
         printf(" = ");
@@ -738,7 +740,7 @@ static void test_dirty(void) {
     am_delsolver(solver);
 }
 
-void test_cycling() {
+void test_cycling(void) {
     am_Solver *solver;
     am_Var *va, *vb, *vc, *vd;
 

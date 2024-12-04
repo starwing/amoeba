@@ -200,7 +200,7 @@ void build_solver(am_Solver* S, am_Var* width, am_Var* height)
 
 int main()
 {
-    ankerl::nanobench::Bench().minEpochIterations(10).run("building solver", [&] {
+    ankerl::nanobench::Bench().minEpochIterations(100).run("building solver", [&] {
         am_Solver *S = am_newsolver(NULL, NULL);
         am_Var *width = am_newvariable(S);
         am_Var *height = am_newvariable(S);
@@ -234,7 +234,7 @@ int main()
         am_Num width = size.width;
         am_Num height = size.height;
 
-        ankerl::nanobench::Bench().minEpochIterations(100).run("suggest value " + std::to_string(size.width) + "x" + std::to_string(size.height), [&] {
+        ankerl::nanobench::Bench().minEpochIterations(100000).run("suggest value " + std::to_string(size.width) + "x" + std::to_string(size.height), [&] {
             am_suggest(widthVar, width);
             am_suggest(heightVar, height);
             am_updatevars(S);
