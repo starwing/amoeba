@@ -156,10 +156,10 @@ AM_NS_BEGIN
     (defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)))
 # include <emmintrin.h>
 # define AM_USE_SSE2 1
-//# ifdef __SSSE3__
+# ifdef __SSSE3__
 #   include <tmmintrin.h>
 #   define AM_HAVE_SSSE3 1
-//# endif /* __SSSE3__ */
+# endif /* __SSSE3__ */
 #elif defined(__ARM_NEON) && !(defined(__NVCC__) && defined(__CUDACC__))
 # include <arm_neon.h>
 # define AM_USE_NEON 1
@@ -207,7 +207,7 @@ typedef struct am_Entry {
 typedef struct am_Iterator {
     const am_Table *t;
     const am_Entry *entry;
-    am_BitMask      group;
+    am_BitMask      mask;
     am_Size         offset;
 } am_Iterator;
 
@@ -374,8 +374,14 @@ static void am_writectrl(am_Table *t, am_Ctrl *c, am_Ctrl v)
 static am_Group am_group(const am_Ctrl* c)
 { return _mm_loadu_si128((const am_Group*)(c)); }
 
-static am_BitMask am_group_load(const am_Ctrl *c)
-{ return _mm_movemask_epi8(_mm_loadu_si128((const am_Group*)c)); }
+static am_BitMask am_group_match(am_Group g, am_Hash h)
+{ return _mm_movemask_epi8(_mm_cmpeq_epi8(g, _mm_set1_epi8((char)h))); }
+
+static am_BitMask am_group_deleted(am_Group g)
+{ return _mm_movemask_epi8(_mm_cmpeq_epi8(g, _mm_set1_epi8(AM_DELETED))); }
+
+static am_BitMask am_group_full(am_Group g)    { return _mm_movemask_epi8(g) ^ 0xffff; }
+static am_BitMask am_group_nonfull(am_Group g) { return _mm_movemask_epi8(g); }
 
 static am_BitMask am_group_empty(am_Group g) {
 #if AM_HAVE_SSSE3
@@ -385,58 +391,44 @@ static am_BitMask am_group_empty(am_Group g) {
 #endif
 }
 
-static am_BitMask am_group_match(am_Group g, am_Hash h)
-{ return _mm_movemask_epi8(_mm_cmpeq_epi8(_mm_set1_epi8((char)h), g)); }
-
-static am_BitMask am_group_deleted(const am_Ctrl *c)
-{ return _mm_movemask_epi8(_mm_cmpeq_epi8(_mm_set1_epi8(AM_DELETED), am_group(c))); }
-
-static am_BitMask am_group_full(const am_Ctrl *c)
-{ return _mm_movemask_epi8(am_group(c)) ^ 0xffff; }
-
-static am_BitMask am_group_nonfull(am_Ctrl *c)
-{ return _mm_movemask_epi8(am_group(c)); }
-
-static am_Size am_ctz(am_BitMask g) {
+static am_Size am_ctz16(am_BitMask mask) {
 #if _MSC_VER
     unsigned long n = 0;
-    unsigned char r = _BitScanForward(&n, g);
+    unsigned char r = _BitScanForward(&n, mask);
     assert(r);
     return (am_Size)n;
 #elif defined(__has_builtin) && __has_builtin(__builtin_ctz)
-    return __builtin_ctz(g);
+    return __builtin_ctz(mask);
 #else
     am_Size n = 31;
-    am_BitMask og = g;
-    g &= ~g + 1;
-    n -= (am_Size)!!(g & 0x0000FFFFULL) << 4;
-    n -= (am_Size)!!(g & 0x00FF00FFULL) << 3;
-    n -= (am_Size)!!(g & 0x0F0F0F0FULL) << 2;
-    n -= (am_Size)!!(g & 0x33333333ULL) << 1;
-    n -= (am_Size)!!(g & 0x55555555ULL);
+    mask &= ~mask + 1;
+    n -= (am_Size)!!(mask & 0x0000FFFFULL) << 4;
+    n -= (am_Size)!!(mask & 0x00FF00FFULL) << 3;
+    n -= (am_Size)!!(mask & 0x0F0F0F0FULL) << 2;
+    n -= (am_Size)!!(mask & 0x33333333ULL) << 1;
+    n -= (am_Size)!!(mask & 0x55555555ULL);
     return n;
 #endif
 }
 
-static am_Size am_clz(am_BitMask g) {
+static am_Size am_clz16(am_BitMask mask) {
 #if _MSC_VER
     unsigned long n = 0;
-    return _BitScanReverse(&n, g) ? n : 32;
+    return _BitScanReverse(&n, mask) ? 15-n : 16;
 #elif defined(__has_builtin) && __has_builtin(__builtin_clzll)
-    return __builtin_clzll(g);
+    return __builtin_clzll(g) - 16;
 #else
-    am_Size n = 28;
-    if (g >> 16) n -= 16, g >>= 16;
+    am_Size n = 12;
     if (g >>  8) n -=  8, g >>=  8;
     if (g >>  4) n -=  4, g >>=  4;
     return "\4\3\2\2\1\1\1\1\0\0\0\0\0\0\0"[g] + n;
 #endif
 }
 
-static am_BitMask am_group_next(am_BitMask g, am_Size *pidx) {
-    if (g == 0) return 0;
-    *pidx = am_ctz(g);
-    return g & (g - 1);
+static am_BitMask am_group_next(am_BitMask mask, am_Size *pidx) {
+    if (mask == 0) return 0;
+    *pidx = am_ctz16(mask);
+    return mask & (mask - 1);
 }
 
 static __m128i _mm_cmpgt_epi8_fixed(__m128i a, __m128i b) {
@@ -451,14 +443,14 @@ static __m128i _mm_cmpgt_epi8_fixed(__m128i a, __m128i b) {
 }
 
 static void am_group_tidy(am_Ctrl *c) {
-    am_Group ctrl = am_group(c);
+    am_Group g = am_group(c);
     am_Group msbs = _mm_set1_epi8(AM_EMPTY);
     am_Group dels = _mm_set1_epi8(AM_DELETED);
 #ifdef AM_HAVE_SSSE3
-    auto res = _mm_or_si128(_mm_shuffle_epi8(dels, ctrl), msbs);
+    auto res = _mm_or_si128(_mm_shuffle_epi8(dels, g), msbs);
 #else
     auto zero = _mm_setzero_si128();
-    auto special_mask = _mm_cmpgt_epi8_fixed(zero, ctrl);
+    auto special_mask = _mm_cmpgt_epi8_fixed(zero, g);
     auto res = _mm_or_si128(msbs, _mm_andnot_si128(special_mask, dels));
 #endif
     _mm_storeu_si128((am_Group*)c, res);
@@ -471,8 +463,7 @@ static int am_neverfull(am_Table *t, const am_Ctrl *c) {
     before_offset = (((c-t->ctrl) & t->mask) - AM_WIDTH) & t->mask;
     after  = am_group_empty(am_group(c));
     before = am_group_empty(am_group(&t->ctrl[before_offset]));
-    return (before ? am_clz(before) : AM_WIDTH)
-        + (after ? am_ctz(after) : AM_WIDTH) < AM_WIDTH;
+    return am_clz16(before) + (after ? am_ctz16(after) : AM_WIDTH) < AM_WIDTH;
 }
 
 #else
@@ -483,8 +474,8 @@ static int am_neverfull(am_Table *t, const am_Ctrl *c) {
 static am_Group am_group(const am_Ctrl *c)
 { return vld1_u8(c); }
 
-static am_BitMask am_group_load(const am_Ctrl *c)
-{ return vget_lane_u64(vld1_u8(c), 0); }
+static am_BitMask am_group_load(am_Group g)
+{ return vget_lane_u64(g, 0); }
 
 static am_BitMask am_group_empty(am_Group g) {
     return vget_lane_u64(vreinterpret_u64_u8(
@@ -496,16 +487,16 @@ static am_BitMask am_group_match(am_Group g, am_Hash h) {
                 vshr_n_u8(vceq_u8(vdup_n_u8(h), g), 7)), 0);
 }
 
-static am_BitMask am_group_deleted(const am_Ctrl *c) {
+static am_BitMask am_group_deleted(am_Group g) {
     return vget_lane_u64(vreinterpret_u64_u8(
-                vshr_n_u8(vceq_u8(vdup_n_u8(AM_DELETED), vld1_u8(c)), 7)), 0);
+                vshr_n_u8(vceq_u8(vdup_n_u8(AM_DELETED), g), 7)), 0);
 }
 # else
 static am_Group am_group(const am_Ctrl *c)
 { am_Group g; memcpy(&g, c, AM_WIDTH); return g; }
 
-static am_BitMask am_group_load(const am_Ctrl *c)
-{ return am_group(c); }
+static am_BitMask am_group_load(am_Group g)
+{ return g; }
 
 static am_BitMask am_group_empty(am_Group g)
 { return g & ~(g << 1) & AM_MSBS; }
@@ -515,64 +506,62 @@ static am_BitMask am_group_match(am_Group g, am_Hash h) {
     return (x - AM_LSBS) & ~x & AM_MSBS;
 }
 
-static am_BitMask am_group_deleted(const am_Ctrl *c) {
-    am_BitMask g = am_group_load(c);
+static am_BitMask am_group_deleted(am_Group g) {
     return g & (g << 1) & AM_MSBS;
 }
 # endif
 
-static am_Size am_ctz64(am_BitMask g) {
+static am_BitMask am_group_full(am_Group g)
+{ return ~am_group_load(g) & AM_MSBS; }
+
+static am_BitMask am_group_nonfull(am_Group g)
+{ return am_group_load(g) & AM_MSBS;  }
+
+static am_Size am_ctz64(am_BitMask mask) {
 #if _MSC_VER
     unsigned long n = 0;
-    unsigned char r = _BitScanForward64(&n, g);
+    unsigned char r = _BitScanForward64(&n, mask);
     assert(r);
     return (am_Size)n;
 #elif defined(__has_builtin) && __has_builtin(__builtin_ctzll)
-    return __builtin_ctzll(g);
+    return __builtin_ctzll(mask);
 #else
     am_Size n = 63;
-    am_BitMask og = g;
-    g &= ~g + 1;
-    n -= (am_Size)!!(g & 0x00000000FFFFFFFFULL) << 5;
-    n -= (am_Size)!!(g & 0x0000FFFF0000FFFFULL) << 4;
-    n -= (am_Size)!!(g & 0x00FF00FF00FF00FFULL) << 3;
-    n -= (am_Size)!!(g & 0x0F0F0F0F0F0F0F0FULL) << 2;
-    n -= (am_Size)!!(g & 0x3333333333333333ULL) << 1;
-    n -= (am_Size)!!(g & 0x5555555555555555ULL);
+    mask &= ~mask + 1;
+    n -= (am_Size)!!(mask & 0x00000000FFFFFFFFULL) << 5;
+    n -= (am_Size)!!(mask & 0x0000FFFF0000FFFFULL) << 4;
+    n -= (am_Size)!!(mask & 0x00FF00FF00FF00FFULL) << 3;
+    n -= (am_Size)!!(mask & 0x0F0F0F0F0F0F0F0FULL) << 2;
+    n -= (am_Size)!!(mask & 0x3333333333333333ULL) << 1;
+    n -= (am_Size)!!(mask & 0x5555555555555555ULL);
     return n;
 #endif
 }
 
-static am_Size am_clz64(am_BitMask g) {
+static am_Size am_clz64(am_BitMask mask) {
 #if _MSC_VER
     unsigned long n = 0;
-    return _BitScanReverse64(&n, g) ? n : 64;
+    return _BitScanReverse64(&n, mask) ? n : 64;
 #elif defined(__has_builtin) && __has_builtin(__builtin_clzll)
-    return __builtin_clzll(g);
+    return __builtin_clzll(mask);
 #else
     am_Size n = 60;
-    if (g >> 32) n -= 32, g >>= 32;
-    if (g >> 16) n -= 16, g >>= 16;
-    if (g >>  8) n -=  8, g >>=  8;
-    if (g >>  4) n -=  4, g >>=  4;
-    return "\4\3\2\2\1\1\1\1\0\0\0\0\0\0\0"[g] + n;
+    if (mask >> 32) n -= 32, mask >>= 32;
+    if (mask >> 16) n -= 16, mask >>= 16;
+    if (mask >>  8) n -=  8, mask >>=  8;
+    if (mask >>  4) n -=  4, mask >>=  4;
+    return "\4\3\2\2\1\1\1\1\0\0\0\0\0\0\0"[mask] + n;
 #endif
 }
 
-static am_BitMask am_group_next(am_BitMask g, am_Size *pidx) {
-    if (g == 0) return 0;
-    *pidx = am_ctz64(g) / AM_WIDTH;
-    return g & (g - 1);
+static am_BitMask am_group_next(am_BitMask mask, am_Size *pidx) {
+    if (mask == 0) return 0;
+    *pidx = am_ctz64(mask) / AM_WIDTH;
+    return mask & (mask - 1);
 }
 
-static am_BitMask am_group_full(const am_Ctrl *c)
-{ return ~am_group_load(c) & AM_MSBS; }
-
-static am_BitMask am_group_nonfull(am_Ctrl *c)
-{ return am_group_load(c) & AM_MSBS; }
-
 static void am_group_tidy(am_Ctrl *c) {
-    am_BitMask x = am_group_load(c) & AM_MSBS;
+    am_BitMask x = am_group_load(am_group(c)) & AM_MSBS;
     am_BitMask r = ~x + (x >> 7);
     memcpy(c, &r, AM_WIDTH);
 }
@@ -587,7 +576,6 @@ static int am_neverfull(am_Table *t, const am_Ctrl *c) {
     return (am_clz64(before)/AM_WIDTH
             + (after ? am_ctz64(after)/AM_WIDTH : AM_WIDTH)) < AM_WIDTH;
 }
-
 #endif
 
 static void am_resettable(am_Table *t) {
@@ -601,12 +589,12 @@ static void am_resettable(am_Table *t) {
 static const am_Entry *am_nextentry(am_Iterator *it) {
     const am_Table *t = it->t;
     am_Size idx;
-    while (it->group == 0) {
+    while (it->mask == 0) {
         if ((it->offset += AM_WIDTH) >= t->mask + (t->mask != 0))
             return (*it = am_itertable(t)), (const am_Entry*)NULL;
-        it->group = am_group_full(&t->ctrl[it->offset]);
+        it->mask = am_group_full(am_group(&t->ctrl[it->offset]));
     }
-    it->group = am_group_next(it->group, &idx);
+    it->mask = am_group_next(it->mask, &idx);
     return (it->entry = am_entry(t, it->offset + idx));
 }
 
@@ -636,12 +624,13 @@ static am_Hash am_hash(am_Symbol key) {
 static int am_find(am_Iterator *it, am_Symbol key, am_Hash h) {
     const am_Table *t = it->t;
     am_Size stride = 0;
+    am_Hash h2 = am_fullmark(h);
     if (!t->ctrl) return 0;
     it->offset = h & t->mask;
     for (;;) {
         am_Group g = am_group(&t->ctrl[it->offset]);
-        it->group = am_group_match(g, am_fullmark(h));
-        while (it->group != 0)
+        it->mask = am_group_match(g, h2);
+        while (it->mask != 0)
             if (am_nextentry(it)->key.id == key.id) return 1;
         if (am_group_empty(g)) return 0;
         stride += AM_WIDTH, it->offset = (it->offset + stride) & t->mask;
@@ -697,7 +686,7 @@ static am_Entry *am_findinsert(am_Iterator *it, am_Hash h) {
     const am_Table *t = it->t;
     am_Size stride = 0;
     it->offset = h & t->mask;
-    while (!(it->group = am_group_nonfull(&t->ctrl[it->offset])))
+    while (!(it->mask = am_group_nonfull(am_group(&t->ctrl[it->offset]))))
         stride += AM_WIDTH, it->offset = (it->offset + stride) & t->mask;
     return (am_Entry*)am_nextentry(it);
 }
@@ -739,8 +728,8 @@ static void am_tidytable(am_Table *t) {
     for (ctrl = t->ctrl, end = ctrl + t->mask + 1; ctrl < end; ctrl += AM_WIDTH)
         am_group_tidy(ctrl);
     for (it.offset = 0; it.offset < t->mask; it.offset += AM_WIDTH) {
-        it.group = am_group_deleted(&t->ctrl[it.offset]);
-        while (it.group != 0) {
+        it.mask = am_group_deleted(am_group(&t->ctrl[it.offset]));
+        while (it.mask != 0) {
             am_nextentry(&it);
             am_relocentry(&it, buff);
         }
@@ -755,9 +744,9 @@ static am_Entry *am_settable(am_Solver *solver, am_Table *t, am_Symbol key) {
     am_Entry *e;
     am_Ctrl *c;
     if (t->growth_left == 0 || (t->deleted && t->count*32 >= 24*(t->mask+1))) {
-        /*if (t->growth_left != 0)
+        if (t->growth_left != 0)
             am_tidytable(t);
-        else */if (!am_resizetable(solver, t))
+        else if (!am_resizetable(solver, t))
             return NULL;
     }
     assert(t->growth_left > 0);

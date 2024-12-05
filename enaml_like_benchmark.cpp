@@ -234,7 +234,7 @@ int main()
         am_Num width = size.width;
         am_Num height = size.height;
 
-        ankerl::nanobench::Bench().minEpochIterations(100000).run("suggest value " + std::to_string(size.width) + "x" + std::to_string(size.height), [&] {
+        ankerl::nanobench::Bench().minEpochIterations(20000).run("suggest value " + std::to_string(size.width) + "x" + std::to_string(size.height), [&] {
             am_suggest(widthVar, width);
             am_suggest(heightVar, height);
             am_updatevars(S);
@@ -245,4 +245,4 @@ int main()
     return 0;
 }
 
-// cc: flags+='-O2 -std=c++11'
+// cc: flags+='-O3 -std=c++11'
