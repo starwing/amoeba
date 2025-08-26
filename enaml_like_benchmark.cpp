@@ -195,6 +195,7 @@ void build_solver(am_Solver* S, am_Var* width, am_Var* height)
         am_setrelation(c, constraint.relation);
         int r = am_add(c);
         assert(r == AM_OK);
+        (void)r;
     }
 }
 
@@ -245,4 +246,4 @@ int main()
     return 0;
 }
 
-// cc: flags+='-O3 -std=c++11'
+// cc: flags+='-O3 -std=c++11 -DNDEBUG'

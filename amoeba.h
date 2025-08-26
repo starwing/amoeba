@@ -394,19 +394,16 @@ static am_BitMask am_group_empty(am_Group g) {
 static am_Size am_ctz16(am_BitMask mask) {
 #if _MSC_VER
     unsigned long n = 0;
-    unsigned char r = _BitScanForward(&n, mask);
-    assert(r);
-    return (am_Size)n;
+    return _BitScanForward(&n, mask) ? n : 16;
 #elif defined(__has_builtin) && __has_builtin(__builtin_ctz)
     return __builtin_ctz(mask);
 #else
-    am_Size n = 31;
+    am_Size n = 15;
     mask &= ~mask + 1;
-    n -= (am_Size)!!(mask & 0x0000FFFFULL) << 4;
-    n -= (am_Size)!!(mask & 0x00FF00FFULL) << 3;
-    n -= (am_Size)!!(mask & 0x0F0F0F0FULL) << 2;
-    n -= (am_Size)!!(mask & 0x33333333ULL) << 1;
-    n -= (am_Size)!!(mask & 0x55555555ULL);
+    n -= (am_Size)!!(mask & 0x00FFULL) << 3;
+    n -= (am_Size)!!(mask & 0x0F0FULL) << 2;
+    n -= (am_Size)!!(mask & 0x3333ULL) << 1;
+    n -= (am_Size)!!(mask & 0x5555ULL);
     return n;
 #endif
 }
@@ -415,8 +412,8 @@ static am_Size am_clz16(am_BitMask mask) {
 #if _MSC_VER
     unsigned long n = 0;
     return _BitScanReverse(&n, mask) ? 15-n : 16;
-#elif defined(__has_builtin) && __has_builtin(__builtin_clzll)
-    return __builtin_clzll(g) - 16;
+#elif defined(__has_builtin) && __has_builtin(__builtin_clz)
+    return __builtin_clz(mask) - 16;
 #else
     am_Size n = 12;
     if (g >>  8) n -=  8, g >>=  8;
@@ -433,13 +430,13 @@ static am_BitMask am_group_next(am_BitMask mask, am_Size *pidx) {
 
 static __m128i _mm_cmpgt_epi8_fixed(__m128i a, __m128i b) {
 #if defined(__GNUC__) && !defined(__clang__)
-  if (CHAR_MIN == 0) {
-    const __m128i mask = _mm_set1_epi8(0x80);
-    const __m128i diff = _mm_subs_epi8(b, a);
-    return _mm_cmpeq_epi8(_mm_and_si128(diff, mask), mask);
-  }
+    if (CHAR_MIN == 0) {
+        const __m128i mask = _mm_set1_epi8(0x80);
+        const __m128i diff = _mm_subs_epi8(b, a);
+        return _mm_cmpeq_epi8(_mm_and_si128(diff, mask), mask);
+    }
 #endif
-  return _mm_cmpgt_epi8(a, b);
+    return _mm_cmpgt_epi8(a, b);
 }
 
 static void am_group_tidy(am_Ctrl *c) {
@@ -447,11 +444,12 @@ static void am_group_tidy(am_Ctrl *c) {
     am_Group msbs = _mm_set1_epi8(AM_EMPTY);
     am_Group dels = _mm_set1_epi8(AM_DELETED);
 #ifdef AM_HAVE_SSSE3
-    auto res = _mm_or_si128(_mm_shuffle_epi8(dels, g), msbs);
+    am_Group res = _mm_or_si128(_mm_shuffle_epi8(dels, g), msbs);
+    (void)_mm_cmpgt_epi8_fixed;
 #else
-    auto zero = _mm_setzero_si128();
-    auto special_mask = _mm_cmpgt_epi8_fixed(zero, g);
-    auto res = _mm_or_si128(msbs, _mm_andnot_si128(special_mask, dels));
+    am_Group zero = _mm_setzero_si128();
+    am_Group special_mask = _mm_cmpgt_epi8_fixed(zero, g);
+    am_Group res = _mm_or_si128(msbs, _mm_andnot_si128(special_mask, dels));
 #endif
     _mm_storeu_si128((am_Group*)c, res);
 }
@@ -751,10 +749,6 @@ static am_Entry *am_settable(am_Solver *solver, am_Table *t, am_Symbol key) {
     }
     assert(t->growth_left > 0);
     e = am_findinsert(&it, h), c = am_ctrl(t, e);
-    {
-        am_Ctrl *mem = t->ctrl - am_alignsize(t->mask + 1, t->entry_size);
-        assert((am_Ctrl*)e >= mem && (am_Ctrl*)e < t->ctrl);
-    }
     ++t->count, t->growth_left -= (*c == AM_EMPTY);
     am_writectrl(t, c, am_fullmark(h));
     e->key = key, e->hash = h;
