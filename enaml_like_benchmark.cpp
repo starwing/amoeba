@@ -201,14 +201,14 @@ void build_solver(am_Solver* S, am_Var* width, am_Var* height)
 
 int main()
 {
-    ankerl::nanobench::Bench().minEpochIterations(100).run("building solver", [&] {
-        am_Solver *S = am_newsolver(NULL, NULL);
-        am_Var *width = am_newvariable(S);
-        am_Var *height = am_newvariable(S);
-        build_solver(S, width, height);
-        ankerl::nanobench::doNotOptimizeAway(S); //< prevent the compiler to optimize away the S
-        am_delsolver(S);
-    });
+    // ankerl::nanobench::Bench().minEpochIterations(100).run("building solver", [&] {
+    //     am_Solver *S = am_newsolver(NULL, NULL);
+    //     am_Var *width = am_newvariable(S);
+    //     am_Var *height = am_newvariable(S);
+    //     build_solver(S, width, height);
+    //     ankerl::nanobench::doNotOptimizeAway(S); //< prevent the compiler to optimize away the S
+    //     am_delsolver(S);
+    // });
 
     struct Size
     {

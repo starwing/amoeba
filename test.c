@@ -43,34 +43,33 @@ static void am_dumpkey(am_Symbol sym) {
     printf("%c%d", ch, (int)sym.id);
 }
 
-static void am_dumprow(am_Row *row) {
+static void am_dumprow(const am_Row *row) {
     am_Iterator it = am_itertable(&row->terms);
-    am_Term *term;
     printf("%g", row->constant);
-    while ((term = (am_Term*)am_nextentry(&it))) {
-        am_Num multiplier = term->multiplier;
+    while (am_nextentry(&it)) {
+        am_Num *term = am_ivalue(am_Num,it);
+        am_Num multiplier = *term;
         printf(" %c ", multiplier > 0.0 ? '+' : '-');
         if (multiplier < 0.0) multiplier = -multiplier;
         if (!am_approx(multiplier, 1.0f))
             printf("%g*", multiplier);
-        am_dumpkey(am_key(term));
+        am_dumpkey(it.key);
     }
     printf("\n");
 }
 
 static void am_dumpsolver(am_Solver *solver) {
     am_Iterator it = am_itertable(&solver->rows);
-    am_Row *row = NULL;
     int idx = 0;
     printf("-------------------------------\n");
     printf("solver: ");
     am_dumprow(&solver->objective);
-    printf("rows(%d):\n", (int)solver->rows.count);
-    while ((row = (am_Row*)am_nextentry(&it))) {
+    printf("rows(%d):\n", solver->rows.ctrl ? (int)amH(&solver->rows)->count : 0);
+    while (am_nextentry(&it)) {
         printf("%d. ", ++idx);
-        am_dumpkey(am_key(row));
+        am_dumpkey(it.key);
         printf(" = ");
-        am_dumprow(row);
+        am_dumprow(am_ivalue(am_Row,it));
     }
     printf("-------------------------------\n");
 }
