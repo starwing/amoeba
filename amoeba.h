@@ -165,9 +165,14 @@ typedef struct am_Symbol {
     unsigned type : 2;
 } am_Symbol;
 
+typedef struct am_Key {
+    am_Hash   hash;
+    am_Symbol sym;
+} am_Key;
+
 typedef struct am_Header {
     am_Size    count;
-    am_Symbol *keys;
+    am_Key    *keys;
     void      *values;
 } am_Header;
 
@@ -336,14 +341,14 @@ static int am_nextentry(am_Iterator *it) {
     am_Size cur, size = t->size;
     while ((cur = it->offset++) < size)
         if ((t->ctrl[cur] & AM_USED))
-            return (it->key = amH(t)->keys[cur]), 1;
+            return (it->key = amH(t)->keys[cur].sym), 1;
     return (it->offset = 0), 0;
 }
 
 static void am_freetable(am_Solver *solver, am_Table *t) {
     size_t hsize;
     if (t->ctrl == NULL) return;
-    hsize = sizeof(am_Header) + t->size * (sizeof(am_Symbol)+t->value_size+1);
+    hsize = sizeof(am_Header) + t->size * (sizeof(am_Key) + t->value_size+1);
     solver->allocf(solver->ud, amH(t), 0, hsize);
     am_inittable(t, t->value_size);
 }
@@ -363,26 +368,25 @@ static am_Header *amH_alloc(am_Solver *solver, const am_Table *t) {
     for (capacity = AM_MIN_SIZE; capacity < count; capacity <<= 1)
         ;
     assert(count <= capacity && (capacity & (capacity-1)) == 0);
-    hsize = sizeof(am_Header) + capacity * (sizeof(am_Symbol)+t->value_size+1);
+    hsize = sizeof(am_Header) + capacity * (sizeof(am_Key) + t->value_size+1);
     h = (am_Header*)solver->allocf(solver->ud, NULL, hsize, 0);
     if (h == NULL) return NULL;
     h->count = capacity;
-    h->keys = (am_Symbol*)((am_Ctrl*)(h + 1) + capacity);
+    h->keys = (am_Key*)((am_Ctrl*)(h + 1) + capacity);
     h->values = h->keys + capacity;
     memset(h+1, AM_EMPTY, capacity);
     return h;
 }
 
-static void *amH_rawset(am_Table *t, am_Symbol key) {
-    am_Hash hash = amH_hash(key);
-    am_Size mask = t->size - 1, offset = hash & mask;
+static void *amH_rawset(am_Table *t, am_Key key) {
+    am_Size mask = t->size - 1, offset = key.hash & mask;
     assert(t->growth_left > 0);
     while (t->ctrl[offset] >= AM_USED)
         offset = (offset + 1) & mask;
     ++amH(t)->count;
     t->growth_left -= (t->ctrl[offset] == AM_EMPTY);
     t->deleted -= (t->ctrl[offset] == AM_DELETED);
-    t->ctrl[offset] = amH_fingerprint(hash);
+    t->ctrl[offset] = amH_fingerprint(key.hash);
     amH(t)->keys[offset] = key;
     return amH_val(t, offset);
 }
@@ -397,7 +401,7 @@ static int amH_resizetable(am_Solver *solver, am_Table *t) {
     nt.ctrl = (am_Ctrl*)(h+1);
     amH_resetgrowth(&nt);
     while (am_nextentry(&it)) {
-        void *value = amH_rawset(&nt, it.key);
+        void *value = amH_rawset(&nt, amH(t)->keys[it.offset-1]);
         memcpy(value, am_ivalue(void,it), t->value_size);
     }
     am_freetable(solver, t);
@@ -407,18 +411,17 @@ static int amH_resizetable(am_Solver *solver, am_Table *t) {
 static void amH_tidytable(am_Table *t) {
     am_Header *h = amH(t);
     am_Size cur, idx, mask = t->size - 1;
-    am_Hash hash;
     for (cur = 0; cur < t->size; ++cur)
         t->ctrl[cur] &= AM_USED;
     for (cur = 0; cur < t->size; ++cur) {
         if (t->ctrl[cur] == AM_EMPTY) continue;
-        hash = amH_hash(h->keys[cur]), idx = hash & mask;
+        idx = h->keys[cur].hash & mask;
         while ((idx < cur && t->ctrl[idx] != AM_EMPTY) ||
                 (idx > cur && t->ctrl[idx] == AM_SENTINEL))
             idx = (idx + 1) & mask;
         if (idx > cur) {
             if (t->ctrl[idx] == AM_USED) {
-                am_swap(&h->keys[idx], &h->keys[cur], sizeof(am_Symbol));
+                am_swap(&h->keys[idx], &h->keys[cur], sizeof(am_Key));
                 am_swap(amH_val(t,idx), amH_val(t,cur), t->value_size);
                 cur -= 1; /* retry current */
             } else {
@@ -434,7 +437,7 @@ static void amH_tidytable(am_Table *t) {
                 amH_setval(t, idx, amH_val(t, cur));
                 t->ctrl[cur] = AM_EMPTY;
             }
-            t->ctrl[idx] = amH_fingerprint(hash);
+            t->ctrl[idx] = amH_fingerprint(h->keys[idx].hash);
         }
     }
     amH_resetgrowth(t);
@@ -448,21 +451,23 @@ static void am_deltable(am_Table *t, const void *value) {
     if (t->deleted*4 > t->size) amH_tidytable(t);
 }
 
-static void *am_settable(am_Solver *solver, am_Table *t, am_Symbol key) {
+static void *am_settable(am_Solver *solver, am_Table *t, am_Symbol sym) {
+    am_Key key;
     if (t->growth_left == 0 && !amH_resizetable(solver, t)) return NULL;
     if (t->deleted*4 > t->size) amH_tidytable(t);
+    key.sym = sym, key.hash = amH_hash(sym);
     return amH_rawset(t, key);
 }
 
-static const void *am_gettable(const am_Table *t, am_Symbol key) {
-    const am_Symbol *keys;
+static const void *am_gettable(const am_Table *t, am_Symbol sym) {
+    const am_Key *keys;
     am_Size remain, offset, mask = t->size - 1;
-    am_Hash h = amH_hash(key), h2 = amH_fingerprint(h);
+    am_Hash h = amH_hash(sym), h2 = amH_fingerprint(h);
     if (!t->ctrl) return NULL;
     keys = amH(t)->keys;
     remain = t->size, offset = h & mask;
     while (t->ctrl[offset] != AM_EMPTY && remain > 0) {
-        if (t->ctrl[offset] == h2 && keys[offset].id == key.id)
+        if (t->ctrl[offset] == h2 && keys[offset].sym.id == sym.id)
             return amH_val(t, offset);
         remain -= 1, offset = (offset + 1) & mask;
     }
@@ -497,7 +502,6 @@ static void am_multiply(am_Row *row, am_Num multiplier) {
 static void am_addvar(am_Solver *solver, am_Row *row, am_Symbol sym, am_Num value) {
     am_Num *term;
     if (sym.id == 0 || am_nearzero(value)) return;
-    // TODO: make a find_or_insert routine
     term = (am_Num*)am_gettable(&row->terms, sym);
     if (term == NULL) {
         term = (am_Num*)am_settable(solver, &row->terms, sym);
