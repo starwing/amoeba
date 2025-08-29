@@ -268,20 +268,31 @@ static void test_all(void) {
     am_suggest(xm, 0.0);
     am_dumpsolver(solver);
     am_updatevars(solver);
-    printf("xl: %f, xm: %f, xr: %f\n",
-            am_value(xl),
-            am_value(xm),
-            am_value(xr));
+    assert(am_value(xl) == 0.f && am_value(xm) == 5.f && am_value(xr) == 10.f);
 
     printf("suggest to 70.0\n");
     am_suggest(xm, 70.0);
     am_updatevars(solver);
     am_dumpsolver(solver);
+    assert(am_value(xl) == 65.f && am_value(xm) == 70.f && am_value(xr) == 75.f);
 
-    printf("xl: %f, xm: %f, xr: %f\n",
-            am_value(xl),
-            am_value(xm),
-            am_value(xr));
+    printf("suggest to 60.0\n");
+    am_suggest(xm, 60.0);
+    am_updatevars(solver);
+    am_dumpsolver(solver);
+    assert(am_value(xl) == 55.f && am_value(xm) == 60.f && am_value(xr) == 65.f);
+
+    printf("suggest to 50.0\n");
+    am_suggest(xm, 50.0);
+    am_updatevars(solver);
+    am_dumpsolver(solver);
+    assert(am_value(xl) == 45.f && am_value(xm) == 50.f && am_value(xr) == 55.f);
+
+    printf("suggest to 40.0\n");
+    am_suggest(xm, 40.0);
+    am_updatevars(solver);
+    am_dumpsolver(solver);
+    assert(am_value(xl) == 35.f && am_value(xm) == 40.f && am_value(xr) == 45.f);
 
     am_deledit(xm);
     am_updatevars(solver);
@@ -291,6 +302,19 @@ static void test_all(void) {
             am_value(xl),
             am_value(xm),
             am_value(xr));
+
+    /* test dead vars */
+    assert(xm->refcount == 2); /* xm & c1 */
+    am_suggest(xm, 50);
+    assert(xm->refcount == 4); /* xm & c1 & edit & dirty */
+    am_deledit(xm); 
+    assert(xm->refcount == 3); /* xm & c1 & dirty */
+    am_delvariable(xm);
+    assert(xm->refcount == 2); /* c1 & dirty */
+    am_delconstraint(c1);
+    assert(xm->refcount == 1); /* dirty */
+    am_updatevars(solver);
+    am_dumpsolver(solver);
 
     am_delsolver(solver);
     printf("allmem = %d\n", (int)allmem);
