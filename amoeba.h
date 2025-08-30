@@ -181,14 +181,13 @@ typedef struct am_Iterator {
 
 typedef struct am_Row {
     am_Symbol infeasible_next;
-    am_Table  terms;
     am_Num    constant;
+    am_Table  terms;
 } am_Row;
 
 typedef struct am_Var {
     am_Symbol       next;
-    unsigned        refcount : AM_UNSIGNED_BITS - 1;
-    unsigned        dirty    : 1;
+    unsigned        refcount;
     am_Num         *value;
 } am_Var;
 
@@ -201,25 +200,26 @@ typedef struct am_Suggest {
 } am_Suggest;
 
 struct am_Constraint {
+    void      *ud;
     am_Row     expression;
     am_Symbol  sym;
     am_Symbol  marker;
     am_Symbol  other;
     unsigned   marker_id;
-    unsigned   other_id;
-    int        relation;
-    am_Solver *solver;
+    unsigned   other_id : AM_UNSIGNED_BITS - 2;
+    unsigned   relation : 2;
     am_Num     strength;
+    am_Solver *solver;
 };
 
 struct am_Solver {
     am_Allocf *allocf;
     void      *ud;
     am_Row     objective;
-    am_Table   vars;            /* symbol -> VarEntry */
-    am_Table   constraints;     /* symbol -> ConsEntry */
-    am_Table   suggests;        /* symbol -> Suggest */
-    am_Table   rows;            /* symbol -> Row */
+    am_Table   vars;            /* symbol -> am_Var */
+    am_Table   constraints;     /* symbol -> am_Constraint* */
+    am_Table   suggests;        /* symbol -> am_Suggest */
+    am_Table   rows;            /* symbol -> am_Row */
     am_MemPool conspool;
     am_Size   symbol_count;
     am_Size   auto_update;
@@ -475,7 +475,7 @@ AM_API void am_delvariable(am_Solver *solver, am_Id var) {
     ve = (am_Var*)am_gettable(&solver->vars, var);
     if (ve == NULL) return;
     if (ve && --ve->refcount == 0) {
-        assert(!ve->dirty && ve != NULL);
+        assert(!am_isdummy(ve->next));
         am_deledit(solver, var);
         am_deltable(&solver->vars, ve);
     }
@@ -605,10 +605,12 @@ static void am_infeasible(am_Solver *solver, am_Symbol sym, am_Row *row) {
 
 static void am_markdirty(am_Solver *solver, am_Symbol var) {
     am_Var *ve = (am_Var*)am_gettable(&solver->vars, var.id);
-    if (ve == NULL || ve->dirty) return;
-    ve->next = solver->dirty_vars;
+    assert(ve != NULL);
+    if (am_isdummy(ve->next)) return;
+    ve->next.id = solver->dirty_vars.id;
+    ve->next.type = AM_DUMMY;
     solver->dirty_vars = var;
-    ve->dirty = 1, ve->refcount += 1;
+    ve->refcount += 1;
 }
 
 static void am_substitute_rows(am_Solver *solver, am_Symbol var, am_Row *expr) {
@@ -890,7 +892,7 @@ AM_API void am_updatevars(am_Solver *solver) {
         am_Var *ve = (am_Var*)am_gettable(&solver->vars, var.id);
         assert(ve != NULL);
         solver->dirty_vars = ve->next;
-        ve->dirty = 0;
+        ve->next = am_null();
         if (ve->refcount == 1) {
             am_deledit(solver, var.id);
             am_deltable(&solver->vars, ve);
