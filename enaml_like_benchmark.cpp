@@ -14,60 +14,62 @@
 #define AM_IMPLEMENTATION
 #include "amoeba.h"
 
-void build_solver(am_Solver* S, am_Var* width, am_Var* height)
+void build_solver(am_Solver* S, am_Id width, am_Id height)
 {
     // Create custom strength
     am_Num mmedium = AM_MEDIUM * 1.25;
     am_Num smedium = AM_MEDIUM * 100;
 
     // Create the variable
-    am_Var *left            = am_newvariable(S);
-    am_Var *top             = am_newvariable(S);
-    am_Var *contents_top    = am_newvariable(S);
-    am_Var *contents_bottom = am_newvariable(S);
-    am_Var *contents_left   = am_newvariable(S);
-    am_Var *contents_right  = am_newvariable(S);
-    am_Var *midline         = am_newvariable(S);
-    am_Var *ctleft          = am_newvariable(S);
-    am_Var *ctheight        = am_newvariable(S);
-    am_Var *cttop           = am_newvariable(S);
-    am_Var *ctwidth         = am_newvariable(S);
-    am_Var *lb1left         = am_newvariable(S);
-    am_Var *lb1height       = am_newvariable(S);
-    am_Var *lb1top          = am_newvariable(S);
-    am_Var *lb1width        = am_newvariable(S);
-    am_Var *lb2left         = am_newvariable(S);
-    am_Var *lb2height       = am_newvariable(S);
-    am_Var *lb2top          = am_newvariable(S);
-    am_Var *lb2width        = am_newvariable(S);
-    am_Var *lb3left         = am_newvariable(S);
-    am_Var *lb3height       = am_newvariable(S);
-    am_Var *lb3top          = am_newvariable(S);
-    am_Var *lb3width        = am_newvariable(S);
-    am_Var *fl1left         = am_newvariable(S);
-    am_Var *fl1height       = am_newvariable(S);
-    am_Var *fl1top          = am_newvariable(S);
-    am_Var *fl1width        = am_newvariable(S);
-    am_Var *fl2left         = am_newvariable(S);
-    am_Var *fl2height       = am_newvariable(S);
-    am_Var *fl2top          = am_newvariable(S);
-    am_Var *fl2width        = am_newvariable(S);
-    am_Var *fl3left         = am_newvariable(S);
-    am_Var *fl3height       = am_newvariable(S);
-    am_Var *fl3top          = am_newvariable(S);
-    am_Var *fl3width        = am_newvariable(S);
+#define new_var(name) am_Num v##name; am_Id name = am_newvariable(S, &v##name)
+    new_var(left);
+    new_var(top);
+    new_var(contents_top);
+    new_var(contents_bottom);
+    new_var(contents_left);
+    new_var(contents_right);
+    new_var(midline);
+    new_var(ctleft);
+    new_var(ctheight);
+    new_var(cttop);
+    new_var(ctwidth);
+    new_var(lb1left);
+    new_var(lb1height);
+    new_var(lb1top);
+    new_var(lb1width);
+    new_var(lb2left);
+    new_var(lb2height);
+    new_var(lb2top);
+    new_var(lb2width);
+    new_var(lb3left);
+    new_var(lb3height);
+    new_var(lb3top);
+    new_var(lb3width);
+    new_var(fl1left);
+    new_var(fl1height);
+    new_var(fl1top);
+    new_var(fl1width);
+    new_var(fl2left);
+    new_var(fl2height);
+    new_var(fl2top);
+    new_var(fl2width);
+    new_var(fl3left);
+    new_var(fl3height);
+    new_var(fl3top);
+    new_var(fl3width);
+#undef new_var
 
     // Add the edit variables
-    am_addedit(width, AM_STRONG);
-    am_addedit(height, AM_STRONG);
+    am_addedit(S, width, AM_STRONG);
+    am_addedit(S, height, AM_STRONG);
 
 
     // Add the constraints
     const
     struct Info {
         struct Item {
-            am_Var *var;
-            am_Num  mul;
+            am_Id  var;
+            am_Num mul;
         } term[5];
         am_Num constant;
         int    relation;
@@ -200,14 +202,14 @@ void build_solver(am_Solver* S, am_Var* width, am_Var* height)
 
 int main()
 {
-    ankerl::nanobench::Bench().minEpochIterations(100).run("building solver", [&] {
-        am_Solver *S = am_newsolver(NULL, NULL);
-        am_Var *width = am_newvariable(S);
-        am_Var *height = am_newvariable(S);
-        build_solver(S, width, height);
-        ankerl::nanobench::doNotOptimizeAway(S); //< prevent the compiler to optimize away the S
-        am_delsolver(S);
-    });
+    // ankerl::nanobench::Bench().minEpochIterations(100).run("building solver", [&] {
+    //     am_Solver *S = am_newsolver(NULL, NULL);
+    //     am_Var *width = am_newvariable(S);
+    //     am_Var *height = am_newvariable(S);
+    //     build_solver(S, width, height);
+    //     ankerl::nanobench::doNotOptimizeAway(S); //< prevent the compiler to optimize away the S
+    //     am_delsolver(S);
+    // });
 
     struct Size
     {
@@ -225,8 +227,9 @@ int main()
     };
 
     am_Solver *S = am_newsolver(NULL, NULL);
-    am_Var *widthVar = am_newvariable(S);
-    am_Var *heightVar = am_newvariable(S);
+    am_Num width, height;
+    am_Id widthVar = am_newvariable(S, &width);
+    am_Id heightVar = am_newvariable(S, &height);
     build_solver(S, widthVar, heightVar);
 
     for (const Size& size : sizes)
@@ -235,8 +238,8 @@ int main()
         am_Num height = size.height;
 
         ankerl::nanobench::Bench().minEpochIterations(100000).run("suggest value " + std::to_string(size.width) + "x" + std::to_string(size.height), [&] {
-            am_suggest(widthVar, width);
-            am_suggest(heightVar, height);
+            am_suggest(S, widthVar, width);
+            am_suggest(S, heightVar, height);
             am_updatevars(S);
         });
     }

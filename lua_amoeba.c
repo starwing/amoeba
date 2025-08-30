@@ -20,7 +20,8 @@ typedef struct aml_Solver {
 } aml_Solver;
 
 typedef struct aml_Var {
-    am_Var     *var;
+    am_Id       var;
+    am_Num      value;
     aml_Solver *S;
     const char *name;
 } aml_Var;
@@ -32,7 +33,7 @@ typedef struct aml_Cons {
 
 typedef struct aml_Item {
     int            type;
-    am_Var        *var;
+    am_Id          var;
     am_Constraint *cons;
     am_Num         value;
 } aml_Item;
@@ -60,23 +61,20 @@ static void aml_setweak(lua_State *L, const char *mode) {
     lua_setmetatable(L, -2);
 }
 
-static am_Var *aml_checkvar(lua_State *L, aml_Solver *S, int idx) {
+static am_Id aml_checkvar(lua_State *L, aml_Solver *S, int idx) {
     aml_Var *lvar = (aml_Var*)luaL_testudata(L, idx, AML_VAR_TYPE);
     const char *name;
     if (lvar != NULL) {
-        if (lvar->var == NULL) luaL_argerror(L, idx, "invalid variable");
+        if (lvar->var == 0) luaL_argerror(L, idx, "invalid variable");
         return lvar->var;
     }
     name = luaL_checkstring(L, idx);
     lua_rawgeti(L, LUA_REGISTRYINDEX, S->ref_vars);
-    if (lua_getfield(L, -2, name) == LUA_TUSERDATA) {
-        lua_remove(L, -2);
-        return aml_checkvar(L, S, -1);
-    }
+    if (lua_getfield(L, -2, name) == LUA_TUSERDATA)
+        return lua_remove(L, -2), aml_checkvar(L, S, -1);
     lua_pop(L, 2);
-    aml_argferror(L, idx, "variable named '%s' not exists",
+    return aml_argferror(L, idx, "variable named '%s' not exists",
             lua_tostring(L, idx));
-    return NULL;
 }
 
 static aml_Cons *aml_newcons(lua_State *L, aml_Solver *S, am_Num strength) {
@@ -114,7 +112,7 @@ static aml_Item aml_checkitem(lua_State *L, aml_Solver *S, int idx) {
         }
         lvar = luaL_testudata(L, idx, AML_VAR_TYPE);
         if (lvar) {
-            if (lvar->var == NULL) luaL_argerror(L, idx, "invalid variable");
+            if (lvar->var == 0) luaL_argerror(L, idx, "invalid variable");
             item.var = lvar->var;
             item.type  = AML_VAR;
             return item;
@@ -140,13 +138,13 @@ static aml_Solver *aml_checkitems(lua_State *L, int start, aml_Item *items) {
         return lcons->S;
     }
     if ((lvar = (aml_Var*)luaL_testudata(L, start, AML_VAR_TYPE)) != NULL) {
-        if (lvar->var == NULL) luaL_argerror(L, start, "invalid variable");
+        if (lvar->var == 0) luaL_argerror(L, start, "invalid variable");
         items[0].type = AML_VAR, items[0].var = lvar->var;
         items[1] = aml_checkitem(L, lvar->S, start+1);
         return lvar->S;
     }
     if ((lvar = (aml_Var*)luaL_testudata(L, start+1, AML_VAR_TYPE)) != NULL) {
-        if (lvar->var == NULL) luaL_argerror(L, start+1, "invalid variable");
+        if (lvar->var == 0) luaL_argerror(L, start+1, "invalid variable");
         items[1].type = AML_VAR, items[1].var = lvar->var;
         items[0] = aml_checkitem(L, lvar->S, start);
         return lvar->S;
@@ -155,11 +153,11 @@ static aml_Solver *aml_checkitems(lua_State *L, int start, aml_Item *items) {
     return NULL;
 }
 
-static int aml_performitem(am_Constraint *cons, aml_Item *item, am_Num multiplier) {
+static int aml_performitem(am_Constraint *cons, aml_Item *item, am_Num coef) {
     switch (item->type) {
-    case AML_CONSTANT: return am_addconstant(cons, item->value*multiplier); break;
-    case AML_VAR:      return am_addterm(cons, item->var, multiplier); break;
-    case AML_CONS:     return am_mergeconstraint(cons, item->cons, multiplier); break;
+    case AML_CONSTANT: return am_addconstant(cons, item->value*coef); break;
+    case AML_VAR:      return am_addterm(cons, item->var, coef); break;
+    case AML_CONS:     return am_mergeconstraint(cons, item->cons, coef); break;
     }
     return AM_FAILED;
 }
@@ -229,20 +227,20 @@ static void aml_dumpkey(luaL_Buffer *B, int idx, am_Symbol sym) {
 }
 
 static void aml_dumprow(luaL_Buffer *B, int idx, am_Row *row) {
+    am_Iterator it = am_itertable(&row->terms);
     lua_State *L = B->L;
-    am_Term *term = NULL;
     lua_pushfstring(L, "%f", row->constant);
     luaL_addvalue(B);
-    while ((am_nextentry(&row->terms, (am_Entry**)&term))) {
-        am_Num multiplier = term->multiplier;
-        lua_pushfstring(L, " %c ", multiplier > 0.0f ? '+' : '-');
+    while ((am_nextentry(&it))) {
+        am_Num coef = *am_val(am_Num,it);
+        lua_pushfstring(L, " %c ", coef > 0.0f ? '+' : '-');
         luaL_addvalue(B);
-        if (multiplier < 0.0f) multiplier = -multiplier;
-        if (!am_approx(multiplier, 1.0f)) {
-            lua_pushfstring(L, "%f*", multiplier);
+        if (coef < 0.0f) coef = -coef;
+        if (!am_approx(coef, 1.0f)) {
+            lua_pushfstring(L, "%f*", coef);
             luaL_addvalue(B);
         }
-        aml_dumpkey(B, idx, am_key(term));
+        aml_dumpkey(B, idx, it.key);
     }
 }
 
@@ -336,12 +334,12 @@ static int Lvar_new(lua_State *L) {
         lua_pop(L, 1);
     }
     lvar = (aml_Var*)lua_newuserdata(L, sizeof(aml_Var));
-    lvar->var  = am_newvariable(S->solver);
+    lvar->var  = am_newvariable(S->solver, &lvar->value);
     lvar->S    = S;
     lvar->name = lua_tostring(L, 2);
     if (lvar->name == NULL) {
         lua_settop(L, 1);
-        lua_pushfstring(L, "v%d", am_variableid(lvar->var));
+        lua_pushfstring(L, "v%d", lvar->var);
         lvar->name = lua_tostring(L, 2);
     }
     luaL_setmetatable(L, AML_VAR_TYPE);
@@ -349,34 +347,33 @@ static int Lvar_new(lua_State *L) {
     lua_pushvalue(L, -2);
     lua_setfield(L, -2, lvar->name);
     lua_pushvalue(L, -2);
-    lua_rawseti(L, -2, am_variableid(lvar->var));
+    lua_rawseti(L, -2, lvar->var);
     lua_pop(L, 1);
     return 1;
 }
 
 static int Lvar_delete(lua_State *L) {
     aml_Var *lvar = (aml_Var*)luaL_checkudata(L, 1, AML_VAR_TYPE);
-    if (lvar->var == NULL) return 0;
-    am_delvariable(lvar->var);
+    if (lvar->var == 0) return 0;
+    am_delvariable(lvar->S->solver, lvar->var);
     lua_rawgeti(L, LUA_REGISTRYINDEX, lvar->S->ref_vars);
     lua_pushnil(L);
     lua_setfield(L, -2, lvar->name);
-    lvar->var  = NULL;
+    lvar->var  = 0;
     lvar->name = NULL;
     return 0;
 }
 
 static int Lvar_value(lua_State *L) {
     aml_Var *lvar = (aml_Var*)luaL_checkudata(L, 1, AML_VAR_TYPE);
-    if (lvar->var == NULL) luaL_argerror(L, 1, "invalid variable");
-    lua_pushnumber(L, am_value(lvar->var));
-    return 1;
+    if (lvar->var == 0) luaL_argerror(L, 1, "invalid variable");
+    return lua_pushnumber(L, lvar->value), 1;
 }
 
 static int Lvar_tostring(lua_State *L) {
     aml_Var *lvar = (aml_Var*)luaL_checkudata(L, 1, AML_VAR_TYPE);
     if (lvar->var) lua_pushfstring(L, AML_VAR_TYPE "(%p): %s = %f",
-                lvar->var, lvar->name, am_value(lvar->var));
+                lvar->var, lvar->name, lvar->value);
     else lua_pushstring(L, AML_VAR_TYPE ": deleted");
     return 1;
 }
@@ -555,9 +552,8 @@ static int Ldelete(lua_State *L) {
     while (lua_next(L, -2)) {
         aml_Var *lvar = (aml_Var*)luaL_testudata(L, -1, AML_VAR_TYPE);
         if (lvar && lvar->var) {
-            am_delvariable(lvar->var);
-            lvar->var  = NULL;
-            lvar->name = NULL;
+            am_delvariable(lvar->S->solver, lvar->var);
+            lvar->var  = 0, lvar->name = NULL;
         }
         lua_pop(L, 1);
     }
@@ -589,27 +585,28 @@ static int Ltostring(lua_State *L) {
     luaL_addstring(&B, "\n  objective = ");
     aml_dumprow(&B, 2, &S->solver->objective);
     if (S->solver->rows.count != 0) {
-        am_Row *row = NULL;
+        am_Iterator it = am_itertable(&S->solver->rows);
         int idx = 0;
         lua_pushfstring(L, "\n  rows(%d):", S->solver->rows.count);
         luaL_addvalue(&B);
-        while (am_nextentry(&S->solver->rows, (am_Entry**)&row)) {
+        while (am_nextentry(&it)) {
+            am_Row *row = am_val(am_Row,it);
             lua_pushfstring(L, "\n    %d. ", ++idx);
             luaL_addvalue(&B);
-            aml_dumpkey(&B, 2, am_key(row));
+            aml_dumpkey(&B, 2, it.key);
             luaL_addstring(&B, " = ");
             aml_dumprow(&B, 2, row);
         }
     }
     if (S->solver->infeasible_rows.id != 0) {
-        am_Row *row = (am_Row*)am_gettable(&S->solver->rows,
-                S->solver->infeasible_rows);
+        am_Symbol key = S->solver->infeasible_rows;
+        am_Row *row = (am_Row*)am_gettable(&S->solver->rows, key.id);
         luaL_addstring(&B, "\n  infeasible rows: ");
-        aml_dumpkey(&B, 2, am_key(row));
+        aml_dumpkey(&B, 2, key);
         while (row != NULL) {
             luaL_addstring(&B, ", ");
-            aml_dumpkey(&B, 2, am_key(row));
-            row = (am_Row*)am_gettable(&S->solver->rows, row->infeasible_next);
+            aml_dumpkey(&B, 2, key);
+            row = (am_Row*)am_gettable(&S->solver->rows, row->infeasible_next.id);
         }
     }
     luaL_addstring(&B, "\n}");
@@ -619,9 +616,14 @@ static int Ltostring(lua_State *L) {
 
 static int Lreset(lua_State *L) {
     aml_Solver *S = (aml_Solver*)luaL_checkudata(L, 1, AML_SOLVER_TYPE);
-    int clear = lua_toboolean(L, 2);
-    am_resetsolver(S->solver, clear);
-    lua_settop(L, 1); return 1;
+    am_resetsolver(S->solver);
+    return lua_settop(L, 1), 1;
+}
+
+static int Lclearedits(lua_State *L) {
+    aml_Solver *S = (aml_Solver*)luaL_checkudata(L, 1, AML_SOLVER_TYPE);
+    am_clearedits(S->solver);
+    return lua_settop(L, 1), 1;
 }
 
 static int Lautoupdate(lua_State *L) {
@@ -653,24 +655,24 @@ static int Ldelconstraint(lua_State *L) {
 
 static int Laddedit(lua_State *L) {
     aml_Solver *S = (aml_Solver*)luaL_checkudata(L, 1, AML_SOLVER_TYPE);
-    am_Var *var = aml_checkvar(L, S, 2);
+    am_Id  var = aml_checkvar(L, S, 2);
     am_Num strength = aml_checkstrength(L, 3, AM_MEDIUM);
-    am_addedit(var, strength);
+    am_addedit(S->solver, var, strength);
     lua_settop(L, 1); return 1;
 }
 
 static int Ldeledit(lua_State *L) {
     aml_Solver *S = (aml_Solver*)luaL_checkudata(L, 1, AML_SOLVER_TYPE);
-    am_Var *var = aml_checkvar(L, S, 2);
-    am_deledit(var);
+    am_Id var = aml_checkvar(L, S, 2);
+    am_deledit(S->solver, var);
     lua_settop(L, 1); return 1;
 }
 
 static int Lsuggest(lua_State *L) {
     aml_Solver *S = (aml_Solver*)luaL_checkudata(L, 1, AML_SOLVER_TYPE);
-    am_Var *var = aml_checkvar(L, S, 2);
+    am_Id  var = aml_checkvar(L, S, 2);
     am_Num value = (am_Num)luaL_checknumber(L, 3);
-    am_suggest(var, value);
+    am_suggest(S->solver, var, value);
     lua_settop(L, 1); return 1;
 }
 
@@ -686,6 +688,7 @@ LUALIB_API int luaopen_amoeba(lua_State *L) {
         ENTRY(reset),
         ENTRY(addconstraint),
         ENTRY(delconstraint),
+        ENTRY(clearedits),
         ENTRY(addedit),
         ENTRY(deledit),
         ENTRY(suggest),

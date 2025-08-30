@@ -75,7 +75,7 @@ static void am_dumpsolver(am_Solver *solver) {
 }
 
 static am_Constraint* new_constraint(am_Solver* in_solver, double in_strength,
-        am_Var* in_term1, double in_factor1, int in_relation,
+        am_Id in_term1, double in_factor1, int in_relation,
         double in_constant, ...)
 {
     int result;
@@ -89,7 +89,7 @@ static am_Constraint* new_constraint(am_Solver* in_solver, double in_strength,
     if(in_constant) am_addconstant(c, (am_Num)in_constant);
     va_start(argp, in_constant);
     while(1) {
-        am_Var* va_term = va_arg(argp, am_Var*);
+        am_Id va_term = va_arg(argp, am_Id);
         double va_factor = va_arg(argp, double);
         if(va_term == 0) break;
         am_addterm(c, va_term, (am_Num)va_factor);
@@ -102,10 +102,8 @@ static am_Constraint* new_constraint(am_Solver* in_solver, double in_strength,
 
 static void test_all(void) {
     am_Solver *solver;
-    am_Var *xl;
-    am_Var *xm;
-    am_Var *xr;
-    am_Var *xd;
+    am_Id xl, xm, xr, xd;
+    am_Num vxl, vxm, vxr, vxd;
     am_Constraint *c1, *c2, *c3, *c4, *c5, *c6;
     int ret = setjmp(jbuf);
     printf("\n\n==========\ntest all\n");
@@ -121,22 +119,18 @@ static void test_all(void) {
     am_delsolver(solver);
 
     solver = am_newsolver(debug_allocf, NULL);
-    xl = am_newvariable(solver);
-    xm = am_newvariable(solver);
-    xr = am_newvariable(solver);
+    xl = am_newvariable(solver, &vxl);
+    xm = am_newvariable(solver, &vxm);
+    xr = am_newvariable(solver, &vxr);
 
-    assert(am_variableid(NULL) == -1);
-    assert(am_variableid(xl) == 1);
-    assert(am_variableid(xm) == 2);
-    assert(am_variableid(xr) == 3);
-    assert(!am_hasedit(NULL));
-    assert(!am_hasedit(xl));
-    assert(!am_hasedit(xm));
-    assert(!am_hasedit(xr));
+    assert(!am_hasedit(solver, 0));
+    assert(!am_hasedit(solver, xl));
+    assert(!am_hasedit(solver, xm));
+    assert(!am_hasedit(solver, xr));
     assert(!am_hasconstraint(NULL));
 
-    xd = am_newvariable(solver);
-    am_delvariable(xd);
+    xd = am_newvariable(solver, &vxd);
+    am_delvariable(solver, xd);
 
     assert(am_setrelation(NULL, AM_GREATEQUAL) == AM_FAILED);
 
@@ -152,7 +146,7 @@ static void test_all(void) {
     assert(am_setstrength(c1, AM_REQUIRED) == AM_OK);
 
     assert(am_hasconstraint(c1));
-    assert(!am_hasedit(xl));
+    assert(!am_hasedit(solver, xl));
 
     c2 = am_newconstraint(solver, AM_REQUIRED);
     am_addterm(c2, xl, 1.0);
@@ -161,7 +155,7 @@ static void test_all(void) {
     assert(ret == AM_OK);
     am_dumpsolver(solver);
 
-    am_resetsolver(solver, 1);
+    am_resetsolver(solver);
     am_delconstraint(c1);
     am_delconstraint(c2);
     am_dumpsolver(solver);
@@ -173,6 +167,8 @@ static void test_all(void) {
     am_addterm(c1, xl, 1.0);
     am_addterm(c1, xr, 1.0);
     ret = am_add(c1);
+    printf("c1: marker=%d other=%d\n", c1->marker.id, c1->other.id);
+    assert(c1->marker.type == AM_DUMMY && c1->other.type == AM_EXTERNAL);
     assert(ret == AM_OK);
     am_dumpsolver(solver);
 
@@ -183,6 +179,8 @@ static void test_all(void) {
     am_setrelation(c2, AM_LESSEQUAL);
     am_addterm(c2, xr, 1.0);
     ret = am_add(c2);
+    printf("c2: marker=%d other=%d\n", c2->marker.id, c2->other.id);
+    assert(c2->marker.type == AM_SLACK && c2->other.type == AM_EXTERNAL);
     assert(ret == AM_OK);
     am_dumpsolver(solver);
 
@@ -192,6 +190,8 @@ static void test_all(void) {
     am_setrelation(c3, AM_LESSEQUAL);
     am_addconstant(c3, 100.0);
     ret = am_add(c3);
+    printf("c3: marker=%d other=%d\n", c3->marker.id, c3->other.id);
+    assert(c3->marker.type == AM_SLACK && c3->other.type == AM_EXTERNAL);
     assert(ret == AM_OK);
     am_dumpsolver(solver);
 
@@ -201,6 +201,8 @@ static void test_all(void) {
     am_setrelation(c4, AM_GREATEQUAL);
     am_addconstant(c4, 0.0);
     ret = am_add(c4);
+    printf("c4: marker=%d other=%d\n", c4->marker.id, c4->other.id);
+    assert(c4->marker.type == AM_SLACK && c4->other.type == AM_EXTERNAL);
     assert(ret == AM_OK);
     am_dumpsolver(solver);
 
@@ -236,9 +238,10 @@ static void test_all(void) {
     ret |= am_add(c1);
     assert(ret == AM_OK);
 
-    am_resetsolver(solver, 0);
-    am_resetsolver(solver, 1);
+    am_clearedits(solver);
+    am_resetsolver(solver);
     printf("after reset\n");
+
     am_dumpsolver(solver);
     ret |= am_add(c1);
     ret |= am_add(c2);
@@ -249,70 +252,77 @@ static void test_all(void) {
     printf("after initialize\n");
     am_dumpsolver(solver);
     am_updatevars(solver);
-    printf("xl: %f, xm: %f, xr: %f\n",
-            am_value(xl),
-            am_value(xm),
-            am_value(xr));
+    printf("xl: %f, xm: %f, xr: %f\n", vxl, vxm, vxr);
 
-    am_addedit(xm, AM_MEDIUM);
+    am_addedit(solver, xm, AM_MEDIUM);
     am_dumpsolver(solver);
     am_updatevars(solver);
-    printf("xl: %f, xm: %f, xr: %f\n",
-            am_value(xl),
-            am_value(xm),
-            am_value(xr));
+    printf("xl: %f, xm: %f, xr: %f\n", vxl, vxm, vxr);
 
-    assert(am_hasedit(xm));
+    assert(am_hasedit(solver, xm));
+    am_clearedits(solver);
 
     printf("suggest to 0.0\n");
-    am_suggest(xm, 0.0);
+    am_suggest(solver, xm, 0.0);
     am_dumpsolver(solver);
     am_updatevars(solver);
-    assert(am_value(xl) == 0.f && am_value(xm) == 5.f && am_value(xr) == 10.f);
+    printf("xl=%f xm=%f xr=%f\n", vxl, vxm, vxr);
+    assert(vxl == 0.f && vxm == 5.f && vxr == 10.f);
+
+    /* make other as infeasible */
+    printf("suggest to 100.0\n");
+    am_suggest(solver, xm, 100.0);
+    am_dumpsolver(solver);
+    am_updatevars(solver);
+    assert(vxl == 90.f && vxm == 95.f && vxr == 100.f);
 
     printf("suggest to 70.0\n");
-    am_suggest(xm, 70.0);
+    am_suggest(solver, xm, 70.0);
     am_updatevars(solver);
     am_dumpsolver(solver);
-    assert(am_value(xl) == 65.f && am_value(xm) == 70.f && am_value(xr) == 75.f);
+    assert(vxl == 40.f && vxm == 70.f && vxr == 100.f);
+
+    printf("restore xr to 10.0\n");
+    am_suggest(solver, xr, 10.0);
+    am_updatevars(solver);
+    am_dumpsolver(solver);
+    assert(vxl == 0.f && vxm == 5.f && vxr == 10.f);
+    am_deledit(solver, xr);
 
     printf("suggest to 60.0\n");
-    am_suggest(xm, 60.0);
+    am_suggest(solver, xm, 60.0);
     am_updatevars(solver);
     am_dumpsolver(solver);
-    assert(am_value(xl) == 55.f && am_value(xm) == 60.f && am_value(xr) == 65.f);
+    assert(vxl == 55.f && vxm == 60.f && vxr == 65.f);
 
     printf("suggest to 50.0\n");
-    am_suggest(xm, 50.0);
+    am_suggest(solver, xm, 50.0);
     am_updatevars(solver);
     am_dumpsolver(solver);
-    assert(am_value(xl) == 45.f && am_value(xm) == 50.f && am_value(xr) == 55.f);
+    assert(vxl == 45.f && vxm == 50.f && vxr == 55.f);
 
     printf("suggest to 40.0\n");
-    am_suggest(xm, 40.0);
+    am_suggest(solver, xm, 40.0);
     am_updatevars(solver);
     am_dumpsolver(solver);
-    assert(am_value(xl) == 35.f && am_value(xm) == 40.f && am_value(xr) == 45.f);
+    assert(vxl == 35.f && vxm == 40.f && vxr == 45.f);
 
-    am_deledit(xm);
+    am_deledit(solver, xm);
     am_updatevars(solver);
     am_dumpsolver(solver);
 
-    printf("xl: %f, xm: %f, xr: %f\n",
-            am_value(xl),
-            am_value(xm),
-            am_value(xr));
+    printf("xl: %f, xm: %f, xr: %f\n", vxl, vxm, vxr);
 
     /* test dead vars */
-    assert(xm->refcount == 2); /* xm & c1 */
-    am_suggest(xm, 50);
-    assert(xm->refcount == 4); /* xm & c1 & edit & dirty */
-    am_deledit(xm); 
-    assert(xm->refcount == 3); /* xm & c1 & dirty */
-    am_delvariable(xm);
-    assert(xm->refcount == 2); /* c1 & dirty */
+    assert(am_refcount(solver, xm) == 2); /* xm & c1 */
+    am_suggest(solver, xm, 50);
+    assert(am_refcount(solver, xm) == 4); /* xm & c1 & edit & dirty */
+    am_deledit(solver, xm); 
+    assert(am_refcount(solver, xm) == 3); /* xm & c1 & dirty */
+    am_delvariable(solver, xm);
+    assert(am_refcount(solver, xm) == 2); /* c1 & dirty */
     am_delconstraint(c1);
-    assert(xm->refcount == 1); /* dirty */
+    assert(am_refcount(solver, xm) == 1); /* dirty */
     am_updatevars(solver);
     am_dumpsolver(solver);
 
@@ -331,12 +341,17 @@ static void test_binarytree(void) {
     int nCurrentRowFirstPointIndex = 0;
     am_Constraint *pC;
     am_Solver *pSolver;
-    am_Var **arrX, **arrY;
+    am_Id *arrX, *arrY;
+    am_Num *numX, *numY;
 
     printf("\n\n==========\ntest binarytree\n");
-    arrX = (am_Var**)malloc(2048 * sizeof(am_Var*));
+    arrX = (am_Id*)malloc(2048 * sizeof(am_Id));
     if (arrX == NULL) return;
     arrY = arrX + 1024;
+
+    numX = (am_Num*)malloc(2048 * sizeof(am_Num));
+    if (numX == NULL) return;
+    numY = numX + 1024;
 
     /* Create set of rules to distribute vertexes of a binary tree like this one:
      *      0
@@ -350,12 +365,12 @@ static void test_binarytree(void) {
     pSolver = am_newsolver(debug_allocf, NULL);
 
     /* Xroot=500, Yroot=10 */
-    arrX[0] = am_newvariable(pSolver);
-    arrY[0] = am_newvariable(pSolver);
-    am_addedit(arrX[0], AM_STRONG);
-    am_addedit(arrY[0], AM_STRONG);
-    am_suggest(arrX[0], 500.0f + X_OFFSET);
-    am_suggest(arrY[0], 10.0f);
+    arrX[0] = am_newvariable(pSolver, &numX[0]);
+    arrY[0] = am_newvariable(pSolver, &numY[0]);
+    am_addedit(pSolver, arrX[0], AM_STRONG);
+    am_addedit(pSolver, arrY[0], AM_STRONG);
+    am_suggest(pSolver, arrX[0], 500.0f + X_OFFSET);
+    am_suggest(pSolver, arrY[0], 10.0f);
 
     for (nRow = 1; nRow < NUM_ROWS; nRow++) {
         int nPreviousRowFirstPointIndex = nCurrentRowFirstPointIndex;
@@ -364,8 +379,9 @@ static void test_binarytree(void) {
         nCurrentRowPointsCount *= 2;
 
         for (nPoint = 0; nPoint < nCurrentRowPointsCount; nPoint++) {
-            arrX[nCurrentRowFirstPointIndex + nPoint] = am_newvariable(pSolver);
-            arrY[nCurrentRowFirstPointIndex + nPoint] = am_newvariable(pSolver);
+            int nIndex = nCurrentRowFirstPointIndex + nPoint;
+            arrX[nIndex] = am_newvariable(pSolver, &numX[nIndex]);
+            arrY[nIndex] = am_newvariable(pSolver, &numY[nIndex]);
 
             /* Ycur = Yprev_row + 15 */
             pC = am_newconstraint(pSolver, AM_REQUIRED);
@@ -430,17 +446,18 @@ static void test_binarytree(void) {
 
 static void test_unbounded(void) {
     am_Solver *solver;
-    am_Var *x, *y;
+    am_Id x, y;
+    am_Num vx, vy;
     am_Constraint *c;
     int ret = setjmp(jbuf);
-    printf("\n\n==========\ntest unbound\n");
+    printf("\n\n==========\ntest unbounded\n");
     printf("ret = %d\n", ret);
     if (ret < 0) { perror("setjmp"); return; }
     else if (ret != 0) { printf("out of memory!\n"); return; }
 
     solver = am_newsolver(debug_allocf, NULL);
-    x = am_newvariable(solver);
-    y = am_newvariable(solver);
+    x = am_newvariable(solver, &vx);
+    y = am_newvariable(solver, &vy);
 
     /* 10.0 == 0.0 */
     c = am_newconstraint(solver, AM_REQUIRED);
@@ -460,11 +477,13 @@ static void test_unbounded(void) {
     assert(ret == AM_OK);
     am_dumpsolver(solver);
 
-    am_resetsolver(solver, 1);
+    am_resetsolver(solver);
 
     /* x >= 10.0 */
     c = am_newconstraint(solver, AM_REQUIRED);
-    am_addterm(c, x, 1.0);
+    ret = am_addterm(c, x, 1.0);
+    printf("addterm = %d\n", ret);
+    assert(ret == AM_OK);
     am_setrelation(c, AM_GREATEQUAL);
     am_addconstant(c, 10.0);
     ret = am_add(c);
@@ -492,7 +511,7 @@ static void test_unbounded(void) {
     assert(ret == AM_UNBOUND);
     am_dumpsolver(solver);
 
-    am_resetsolver(solver, 1);
+    am_resetsolver(solver);
 
     /* x >= 10.0 */
     c = am_newconstraint(solver, AM_REQUIRED);
@@ -513,9 +532,9 @@ static void test_unbounded(void) {
     assert(ret == AM_UNBOUND);
     am_dumpsolver(solver);
 
-    printf("x: %f\n", am_value(x));
+    printf("x: %f\n", vx);
 
-    am_resetsolver(solver, 1);
+    am_resetsolver(solver);
 
     /* x == 10.0 */
     c = am_newconstraint(solver, AM_REQUIRED);
@@ -556,7 +575,8 @@ static void test_unbounded(void) {
 
 static void test_strength(void) {
     am_Solver *solver;
-    am_Var *x, *y;
+    am_Id x, y;
+    am_Num vx, vy;
     am_Constraint *c;
     int ret = setjmp(jbuf);
     printf("\n\n==========\ntest strength\n");
@@ -566,27 +586,27 @@ static void test_strength(void) {
 
     solver = am_newsolver(debug_allocf, NULL);
     am_autoupdate(solver, 1);
-    x = am_newvariable(solver);
-    y = am_newvariable(solver);
+    x = am_newvariable(solver, &vx);
+    y = am_newvariable(solver, &vy);
 
     /* x <= y */
     new_constraint(solver, AM_STRONG, x, 1.0, AM_LESSEQUAL, 0.0,
             y, 1.0, END);
     new_constraint(solver, AM_MEDIUM, x, 1.0, AM_EQUAL, 50, END);
     c = new_constraint(solver, AM_MEDIUM-10, y, 1.0, AM_EQUAL, 40, END);
-    printf("%f, %f\n", am_value(x), am_value(y));
-    assert(am_value(x) == 50);
-    assert(am_value(y) == 50);
+    printf("%f, %f\n", vx, vy);
+    assert(vx == 50);
+    assert(vy == 50);
 
     am_setstrength(c, AM_MEDIUM+10);
-    printf("%f, %f\n", am_value(x), am_value(y));
-    assert(am_value(x) == 40);
-    assert(am_value(y) == 40);
+    printf("%f, %f\n", vx, vy);
+    assert(vx == 40);
+    assert(vy == 40);
 
     am_setstrength(c, AM_MEDIUM-10);
-    printf("%f, %f\n", am_value(x), am_value(y));
-    assert(am_value(x) == 50);
-    assert(am_value(y) == 50);
+    printf("%f, %f\n", vx, vy);
+    assert(vx == 50);
+    assert(vy == 50);
 
     am_delsolver(solver);
     printf("allmem = %d\n", (int)allmem);
@@ -610,10 +630,14 @@ static void test_suggest(void) {
     am_Num delta = 0;
     am_Num pos;
     am_Solver *solver;
-    am_Var *splitter_l,     *splitter_w,     *splitter_r;
-    am_Var *left_child_l,   *left_child_w,   *left_child_r;
-    am_Var *splitter_bar_l, *splitter_bar_w, *splitter_bar_r;
-    am_Var *right_child_l,  *right_child_w,  *right_child_r;
+    am_Id splitter_l,     splitter_w,     splitter_r;
+    am_Id left_child_l,   left_child_w,   left_child_r;
+    am_Id splitter_bar_l, splitter_bar_w, splitter_bar_r;
+    am_Id right_child_l,  right_child_w,  right_child_r;
+    am_Num vsplitter_l,     vsplitter_w,     vsplitter_r;
+    am_Num vleft_child_l,   vleft_child_w,   vleft_child_r;
+    am_Num vsplitter_bar_l, vsplitter_bar_w, vsplitter_bar_r;
+    am_Num vright_child_l,  vright_child_w,  vright_child_r;
     int ret = setjmp(jbuf);
     printf("\n\n==========\ntest suggest\n");
     printf("ret = %d\n", ret);
@@ -621,18 +645,18 @@ static void test_suggest(void) {
     else if (ret != 0) { printf("out of memory!\n"); return; }
 
     solver = am_newsolver(debug_allocf, NULL);
-    splitter_l = am_newvariable(solver);
-    splitter_w = am_newvariable(solver);
-    splitter_r = am_newvariable(solver);
-    left_child_l = am_newvariable(solver);
-    left_child_w = am_newvariable(solver);
-    left_child_r = am_newvariable(solver);
-    splitter_bar_l = am_newvariable(solver);
-    splitter_bar_w = am_newvariable(solver);
-    splitter_bar_r = am_newvariable(solver);
-    right_child_l = am_newvariable(solver);
-    right_child_w = am_newvariable(solver);
-    right_child_r = am_newvariable(solver);
+    splitter_l     = am_newvariable(solver, &vsplitter_l);
+    splitter_w     = am_newvariable(solver, &vsplitter_w);
+    splitter_r     = am_newvariable(solver, &vsplitter_r);
+    left_child_l   = am_newvariable(solver, &vleft_child_l);
+    left_child_w   = am_newvariable(solver, &vleft_child_w);
+    left_child_r   = am_newvariable(solver, &vleft_child_r);
+    splitter_bar_l = am_newvariable(solver, &vsplitter_bar_l);
+    splitter_bar_w = am_newvariable(solver, &vsplitter_bar_w);
+    splitter_bar_r = am_newvariable(solver, &vsplitter_bar_r);
+    right_child_l  = am_newvariable(solver, &vright_child_l);
+    right_child_w  = am_newvariable(solver, &vright_child_w);
+    right_child_r  = am_newvariable(solver, &vright_child_r);
 
     /* splitter_r = splitter_l + splitter_w */
     /* left_child_r = left_child_l + left_child_w */
@@ -675,16 +699,16 @@ static void test_suggest(void) {
 
     printf("\n\n==========\ntest suggest\n");
     for(pos = -10; pos < 86; pos++) {
-        am_suggest(splitter_bar_l, pos);
+        am_suggest(solver, splitter_bar_l, pos);
         printf("pos: %4g | ", pos);
-        printf("splitter_l l=%2g, w=%2g, r=%2g | ", am_value(splitter_l),
-                am_value(splitter_w), am_value(splitter_r));
-        printf("left_child_l l=%2g, w=%2g, r=%2g | ", am_value(left_child_l),
-                am_value(left_child_w), am_value(left_child_r));
-        printf("splitter_bar_l l=%2g, w=%2g, r=%2g | ", am_value(splitter_bar_l),
-                am_value(splitter_bar_w), am_value(splitter_bar_r));
-        printf("right_child_l l=%2g, w=%2g, r=%2g | ", am_value(right_child_l),
-                am_value(right_child_w), am_value(right_child_r));
+        printf("splitter_l l=%2g, w=%2g, r=%2g | ", vsplitter_l,
+                vsplitter_w, vsplitter_r);
+        printf("left_child_l l=%2g, w=%2g, r=%2g | ", vleft_child_l,
+                vleft_child_w, vleft_child_r);
+        printf("splitter_bar_l l=%2g, w=%2g, r=%2g | ", vsplitter_bar_l,
+                vsplitter_bar_w, vsplitter_bar_r);
+        printf("right_child_l l=%2g, w=%2g, r=%2g | ", vright_child_l,
+                vright_child_w, vright_child_r);
         printf("\n");
     }
 
@@ -697,7 +721,8 @@ static void test_suggest(void) {
 
 static void test_dirty(void) {
     am_Solver *solver;
-    am_Var *xl, *xr, *xw, *xwc;
+    am_Id xl, xr, xw, xwc;
+    am_Num vxl, vxr, vxw, vxwc;
     am_Constraint *c1, *c2;
     int ret = setjmp(jbuf);
     printf("\n\n==========\ntest dirty\n");
@@ -707,11 +732,10 @@ static void test_dirty(void) {
 
     solver = am_newsolver(debug_allocf, NULL);
 
-    xl = am_newvariable(solver);
-    xr = am_newvariable(solver);
-    xw = am_newvariable(solver);
-    xwc = am_newvariable(solver);
-
+    xl  = am_newvariable(solver, &vxl);
+    xr  = am_newvariable(solver, &vxr);
+    xw  = am_newvariable(solver, &vxw);
+    xwc = am_newvariable(solver, &vxwc);
 
     /* c1: xw == xr -xl */
     c1 = am_newconstraint(solver, AM_REQUIRED);
@@ -724,7 +748,7 @@ static void test_dirty(void) {
     assert(ret == AM_OK);
 
     am_updatevars(solver);
-    printf("xl: %f, xr:%f, xw:%f\n", am_value(xl), am_value(xr), am_value(xw));
+    printf("xl: %f, xr:%f, xw:%f\n", vxl, vxr, vxw);
 
     /* c1: xwc == xw */
     c2 = am_newconstraint(solver, AM_REQUIRED);
@@ -736,36 +760,37 @@ static void test_dirty(void) {
     assert(ret == AM_OK);
 
     /* Sets dirty bit? Related to crash. */
-    am_suggest(xwc, 10);
+    am_suggest(solver, xwc, 10);
 
     am_updatevars(solver);
-    printf("xl:%f, xr:%f, xw:%f, xwc:%f\n", am_value(xl), am_value(xr), am_value(xw), am_value(xwc));
+    printf("xl:%f, xr:%f, xw:%f, xwc:%f\n", vxl, vxr, vxw, vxwc);
 
     /* Remove xwc and c2 */
-    am_deledit(xwc);
+    am_deledit(solver, xwc);
     am_remove(c2);
     /* Adding an am_updatevars(solver); here somehow solves the issue. */
     am_delconstraint(c2);
-    am_delvariable(xwc);
+    am_delvariable(solver, xwc);
 
     /* Causes crash: amoeba.h:482: am_sym2var: Assertion `ve != NULL' failed. */
     am_updatevars(solver);
-    printf("xl:%f, xr:%f, xw:%f\n", am_value(xl), am_value(xr), am_value(xw));
+    printf("xl:%f, xr:%f, xw:%f\n", vxl, vxr, vxw);
 
     /* Manual cleanup */
     am_delconstraint(c1);
     am_remove(c1);
 
-    am_delvariable(xl);
-    am_delvariable(xr);
-    am_delvariable(xw);
+    am_delvariable(solver, xl);
+    am_delvariable(solver, xr);
+    am_delvariable(solver, xw);
 
     am_delsolver(solver);
 }
 
 void test_cycling(void) {
     am_Solver *solver;
-    am_Var *va, *vb, *vc, *vd;
+    am_Id va, vb, vc, vd;
+    am_Num vva, vvb, vvc, vvd;
 
     int ret = setjmp(jbuf);
     printf("\n\n==========\ntest cycling\n");
@@ -774,12 +799,12 @@ void test_cycling(void) {
     else if (ret != 0) { printf("out of memory!\n"); return; }
 
     solver = am_newsolver(debug_allocf, NULL);
-    va = am_newvariable(solver);
-    vb = am_newvariable(solver);
-    vc = am_newvariable(solver);
-    vd = am_newvariable(solver);
+    va = am_newvariable(solver, &vva);
+    vb = am_newvariable(solver, &vvb);
+    vc = am_newvariable(solver, &vvc);
+    vd = am_newvariable(solver, &vvd);
 
-    am_addedit(va, AM_STRONG);
+    am_addedit(solver, va, AM_STRONG);
     printf("after edit\n");
     am_dumpsolver(solver);
 
