@@ -510,7 +510,7 @@ AM_API void am_delconstraint(am_Constraint *cons) {
     am_Solver *solver = cons ? cons->solver : NULL;
     am_Iterator it;
     am_Constraint **ce;
-    if (cons == NULL) return;
+    if (solver == NULL) return;
     am_remove(cons);
     ce = (am_Constraint**)am_gettable(&solver->constraints, cons->sym.id);
     assert(ce != NULL);
