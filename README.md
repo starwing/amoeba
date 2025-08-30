@@ -1,7 +1,6 @@
 # Amoeba -- the constraint solving algorithm in pure C
 
-[![Build Status](https://travis-ci.org/starwing/amoeba.svg?branch=master)](https://travis-ci.org/starwing/amoeba)
-[![Coverage Status](https://coveralls.io/repos/github/starwing/amoeba/badge.svg?branch=master)](https://coveralls.io/github/starwing/amoeba?branch=master)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/starwing/amoeba/test.yml?branch=master)](https://github.com/starwing/amoeba/actions?query=branch%3Amaster)[![Coverage Status](https://img.shields.io/coveralls/github/starwing/amoeba)](https://coveralls.io/github/starwing/amoeba?branch=master)
 
 Amoeba is a pure C implement of Cassowary algorithm. It:
 - Uses Clean C, which is the cross set of ANSI C89 and C++, like the Lua language.
