@@ -280,9 +280,10 @@ static void test_all(void) {
     am_suggest(solver, xm, 70.0);
     am_updatevars(solver);
     am_dumpsolver(solver);
-    assert(vxl == 40.f && vxm == 70.f && vxr == 100.f);
+    assert(vxl == 65.f && vxm == 70.f && vxr == 75.f);
 
     printf("restore xr to 10.0\n");
+    am_deledit(solver, xm);
     am_suggest(solver, xr, 10.0);
     am_updatevars(solver);
     am_dumpsolver(solver);
@@ -293,19 +294,19 @@ static void test_all(void) {
     am_suggest(solver, xm, 60.0);
     am_updatevars(solver);
     am_dumpsolver(solver);
-    assert(vxl == 55.f && vxm == 60.f && vxr == 65.f);
+    assert(vxl == 20.f && vxm == 60.f && vxr == 100.f);
 
     printf("suggest to 50.0\n");
     am_suggest(solver, xm, 50.0);
     am_updatevars(solver);
     am_dumpsolver(solver);
-    assert(vxl == 45.f && vxm == 50.f && vxr == 55.f);
+    assert(vxl == 0.f && vxm == 50.f && vxr == 100.f);
 
     printf("suggest to 40.0\n");
     am_suggest(solver, xm, 40.0);
     am_updatevars(solver);
     am_dumpsolver(solver);
-    assert(vxl == 35.f && vxm == 40.f && vxr == 45.f);
+    assert(vxl == 0.f && vxm == 40.f && vxr == 80.f);
 
     am_deledit(solver, xm);
     am_updatevars(solver);
