@@ -6,7 +6,6 @@
 #define AM_STATIC_API
 #include "amoeba.h"
 
-
 #define AML_SOLVER_TYPE "amoeba.Solver"
 #define AML_VAR_TYPE    "amoeba.Variable"
 #define AML_CONS_TYPE   "amoeba.Constraint"
@@ -20,15 +19,14 @@ typedef struct aml_Solver {
 } aml_Solver;
 
 typedef struct aml_Var {
-    am_Id       var;
     am_Num      value;
+    am_Id       var;
     aml_Solver *S;
     const char *name;
 } aml_Var;
 
 typedef struct aml_Cons {
     am_Constraint *cons;
-    aml_Solver    *S;
 } aml_Cons;
 
 typedef struct aml_Item {
@@ -37,7 +35,6 @@ typedef struct aml_Item {
     am_Constraint *cons;
     am_Num         value;
 } aml_Item;
-
 
 /* utils */
 
@@ -77,16 +74,23 @@ static am_Id aml_checkvar(lua_State *L, aml_Solver *S, int idx) {
             lua_tostring(L, idx));
 }
 
-static aml_Cons *aml_newcons(lua_State *L, aml_Solver *S, am_Num strength) {
+static aml_Cons *aml_registercons(lua_State *L, am_Constraint *cons) {
     aml_Cons *lcons = (aml_Cons*)lua_newuserdata(L, sizeof(aml_Cons));
-    lcons->cons = am_newconstraint(S->solver, strength);
-    lcons->S    = S;
+    aml_Solver *S = *(aml_Solver**)cons;
+    lcons->cons = cons;
     luaL_setmetatable(L, AML_CONS_TYPE);
     lua_rawgeti(L, LUA_REGISTRYINDEX, S->ref_cons);
     lua_pushvalue(L, -2);
     lua_rawsetp(L, -2, lcons);
     lua_pop(L, 1);
     return lcons;
+}
+
+static aml_Cons *aml_newcons(lua_State *L, aml_Solver *S, am_Num strength) {
+    am_Constraint *cons = am_newconstraint(S->solver, strength);
+    if (cons == NULL) luaL_error(L, "Create constraint failed");
+    *(aml_Solver**)cons = S;
+    return aml_registercons(L, cons);
 }
 
 static aml_Item aml_checkitem(lua_State *L, aml_Solver *S, int idx) {
@@ -117,7 +121,7 @@ static aml_Item aml_checkitem(lua_State *L, aml_Solver *S, int idx) {
             item.type  = AML_VAR;
             return item;
         }
-        /* FALLTHROUGHT */
+        /* FALLTHROUGH */
     default:
         aml_typeerror(L, idx, "number/string/variable/constraint");
     }
@@ -128,14 +132,16 @@ static aml_Solver *aml_checkitems(lua_State *L, int start, aml_Item *items) {
     aml_Var *lvar;
     aml_Cons *lcons;
     if ((lcons = (aml_Cons*)luaL_testudata(L, start, AML_CONS_TYPE)) != NULL) {
+        aml_Solver *S = *(aml_Solver**)lcons->cons;
         items[0].type = AML_CONS, items[0].cons = lcons->cons;
-        items[1] = aml_checkitem(L, lcons->S, start+1);
-        return lcons->S;
+        items[1] = aml_checkitem(L, S, start+1);
+        return S;
     }
     if ((lcons = (aml_Cons*)luaL_testudata(L, start+1, AML_CONS_TYPE)) != NULL) {
+        aml_Solver *S = *(aml_Solver**)lcons->cons;
         items[1].type = AML_CONS, items[1].cons = lcons->cons;
-        items[0] = aml_checkitem(L, lcons->S, start);
-        return lcons->S;
+        items[0] = aml_checkitem(L, S, start);
+        return S;
     }
     if ((lvar = (aml_Var*)luaL_testudata(L, start, AML_VAR_TYPE)) != NULL) {
         if (lvar->var == 0) luaL_argerror(L, start, "invalid variable");
@@ -153,13 +159,27 @@ static aml_Solver *aml_checkitems(lua_State *L, int start, aml_Item *items) {
     return NULL;
 }
 
-static int aml_performitem(am_Constraint *cons, aml_Item *item, am_Num coef) {
-    switch (item->type) {
-    case AML_CONSTANT: return am_addconstant(cons, item->value*coef); break;
-    case AML_VAR:      return am_addterm(cons, item->var, coef); break;
-    case AML_CONS:     return am_mergeconstraint(cons, item->cons, coef); break;
+static int aml_pusherror(lua_State *L, int ret) {
+    if (ret == AM_OK) return lua_settop(L, 1), 1;
+    lua_pushnil(L);
+    switch (ret) {
+    default:             lua_pushfstring(L, "Unknown Error: %d", ret); break;
+    case AM_FAILED:      lua_pushliteral(L, "FAILED"); break;
+    case AM_UNSATISFIED: lua_pushliteral(L, "UNSATISFIED"); break;
+    case AM_UNBOUND:     lua_pushliteral(L, "UNBOUND"); break;
     }
-    return AM_FAILED;
+    lua_pushinteger(L, ret);
+    return 3;
+}
+
+static void aml_performitem(lua_State *L, am_Constraint *cons, aml_Item *item, am_Num coef) {
+    int ret = AM_FAILED;
+    switch (item->type) {
+    case AML_CONSTANT: ret = am_addconstant(cons, item->value*coef); break;
+    case AML_VAR:      ret = am_addterm(cons, item->var, coef); break;
+    case AML_CONS:     ret = am_mergeconstraint(cons, item->cons, coef); break;
+    }
+    if (ret != AM_OK) aml_pusherror(L, ret), lua_pop(L, 1), lua_error(L);
 }
 
 static am_Num aml_checkstrength(lua_State *L, int idx, am_Num def) {
@@ -200,9 +220,9 @@ static aml_Cons *aml_makecons(lua_State *L, aml_Solver *S, int start) {
     aml_Item items[2];
     aml_checkitems(L, start+1, items);
     lcons = aml_newcons(L, S, strength);
-    aml_performitem(lcons->cons, &items[0], 1.0f);
+    aml_performitem(L, lcons->cons, &items[0], 1.0f);
     am_setrelation(lcons->cons, op);
-    aml_performitem(lcons->cons, &items[1], 1.0f);
+    aml_performitem(L, lcons->cons, &items[1], 1.0f);
     return lcons;
 }
 
@@ -244,14 +264,13 @@ static void aml_dumprow(luaL_Buffer *B, int idx, am_Row *row) {
     }
 }
 
-
 /* expression */
 
 static int Lexpr_neg(lua_State *L) {
     aml_Cons *lcons = (aml_Cons*)luaL_checkudata(L, 1, AML_CONS_TYPE);
-    aml_Cons *newcons = aml_newcons(L, lcons->S, AM_REQUIRED);
-    am_mergeconstraint(newcons->cons, lcons->cons, -1.0f);
-    return 1;
+    aml_Solver *S = *(aml_Solver**)lcons;
+    aml_Cons *newcons = aml_newcons(L, S, AM_REQUIRED);
+    return aml_pusherror(L, am_mergeconstraint(newcons->cons, lcons->cons, -1.0f));
 }
 
 static int Lexpr_add(lua_State *L) {
@@ -259,8 +278,8 @@ static int Lexpr_add(lua_State *L) {
     aml_Item items[2];
     aml_Solver *S = aml_checkitems(L, 1, items);
     lcons = aml_newcons(L, S, AM_REQUIRED);
-    aml_performitem(lcons->cons, &items[0], 1.0f);
-    aml_performitem(lcons->cons, &items[1], 1.0f);
+    aml_performitem(L, lcons->cons, &items[0], 1.0f);
+    aml_performitem(L, lcons->cons, &items[1], 1.0f);
     return 1;
 }
 
@@ -269,8 +288,8 @@ static int Lexpr_sub(lua_State *L) {
     aml_Item items[2];
     aml_Solver *S = aml_checkitems(L, 1, items);
     lcons = aml_newcons(L, S, AM_REQUIRED);
-    aml_performitem(lcons->cons, &items[0], 1.0f);
-    aml_performitem(lcons->cons, &items[1], -1.0f);
+    aml_performitem(L, lcons->cons, &items[0], 1.0f);
+    aml_performitem(L, lcons->cons, &items[1], -1.0f);
     return 1;
 }
 
@@ -279,11 +298,11 @@ static int Lexpr_mul(lua_State *L) {
     aml_Solver *S = aml_checkitems(L, 1, items);
     if (items[0].type == AML_CONSTANT) {
         aml_Cons *lcons = aml_newcons(L, S, AM_REQUIRED);
-        aml_performitem(lcons->cons, &items[1], items[0].value);
+        aml_performitem(L, lcons->cons, &items[1], items[0].value);
     }
     else if (items[1].type == AML_CONSTANT) {
         aml_Cons *lcons = aml_newcons(L, S, AM_REQUIRED);
-        aml_performitem(lcons->cons, &items[0], items[1].value);
+        aml_performitem(L, lcons->cons, &items[0], items[1].value);
     }
     else luaL_error(L, "attempt to multiply two expression");
     return 1;
@@ -296,7 +315,7 @@ static int Lexpr_div(lua_State *L) {
         luaL_error(L, "attempt to divide a expression");
     if (items[1].type == AML_CONSTANT) {
         aml_Cons *lcons = aml_newcons(L, S, AM_REQUIRED);
-        aml_performitem(lcons->cons, &items[0], 1.0f/items[1].value);
+        aml_performitem(L, lcons->cons, &items[0], 1.0f/items[1].value);
     }
     else luaL_error(L, "attempt to divide two expression");
     return 1;
@@ -306,9 +325,9 @@ static int Lexpr_cmp(lua_State *L, int op) {
     aml_Item items[2];
     aml_Solver *S = aml_checkitems(L, 1, items);
     aml_Cons *lcons = aml_newcons(L, S, AM_REQUIRED);
-    aml_performitem(lcons->cons, &items[0], 1.0f);
+    aml_performitem(L, lcons->cons, &items[0], 1.0f);
     am_setrelation(lcons->cons, op);
-    aml_performitem(lcons->cons, &items[1], 1.0f);
+    aml_performitem(L, lcons->cons, &items[1], 1.0f);
     return 1;
 }
 
@@ -316,12 +335,34 @@ static int Lexpr_le(lua_State *L) { return Lexpr_cmp(L, AM_LESSEQUAL); }
 static int Lexpr_eq(lua_State *L) { return Lexpr_cmp(L, AM_EQUAL); }
 static int Lexpr_ge(lua_State *L) { return Lexpr_cmp(L, AM_GREATEQUAL); }
 
-
 /* variable */
+
+static aml_Var *aml_newvar(lua_State *L, aml_Solver *S, am_Id var, const char *name) {
+    aml_Var *lvar = (aml_Var*)lua_newuserdata(L, sizeof(aml_Var));
+    if (var == 0) {
+        var = am_newvariable(S->solver, &lvar->value);
+        if (var == 0) luaL_error(L, "Create variable failed");
+    }
+    if (name == NULL) {
+        lua_settop(L, 1);
+        lua_pushfstring(L, "v%d", var);
+        name = lua_tostring(L, 2);
+    }
+    lvar->S    = S;
+    lvar->var  = var;
+    lvar->name = name;
+    luaL_setmetatable(L, AML_VAR_TYPE);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, S->ref_vars);
+    lua_pushvalue(L, -2);
+    lua_setfield(L, -2, name);
+    lua_pushvalue(L, -2);
+    lua_rawseti(L, -2, var);
+    lua_pop(L, 1);
+    return lvar;
+}
 
 static int Lvar_new(lua_State *L) {
     aml_Solver *S = (aml_Solver*)luaL_checkudata(L, 1, AML_SOLVER_TYPE);
-    aml_Var *lvar;
     int type = lua_type(L, 2);
     if (type != LUA_TNONE || type != LUA_TNIL) {
         if (type != LUA_TSTRING && type != LUA_TNUMBER)
@@ -333,23 +374,7 @@ static int Lvar_new(lua_State *L) {
             aml_argferror(L, 2, "variable#%d not exists", lua_tointeger(L, 2));
         lua_pop(L, 1);
     }
-    lvar = (aml_Var*)lua_newuserdata(L, sizeof(aml_Var));
-    lvar->var  = am_newvariable(S->solver, &lvar->value);
-    lvar->S    = S;
-    lvar->name = lua_tostring(L, 2);
-    if (lvar->name == NULL) {
-        lua_settop(L, 1);
-        lua_pushfstring(L, "v%d", lvar->var);
-        lvar->name = lua_tostring(L, 2);
-    }
-    luaL_setmetatable(L, AML_VAR_TYPE);
-    lua_rawgeti(L, LUA_REGISTRYINDEX, S->ref_vars);
-    lua_pushvalue(L, -2);
-    lua_setfield(L, -2, lvar->name);
-    lua_pushvalue(L, -2);
-    lua_rawseti(L, -2, lvar->var);
-    lua_pop(L, 1);
-    return 1;
+    return aml_newvar(L, S, 0, lua_tostring(L, 2)), 1;
 }
 
 static int Lvar_delete(lua_State *L) {
@@ -404,7 +429,6 @@ static void open_variable(lua_State *L) {
     }
 }
 
-
 /* constraint */
 
 static int Lcons_new(lua_State *L) {
@@ -416,10 +440,11 @@ static int Lcons_new(lua_State *L) {
 
 static int Lcons_delete(lua_State *L) {
     aml_Cons *lcons = (aml_Cons*)luaL_checkudata(L, 1, AML_CONS_TYPE);
+    aml_Solver *S = *(aml_Solver**)lcons->cons;
     if (lcons->cons == NULL) return 0;
     am_delconstraint(lcons->cons);
     lcons->cons = NULL;
-    lua_rawgeti(L, LUA_REGISTRYINDEX, lcons->S->ref_vars);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, S->ref_vars);
     lua_pushnil(L);
     lua_rawsetp(L, -2, lcons);
     return 0;
@@ -429,26 +454,26 @@ static int Lcons_reset(lua_State *L) {
     aml_Cons *lcons = (aml_Cons*)luaL_checkudata(L, 1, AML_CONS_TYPE);
     if (lcons->cons == NULL) luaL_argerror(L, 1, "invalid constraint");
     am_resetconstraint(lcons->cons);
-    lua_settop(L, 1); return 1;
+    return lua_settop(L, 1), 1;
 }
 
 static int Lcons_add(lua_State *L) {
     aml_Cons *lcons = (aml_Cons*)luaL_checkudata(L, 1, AML_CONS_TYPE);
+    aml_Solver *S = *(aml_Solver**)lcons;
     aml_Item item;
     int ret;
-    if (lcons->cons == NULL) luaL_argerror(L, 1, "invalid constraint");
+    luaL_argcheck(L, lcons->cons, 1, "invalid constraint");
     if (lua_type(L, 2) == LUA_TSTRING) {
         const char *s = lua_tostring(L, 2);
         if (s[0] == '<' || s[0] == '>' || s[0] == '=') {
             ret = am_setrelation(lcons->cons, aml_checkrelation(L, 2));
-            goto out;
+            if (ret != AM_OK) luaL_error(L, "constraint has been added to solver!");
+            return lua_settop(L, 1), 1;
         }
     }
-    item = aml_checkitem(L, lcons->S, 2);
-    ret = aml_performitem(lcons->cons, &item, 1.0f);
-out:
-    if (ret != AM_OK) luaL_error(L, "constraint has been added to solver!");
-    lua_settop(L, 1); return 1;
+    item = aml_checkitem(L, S, 2);
+    aml_performitem(L, lcons->cons, &item, 1.0f);
+    return lua_settop(L, 1), 1;
 }
 
 static int Lcons_relation(lua_State *L) {
@@ -457,7 +482,7 @@ static int Lcons_relation(lua_State *L) {
     if (lcons->cons == NULL) luaL_argerror(L, 1, "invalid constraint");
     if (am_setrelation(lcons->cons, op) != AM_OK)
         luaL_error(L, "constraint has been added to solver!");
-    lua_settop(L, 1); return 1;
+    return lua_settop(L, 1), 1;
 }
 
 static int Lcons_strength(lua_State *L) {
@@ -466,18 +491,19 @@ static int Lcons_strength(lua_State *L) {
     if (lcons->cons == NULL) luaL_argerror(L, 1, "invalid constraint");
     if (am_setstrength(lcons->cons, strength) != AM_OK)
         luaL_error(L, "constraint has been added to solver!");
-    lua_settop(L, 1); return 1;
+    return lua_settop(L, 1), 1;
 }
 
 static int Lcons_tostring(lua_State *L) {
     aml_Cons *lcons = (aml_Cons*)luaL_checkudata(L, 1, AML_CONS_TYPE);
+    aml_Solver *S = *(aml_Solver**)lcons;
     luaL_Buffer B;
     if (lcons->cons == NULL) {
         lua_pushstring(L, AML_CONS_TYPE ": deleted");
         return 1;
     }
     lua_settop(L, 1);
-    lua_rawgeti(L, LUA_REGISTRYINDEX, lcons->S->ref_vars);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, S->ref_vars);
     luaL_buffinit(L, &B);
     lua_pushfstring(L, AML_CONS_TYPE "(%p): [", lcons->cons);
     luaL_addvalue(&B);
@@ -528,6 +554,101 @@ static void open_constraint(lua_State *L) {
     }
 }
 
+/* dump & load */
+
+typedef struct aml_Dumper {
+    am_Dumper base;
+    luaL_Buffer *B;
+} aml_Dumper;
+
+static const char *aml_varname(am_Dumper *d, unsigned idx, am_Id var, am_Num *value)
+{ return (void)d, (void)idx, (void)var, ((aml_Var*)value)->name; }
+
+static int aml_writer(am_Dumper *d, const void *buf, size_t len) {
+    /* Write the actually data */
+    aml_Dumper *ld = (aml_Dumper*)d;
+    luaL_addlstring(ld->B, buf, len);
+    return AM_OK;
+}
+
+static int Ldump(lua_State *L) {
+    aml_Solver *S = (aml_Solver*)luaL_checkudata(L, 1, AML_SOLVER_TYPE);
+    luaL_Buffer B;
+    aml_Dumper d;
+    int ret;
+    memset(&d, 0, sizeof(d));
+    d.base.var_name = aml_varname;
+    d.base.writer = aml_writer;
+    d.B = &B;
+    luaL_buffinit(L, &B);
+    ret = am_dump(S->solver, &d.base);
+    if (ret == AM_OK)
+        return luaL_pushresult(&B), 1;
+    return aml_pusherror(L, ret);
+}
+
+typedef struct aml_Loader {
+    am_Loader  base;
+    lua_State  *L;
+    aml_Solver *S;
+    const char *s;
+    size_t      len;
+    int         cons_index;
+    int         loader_index;
+} aml_Loader;
+
+static am_Num *aml_loadvar(am_Loader *l, const char *name, unsigned idx, am_Id var) {
+    aml_Loader *ll = (aml_Loader*)l;
+    aml_Var *lvar = aml_newvar(ll->L, ll->S, var, name);
+    return (void)idx, &lvar->value;
+}
+
+static void aml_loadcons(am_Loader *l, const char *name, unsigned idx, am_Constraint *cons) {
+    aml_Loader *ll = (aml_Loader*)l;
+    if (ll->cons_index == 0) return;
+    (void)name;
+    *(aml_Solver**)cons = ll->S;
+    aml_registercons(ll->L, cons);
+    lua_rawseti(ll->L, ll->cons_index, idx);
+}
+
+static const char *aml_reader(am_Loader *l, size_t *plen) {
+    aml_Loader *ll = (aml_Loader*)l;
+    lua_State *L = ll->L;
+    if (ll->loader_index == 0) {
+        const char *p = ll->s;
+        *plen = ll->len;
+        ll->s = NULL, ll->len = 0;
+        return p;
+    }
+    luaL_checkstack(L, 2, "too many nested functions");
+    lua_pushvalue(L, 1);
+    lua_call(L, 0, 1);
+    if (lua_isnil(L, -1))
+        return lua_pop(L, 1), *plen = 0, NULL;
+    else if (!lua_isstring(L, -1))
+        luaL_error(L, "reader function must return a string");
+    lua_replace(L, ll->loader_index);  /* save string in reserved slot */
+    return lua_tolstring(L, ll->loader_index, plen);
+}
+
+static int Lload(lua_State *L) {
+    aml_Solver *S = (aml_Solver*)luaL_checkudata(L, 1, AML_SOLVER_TYPE);
+    aml_Loader ll;
+    memset(&ll, 0, sizeof(ll));
+    ll.s = lua_tolstring(L, 1, &ll.len);
+    ll.L = L, ll.S = S;
+    ll.cons_index = (!lua_isnone(L, 2) ? 2 : 0);
+    ll.base.load_var = aml_loadvar;
+    ll.base.load_cons = aml_loadcons;
+    ll.base.reader = aml_reader;
+    if (ll.s == NULL) {
+        luaL_checktype(L, 1, LUA_TFUNCTION);
+        ll.loader_index = 3;
+        lua_settop(L, 3);  /* create reserved slot */
+    }
+    return aml_pusherror(L, am_load(S->solver, &ll.base));
+}
 
 /* solver */
 
@@ -635,37 +756,29 @@ static int Lautoupdate(lua_State *L) {
 static int Laddconstraint(lua_State *L) {
     aml_Solver *S = (aml_Solver*)luaL_checkudata(L, 1, AML_SOLVER_TYPE);
     aml_Cons *lcons = (aml_Cons*)luaL_testudata(L, 2, AML_CONS_TYPE);
-    int ret;
     if (lcons == NULL) lcons = aml_makecons(L, S, 2);
-    if ((ret = am_add(lcons->cons)) == AM_OK)
-    { lua_settop(L, 1); return 1; }
-    switch (ret) {
-    case AM_UNSATISFIED: luaL_argerror(L, 2, "constraint unsatisfied");
-    case AM_UNBOUND:     luaL_argerror(L, 2, "constraint unbound");
-    }
-    return 0;
+    return aml_pusherror(L, am_add(lcons->cons));
 }
 
 static int Ldelconstraint(lua_State *L) {
     luaL_checkudata(L, 1, AML_SOLVER_TYPE);
     aml_Cons *lcons = (aml_Cons*)luaL_checkudata(L, 2, AML_CONS_TYPE);
     am_remove(lcons->cons);
-    lua_settop(L, 1); return 1;
+    return lua_settop(L, 1), 1;
 }
 
 static int Laddedit(lua_State *L) {
     aml_Solver *S = (aml_Solver*)luaL_checkudata(L, 1, AML_SOLVER_TYPE);
     am_Id  var = aml_checkvar(L, S, 2);
     am_Num strength = aml_checkstrength(L, 3, AM_MEDIUM);
-    am_addedit(S->solver, var, strength);
-    lua_settop(L, 1); return 1;
+    return aml_pusherror(L, am_addedit(S->solver, var, strength));
 }
 
 static int Ldeledit(lua_State *L) {
     aml_Solver *S = (aml_Solver*)luaL_checkudata(L, 1, AML_SOLVER_TYPE);
     am_Id var = aml_checkvar(L, S, 2);
     am_deledit(S->solver, var);
-    lua_settop(L, 1); return 1;
+    return lua_settop(L, 1), 1;
 }
 
 static int Lsuggest(lua_State *L) {
@@ -673,7 +786,7 @@ static int Lsuggest(lua_State *L) {
     am_Id  var = aml_checkvar(L, S, 2);
     am_Num value = (am_Num)luaL_checknumber(L, 3);
     am_suggest(S->solver, var, value);
-    lua_settop(L, 1); return 1;
+    return lua_settop(L, 1), 1;
 }
 
 LUALIB_API int luaopen_amoeba(lua_State *L) {
@@ -692,6 +805,8 @@ LUALIB_API int luaopen_amoeba(lua_State *L) {
         ENTRY(addedit),
         ENTRY(deledit),
         ENTRY(suggest),
+        ENTRY(dump),
+        ENTRY(load),
 #undef  ENTRY
         { NULL, NULL }
     };

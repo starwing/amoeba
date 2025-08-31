@@ -14,59 +14,56 @@
 #define AM_IMPLEMENTATION
 #include "amoeba.h"
 
-void build_solver(am_Solver* S, am_Id width, am_Id height)
-{
-    // Create custom strength
+static void build_solver(am_Solver* S, am_Id width, am_Id height, am_Num *values) {
+    /* Create custom strength */
     am_Num mmedium = AM_MEDIUM * 1.25;
     am_Num smedium = AM_MEDIUM * 100;
 
-    // Create the variable
-#define new_var(name) am_Num v##name; am_Id name = am_newvariable(S, &v##name)
-    new_var(left);
-    new_var(top);
-    new_var(contents_top);
-    new_var(contents_bottom);
-    new_var(contents_left);
-    new_var(contents_right);
-    new_var(midline);
-    new_var(ctleft);
-    new_var(ctheight);
-    new_var(cttop);
-    new_var(ctwidth);
-    new_var(lb1left);
-    new_var(lb1height);
-    new_var(lb1top);
-    new_var(lb1width);
-    new_var(lb2left);
-    new_var(lb2height);
-    new_var(lb2top);
-    new_var(lb2width);
-    new_var(lb3left);
-    new_var(lb3height);
-    new_var(lb3top);
-    new_var(lb3width);
-    new_var(fl1left);
-    new_var(fl1height);
-    new_var(fl1top);
-    new_var(fl1width);
-    new_var(fl2left);
-    new_var(fl2height);
-    new_var(fl2top);
-    new_var(fl2width);
-    new_var(fl3left);
-    new_var(fl3height);
-    new_var(fl3top);
-    new_var(fl3width);
-#undef new_var
+    /* Create the variable */
+    am_Id left            = am_newvariable(S, &values[0]);
+    am_Id top             = am_newvariable(S, &values[1]);
+    am_Id contents_top    = am_newvariable(S, &values[2]);
+    am_Id contents_bottom = am_newvariable(S, &values[3]);
+    am_Id contents_left   = am_newvariable(S, &values[4]);
+    am_Id contents_right  = am_newvariable(S, &values[5]);
+    am_Id midline         = am_newvariable(S, &values[6]);
+    am_Id ctleft          = am_newvariable(S, &values[7]);
+    am_Id ctheight        = am_newvariable(S, &values[8]);
+    am_Id cttop           = am_newvariable(S, &values[9]);
+    am_Id ctwidth         = am_newvariable(S, &values[10]);
+    am_Id lb1left         = am_newvariable(S, &values[11]);
+    am_Id lb1height       = am_newvariable(S, &values[12]);
+    am_Id lb1top          = am_newvariable(S, &values[13]);
+    am_Id lb1width        = am_newvariable(S, &values[14]);
+    am_Id lb2left         = am_newvariable(S, &values[15]);
+    am_Id lb2height       = am_newvariable(S, &values[16]);
+    am_Id lb2top          = am_newvariable(S, &values[17]);
+    am_Id lb2width        = am_newvariable(S, &values[18]);
+    am_Id lb3left         = am_newvariable(S, &values[19]);
+    am_Id lb3height       = am_newvariable(S, &values[20]);
+    am_Id lb3top          = am_newvariable(S, &values[21]);
+    am_Id lb3width        = am_newvariable(S, &values[22]);
+    am_Id fl1left         = am_newvariable(S, &values[23]);
+    am_Id fl1height       = am_newvariable(S, &values[24]);
+    am_Id fl1top          = am_newvariable(S, &values[25]);
+    am_Id fl1width        = am_newvariable(S, &values[26]);
+    am_Id fl2left         = am_newvariable(S, &values[27]);
+    am_Id fl2height       = am_newvariable(S, &values[28]);
+    am_Id fl2top          = am_newvariable(S, &values[29]);
+    am_Id fl2width        = am_newvariable(S, &values[30]);
+    am_Id fl3left         = am_newvariable(S, &values[31]);
+    am_Id fl3height       = am_newvariable(S, &values[32]);
+    am_Id fl3top          = am_newvariable(S, &values[33]);
+    am_Id fl3width        = am_newvariable(S, &values[34]);
 
-    // Add the edit variables
-    am_addedit(S, width, AM_STRONG);
-    am_addedit(S, height, AM_STRONG);
+#ifdef __GNUC__
+# pragma GCC diagnostic push
+# pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+# pragma GCC diagnostic ignored "-Wc99-extensions"
+#endif
 
-
-    // Add the constraints
-    const
-    struct Info {
+    /* Add the constraints */
+    const struct Info {
         struct Item {
             am_Id  var;
             am_Num mul;
@@ -188,31 +185,106 @@ void build_solver(am_Solver* S, am_Id width, am_Id height)
         { {{fl1width}},                                            -125,         AM_GREATEQUAL, AM_STRONG   },
     };
 
-    for (const auto& constraint : constraints) {
-        am_Constraint *c = am_newconstraint(S, constraint.strength);
-        for (auto* p = constraint.term; p->var; ++p) {
-            am_addterm(c, p->var, p->mul ? p->mul : 1);
+#ifdef __GNUC__
+# pragma GCC diagnostic pop
+#endif
+
+    size_t i;
+    int ret;
+
+    /* Add the edit variables */
+    ret = am_addedit(S, width, AM_STRONG);
+    assert(ret == AM_OK), (void)ret;
+    ret = am_addedit(S, height, AM_STRONG);
+    assert(ret == AM_OK), (void)ret;
+
+    for (i = 0; i < sizeof(constraints)/sizeof(constraints[0]); ++i) {
+        am_Constraint *c = am_newconstraint(S, constraints[i].strength);
+        const struct Info::Item *p;
+        for (p = constraints[i].term; p->var; ++p) {
+            ret = am_addterm(c, p->var, p->mul ? p->mul : 1);
+            assert(ret == AM_OK), (void)ret;
         }
-        am_addconstant(c, constraint.constant);
-        am_setrelation(c, constraint.relation);
-        int r = am_add(c);
-        assert(r == AM_OK);
+        ret = am_addconstant(c, constraints[i].constant);
+        assert(ret == AM_OK), (void)ret;
+        ret = am_setrelation(c, constraints[i].relation);
+        assert(ret == AM_OK), (void)ret;
+        ret = am_add(c);
+        assert(ret == AM_OK), (void)ret;
     }
 }
 
-int main()
-{
-    // ankerl::nanobench::Bench().minEpochIterations(100).run("building solver", [&] {
-    //     am_Solver *S = am_newsolver(NULL, NULL);
-    //     am_Var *width = am_newvariable(S);
-    //     am_Var *height = am_newvariable(S);
-    //     build_solver(S, width, height);
-    //     ankerl::nanobench::doNotOptimizeAway(S); //< prevent the compiler to optimize away the S
-    //     am_delsolver(S);
-    // });
+int main() {
+    am_Num values[35];
 
-    struct Size
+    ankerl::nanobench::Bench().minEpochIterations(100).run("building solver", [&] {
+        am_Solver *S = am_newsolver(NULL, NULL);
+        am_Num w, h;
+        am_Id width = am_newvariable(S, &w);
+        am_Id height = am_newvariable(S, &h);
+        build_solver(S, width, height, values);
+        ankerl::nanobench::doNotOptimizeAway(S); //< prevent the compiler to optimize away the S
+        am_delsolver(S);
+    });
+
+    std::vector<char> buf; 
     {
+        am_Solver *S = am_newsolver(NULL, NULL);
+        am_Num w, h;
+        am_Id width = am_newvariable(S, &w);
+        am_Id height = am_newvariable(S, &h);
+        build_solver(S, width, height, values);
+
+        struct MyDumper {
+            am_Dumper base;
+            std::vector<char> *buf;
+        };
+        MyDumper d;
+        d.buf = &buf;
+        d.base.var_name = [](am_Dumper*, unsigned idx, am_Id, am_Num*) {
+            return idx == 0 ? "width" : idx == 1 ? "height" : NULL;
+        };
+        d.base.cons_name = nullptr;
+        d.base.writer = [](am_Dumper* rd, const void *buf, size_t len) {
+            MyDumper *d = (MyDumper*)rd;
+            d->buf->insert(d->buf->end(), (char*)buf, (char*)buf+len);
+            return AM_OK;
+        };
+        int ret = am_dump(S, &d.base);
+        assert(ret == AM_OK), (void)ret;
+    }
+
+    ankerl::nanobench::Bench().minEpochIterations(100).run("load solver", [&] {
+        am_Solver *S = am_newsolver(NULL, NULL);
+        struct MyLoader {
+            am_Loader base;
+            am_Num values[37];
+            std::vector<char> *buf;
+        };
+        MyLoader l;
+        l.buf = &buf;
+        l.base.load_var = [](am_Loader* rl, const char*, unsigned idx, am_Id) {
+            MyLoader *l = (MyLoader*)rl;
+            return &l->values[idx];
+        };
+        l.base.load_cons = nullptr;
+        l.base.reader = [](am_Loader* rl, size_t *plen) {
+            MyLoader *l = (MyLoader*)rl;
+            std::vector<char> *buf = l->buf;
+            if (buf) {
+                *plen = buf->size();
+                l->buf = nullptr;
+                return (const char*)buf->data();
+            }
+            return (const char*)nullptr;
+        };
+        int ret = am_load(S, &l.base);
+        assert(ret == AM_OK), (void)ret;
+        ankerl::nanobench::doNotOptimizeAway(S); //< prevent the compiler to optimize away the S
+        am_delsolver(S);
+    });
+
+    struct Size {
         int width;
         int height;
     };
@@ -230,10 +302,9 @@ int main()
     am_Num width, height;
     am_Id widthVar = am_newvariable(S, &width);
     am_Id heightVar = am_newvariable(S, &height);
-    build_solver(S, widthVar, heightVar);
+    build_solver(S, widthVar, heightVar, values);
 
-    for (const Size& size : sizes)
-    {
+    for (const Size& size : sizes) {
         am_Num width = size.width;
         am_Num height = size.height;
 
@@ -248,4 +319,4 @@ int main()
     return 0;
 }
 
-// cc: flags+='-O2 -std=c++11'
+// cc: flags+='-ggdb -O3 -DNDEBUG'

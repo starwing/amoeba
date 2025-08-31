@@ -14,6 +14,12 @@ Amoeba is a pure C implement of Cassowary algorithm. It:
 [3]: http://constraints.cs.washington.edu/solvers/uist97.html
 [4]: https://www.lua.org/license.html
 
+Improvement relative to Kiwi:
+- Single header library that easy to distribution.
+- Lua binding vs. Python binding.
+- Suggest cache makes suggest performance much better than kiwi.
+- Dump/load support improves the performance of building solver.
+
 ## How To Use
 
 This libary export a constraint solver interface, to solve a constraint problem, you should use it in steps:
@@ -94,12 +100,131 @@ int main(void) {
 
 ### Return value
 
-All functions below that returns `int` may return error codes:
-
+All functions below that returns `int` are returning error codes:
 - `AM_OK`: Operations success.
 - `AM_FAILED`: The operation is failed, most caused by invalid arguments.
 - `AM_UNSATISFIED`: Specific constraints added cannot satisfied.
 - `AM_UNBOUND`: Failed to add constraints because there are unbound variables in it
+
+### Dump & Load
+
+Amoeba supports to store whole state of solver into bianry data and to load
+back in new solver. Notice that the state of loaded solver will be earsed. 
+
+To perform a dump or load operations, you should prepare `am_Dumper` or
+`am_Loader` to control the behavior in operations.
+
+- `struct am_Dumper`
+
+  A user-defined dump behavior control type.  The user must provide `reader`
+  and `var_name` function pointers in it. there is a example:
+
+  ```c
+  /* dumps into a string buffer */
+  typedef struct MyDumper {
+      am_Dumper base;
+      char buf[MY_BUF_SIZE]; /* buffer */
+      size_t len;            /* and length */
+  } MyDumper;
+
+  static const char *dump_varname(am_Dumper *d, unsigned idx, am_Id var, am_Num *value) {
+      /* you should returns a var name here, or NULL if you do not want a name
+       * for this variable.
+       * A common implement retrives variable context from value pointer, and
+       * get name from it.  */
+      MyContext *ctx = (MyContext*)value;
+      return ctx->name;
+  }
+
+  static const char *dump_consname(am_Dumper *d, unsigned idx, am_Constraint *cons) {
+      /* Same as `var_name`, but retrieve constraint's name */
+      MyContext *ctx = *(MyContext**)cons;
+      return ctx->name;
+  }
+
+  static int dump_writer(am_Dumper *d, const void *buf, size_t len) {
+      /* Write the actually data */
+      MyDumper *myd = (MyDumper*)d;
+      if (myd->len + len > MY_BUF_SIZE)
+          return AM_FAILED; /* data out of buffer, errors returned */
+      memcpy(myd->buf + myd->len, buf, len);
+      myd->len += len;
+      /* All return value other than `AM_OK` will be returned directly by
+       * `am_dump()`. */
+      return AM_OK;
+  }
+
+  /* do actually dump */
+  MyDumper d;
+  d.base.var_name  = dump_varname;
+  d.base.cons_name = dump_consname;
+  d.base.writer    = dump_writer;
+  d.len = 0;
+
+  int ret = am_dump(solver, &d.base);
+  assert(ret == AM_OK);
+  /* now uses the d.buf & d.len */
+  ```
+
+- `struct am_Loader`
+
+  A user-defined dump behavior control type.  The user must provide `reader`
+  and `load_var` function pointers in it. there is a example:
+
+  ```c
+  /* loads from a string buffer */
+  typedef struct MyLoader {
+      am_Loader base;
+      VarMap    vars;
+      ConsMap   cons;
+      const char *buf; /* the buffer to read */
+      size_t remain;   /* remain bytes */
+  } MyLoader;
+
+  static am_Num *load_var(am_Loader *l, const char *name, unsigned idx, am_Id var) {
+      /* you should returns a binding for variable named `name`, or `AM_FAILED`
+       * will be returned by `am_load()`.
+       * A common implement creates variable context into some map, returns it.
+       * Notice that `name` can be `NULL` if no name avaialable.  */
+      MyLoader *myl = (MyLoader*)l;
+      MyContext *ctx = my_create_ctx_by_idx_and_name(&myl->vars, idx, name);
+      return &ctx->value;
+  }
+
+  static void load_cons(am_Loader *l, const char *name, unsigned idx, am_Constraint *cons) {
+      /* same as `var_name`, but can be NULL in `am_Loader*` means do not
+       * retrieve any constraints from previous state.
+       * Notice that `name` can be `NULL`.  */
+      MyLoader *myl = (MyLoader*)l;
+      MyContext *ctx = save_cons_and_create_context(&myl->cons, idx, name, cons);
+      *(MyContext**)cons = ctx;
+  }
+
+  static const char *load_reader(am_Loader *l, size_t *plen) {
+      /* Get the data to reads, if returns `NULL` or store `0` into `plen`,
+       * stops reading */
+      MyLoader *myl = (MyLoader*)l;
+      const char *buf = myl->buf;
+      *plen = myl->len;
+      if (buf) {
+          my->buf = NULL;
+          my->len = 0;
+      }
+      return buf;
+  }
+
+  /* do actually load */
+  MyLoader l;
+  l.base.load_var  = load_var;
+  l.base.load_cons = load_cons; /* optional */
+  l.base.reader    = load_reader;
+  d.buf = get_some_data(&d.len);
+
+  am_Solver *solver = am_newsolver(NULL, NULL);
+  int ret = am_load(solver, &d.base);
+  assert(ret == AM_OK);
+  /* now uses the solver */
+  ```
 
 ### Routines
 
@@ -125,13 +250,49 @@ All functions below that returns `int` may return error codes:
   Set the auto update flags.
   If setted, all variables will be updated to its latest values right after any changes done to the `solver`.
 
+- `int am_dump(am_Solver *solver, am_Dumper *d);`
+
+  Dump whole solver state (without edits) into binary data.
+
+- `int am_load(am_Solver *solver, am_Loader *l);`
+
+  Loads binary data back into solver. Note that all previous states are
+  discarded, but previous vars & constraints are keeped. i.e. the
+  `am_resetsolver()` called before loaded.
+
 - `am_Id am_newvariable(am_Solver *solver, am_Num *pvalue);`
 
-  Create a new variable with a value `pvalue` binding to it.
+  Create a new variable with a value `pvalue` binding to it. Returns `0` on
+  error.
 
-- `void am_delvariable(am_Id var);`
+  Notice that the pvalue pointer can be retrived in `am_dump()` or
+  `am_varvalue()`, so you could put context data here:
+
+  ```c
+  typedef struct MyVarContext {
+      am_Num value;
+      const char *name;
+      /* etc.. */
+  } MyVarContext;
+  MyVarContext *ctx = new_context();
+  am_Id var = am_newvariable(solver, &ctx->value);
+  /* retrive the context: */
+  MyVarContext *ctx = (MyVarContext*)am_varvalue(var, NULL);
+  ```
+
+- `void am_delvariable(am_Solver *solver, am_Id var);`
 
   Remove this variable, after that, it cannot be added into further constraints.
+
+- `void am_refcount(am_Solver *solver, am_Id var);`
+
+  Retrieve the refcount of the variable.
+
+- `void am_varvalue(am_Solver *solver, am_Id var, am_Num *newvalue);`
+
+  Retrieve or reset the value binding of the variable. if `newvalue` is `NULL`,
+  Only retrieve the old value, otherwise the `newvalue` will be setted into
+  `var` and original value returned.
 
 - `int am_add(am_Constraint *cons);`
 
@@ -171,7 +332,15 @@ All functions below that returns `int` may return error codes:
 
 - `am_Constraint *am_newconstraint(am_Solver *solver, am_Num strength);`
 
-  Create a new constraints.
+  Create a new constraints. Notice that where are one pointer's space can be
+  used to store context data in the head of `am_Constraint`, example:
+
+  ```c
+  am_Constraint *cons = am_newconstraint(solver, AM_REQUIRED);
+  MyContext *ctx = new_my_context();
+  ctx->mydata = 1;
+  *(MyContext**)cons = ctx;
+  ```
 
 - `am_Constraint *am_cloneconstraint(am_Constraint *other, am_Num strength);`
 
@@ -218,7 +387,7 @@ All functions below that returns `int` may return error codes:
 
   Set the strength of a constraint.
 
-- `am_mergeconstraint(am_Constraint *cons, const am_Constraint *other, am_Num multiplier);`
+- `int am_mergeconstraint(am_Constraint *cons, const am_Constraint *other, am_Num multiplier);`
 
   Merge other constraints into `cons`, with a multiplier multiples with `other`.
 
