@@ -71,30 +71,31 @@ typedef unsigned am_Id;
 typedef void *am_Allocf (void *ud, void *ptr, size_t nsize, size_t osize);
 
 AM_API am_Solver *am_newsolver   (am_Allocf *allocf, void *ud);
-AM_API void       am_resetsolver (am_Solver *solver);
-AM_API void       am_delsolver   (am_Solver *solver);
+AM_API am_Solver *am_subsolver   (am_Solver *S);
+AM_API void       am_resetsolver (am_Solver *S);
+AM_API void       am_delsolver   (am_Solver *S);
 
-AM_API void am_updatevars (am_Solver *solver);
-AM_API void am_autoupdate (am_Solver *solver, int auto_update);
+AM_API void am_updatevars (am_Solver *S);
+AM_API void am_autoupdate (am_Solver *S, int auto_update);
 
 AM_API int  am_add    (am_Constraint *cons);
 AM_API void am_remove (am_Constraint *cons);
 
-AM_API void am_clearedits (am_Solver *solver);
-AM_API int  am_hasedit (am_Solver *solver, am_Id var);
-AM_API int  am_addedit (am_Solver *solver, am_Id var, am_Num strength);
-AM_API void am_suggest (am_Solver *solver, am_Id var, am_Num value);
-AM_API void am_deledit (am_Solver *solver, am_Id var);
+AM_API void am_clearedits (am_Solver *S);
+AM_API int  am_hasedit (am_Solver *S, am_Id var);
+AM_API int  am_addedit (am_Solver *S, am_Id var, am_Num strength);
+AM_API void am_suggest (am_Solver *S, am_Id var, am_Num value);
+AM_API void am_deledit (am_Solver *S, am_Id var);
 
-AM_API am_Id am_newvariable (am_Solver *solver, am_Num *pvalue);
-AM_API void  am_delvariable (am_Solver *solver, am_Id var);
+AM_API am_Id am_newvariable (am_Solver *S, am_Num *pvalue);
+AM_API void  am_delvariable (am_Solver *S, am_Id var);
 
-AM_API am_Num *am_varvalue (am_Solver *solver, am_Id var, am_Num *newvalue);
+AM_API am_Num *am_varvalue (am_Solver *S, am_Id var, am_Num *newvalue);
 
-AM_API int am_refcount      (am_Solver *solver, am_Id var);
+AM_API int am_refcount      (am_Solver *S, am_Id var);
 AM_API int am_hasconstraint (am_Constraint *cons);
 
-AM_API am_Constraint *am_newconstraint   (am_Solver *solver, am_Num strength);
+AM_API am_Constraint *am_newconstraint   (am_Solver *S, am_Num strength);
 AM_API am_Constraint *am_cloneconstraint (am_Constraint *other, am_Num strength);
 
 AM_API void am_resetconstraint (am_Constraint *cons);
@@ -112,21 +113,21 @@ AM_API int am_mergeconstraint (am_Constraint *cons, const am_Constraint *other, 
 typedef struct am_Dumper am_Dumper;
 typedef struct am_Loader am_Loader;
 
-AM_API int am_dump (am_Solver *solver, am_Dumper *dumper);
-AM_API int am_load (am_Solver *solver, am_Loader *loader);
+AM_API int am_dump (am_Solver *S, am_Dumper *dumper);
+AM_API int am_load (am_Solver *S, am_Loader *loader);
 
 struct am_Dumper {
-    const char *(*var_name)  (am_Dumper *, unsigned idx, am_Id var, am_Num *value);
-    const char *(*cons_name) (am_Dumper *, unsigned idx, am_Constraint *cons);
+    const char *(*var_name)  (am_Dumper *D, unsigned idx, am_Id var, am_Num *value);
+    const char *(*cons_name) (am_Dumper *D, unsigned idx, am_Constraint *cons);
 
-    int (*writer) (am_Dumper *, const void *buf, size_t len);
+    int (*writer) (am_Dumper *D, const void *buf, size_t len);
 };
 
 struct am_Loader {
-    am_Num *(*load_var)  (am_Loader *, const char *name, unsigned idx, am_Id var);
-    void    (*load_cons) (am_Loader *, const char *name, unsigned idx, am_Constraint *cons);
+    am_Num *(*load_var)  (am_Loader *L, const char *name, unsigned idx, am_Id var);
+    void    (*load_cons) (am_Loader *L, const char *name, unsigned idx, am_Constraint *cons);
 
-    const char *(*reader) (am_Loader *, size_t *plen);
+    const char *(*reader) (am_Loader *L, size_t *plen);
 };
 
 
@@ -166,6 +167,10 @@ AM_NS_END
 # define AM_NUM_MAX DBL_MAX
 # define AM_NUM_EPS 1e-6
 #endif
+
+#ifndef AM_DEBUG
+# define AM_DEBUG(...) ((void)0)
+#endif /* AM_DEBUG */
 
 AM_NS_BEGIN
 
@@ -218,7 +223,6 @@ typedef struct am_Var {
 typedef struct am_Suggest {
     am_Size        age;
     am_Num         edit_value;
-    am_Solver     *solver;
     am_Constraint *constraint;
     am_Table       dirtyset;
 } am_Suggest;
@@ -233,7 +237,7 @@ struct am_Constraint {
     unsigned   other_id : AM_UNSIGNED_BITS - 2;
     unsigned   relation : 2;
     am_Num     strength;
-    am_Solver *solver;
+    am_Solver *S;
 };
 
 struct am_Solver {
@@ -270,21 +274,21 @@ static void am_initpool(am_MemPool *pool, size_t size) {
     assert(size > sizeof(void*) && size < AM_POOLSIZE/4);
 }
 
-static void am_freepool(am_Solver *solver, am_MemPool *pool) {
+static void am_freepool(am_Solver *S, am_MemPool *pool) {
     const size_t offset = AM_POOLSIZE - sizeof(void*);
     while (pool->pages != NULL) {
         void *next = *(void**)((char*)pool->pages + offset);
-        solver->allocf(solver->ud, pool->pages, 0, AM_POOLSIZE);
+        S->allocf(S->ud, pool->pages, 0, AM_POOLSIZE);
         pool->pages = next;
     }
     am_initpool(pool, pool->size);
 }
 
-static void *am_alloc(am_Solver *solver, am_MemPool *pool) {
+static void *am_alloc(am_Solver *S, am_MemPool *pool) {
     void *obj = pool->freed;
     if (obj == NULL) {
         const size_t offset = AM_POOLSIZE - sizeof(void*);
-        void *end, *ptr = solver->allocf(solver->ud, NULL, AM_POOLSIZE, 0);
+        void *end, *ptr = S->allocf(S->ud, NULL, AM_POOLSIZE, 0);
         *(void**)((char*)ptr + offset) = pool->pages;
         pool->pages = ptr;
         end = (char*)ptr + (offset/pool->size-1)*pool->size;
@@ -304,10 +308,10 @@ static void am_free(am_MemPool *pool, void *obj) {
     pool->freed = obj;
 }
 
-static am_Symbol am_newsymbol(am_Solver *solver, int type) {
+static am_Symbol am_newsymbol(am_Solver *S, int type) {
     am_Symbol sym;
-    unsigned id = ++solver->id_count;
-    if (id > 0x3FFFFFFF) id = solver->id_count = 1;
+    unsigned id = ++S->id_count;
+    if (id > 0x3FFFFFFF) id = S->id_count = 1;
     assert(type >= AM_EXTERNAL && type <= AM_DUMMY);
     sym.id   = id;
     sym.type = type;
@@ -336,10 +340,10 @@ static int am_nextentry(am_Iterator *it) {
     return it->key = key, it->offset = cur + 1;
 }
 
-static void am_freetable(const am_Solver *solver, am_Table *t) {
+static void am_freetable(const am_Solver *S, am_Table *t) {
     size_t hsize = t->size * (sizeof(am_Key) + t->value_size);
     if (hsize == 0) return;
-    solver->allocf(solver->ud, t->keys, 0, hsize);
+    S->allocf(S->ud, t->keys, 0, hsize);
     am_inittable(t, t->value_size);
 }
 
@@ -352,14 +356,14 @@ static const void *am_gettable(const am_Table *t, unsigned key) {
     return amH_val(t, cur);
 }
 
-static int amH_alloc(const am_Solver *solver, am_Table *t) {
+static int amH_alloc(const am_Solver *S, am_Table *t) {
     size_t need = t->count*2, size = AM_MIN_HASHSIZE, hsize;
     am_Key *keys;
     if (need > (~(am_Size)0 >> 2)) return 0;
     while (size < need) size <<= 1;
     assert((size & (size-1)) == 0);
     hsize = size * (sizeof(am_Key) + t->value_size);
-    keys = (am_Key*)solver->allocf(solver->ud, NULL, hsize, 0);
+    keys = (am_Key*)S->allocf(S->ud, NULL, hsize, 0);
     if (keys == NULL) return 0;
     t->size = (am_Size)size;
     t->keys = keys;
@@ -390,10 +394,10 @@ static void *amH_rawset(am_Table *t, am_Symbol key) {
     return ks[mp].sym = key, amH_val(t, mp);
 }
 
-static size_t amH_resize(const am_Solver *solver, am_Table *t) {
+static size_t amH_resize(const am_Solver *S, am_Table *t) {
     am_Table nt = *t;
     am_Size i;
-    if (!amH_alloc(solver, &nt)) return 0;
+    if (!amH_alloc(S, &nt)) return 0;
     for (i = 0; i < t->size; ++i) {
         void *value;
         if (!t->keys[i].sym.id) continue;
@@ -401,16 +405,16 @@ static size_t amH_resize(const am_Solver *solver, am_Table *t) {
         assert(value != NULL), memcpy(value, amH_val(t, i), t->value_size);
     }
     nt.count = t->count;
-    am_freetable(solver, t);
+    am_freetable(S, t);
     return (*t = nt), 1;
 }
 
-static void *am_settable(const am_Solver *solver, am_Table *t, am_Symbol key) {
+static void *am_settable(const am_Solver *S, am_Table *t, am_Symbol key) {
     void *value;
     assert(key.id != 0 && am_gettable(t, key.id) == NULL);
-    if (t->size == 0 && !amH_resize(solver, t)) return NULL;
+    if (t->size == 0 && !amH_resize(S, t)) return NULL;
     if ((value = amH_rawset(t, key)) == NULL) {
-        if (!amH_resize(solver, t)) return NULL;
+        if (!amH_resize(S, t)) return NULL;
         value = amH_rawset(t, key); /* retry and must success */
     }
     return t->count += 1, assert(value != NULL), value;
@@ -423,8 +427,8 @@ static void am_deltable(am_Table *t, const void *value) {
 
 /* expression (row) */
 
-static void am_freerow(am_Solver *solver, am_Row *row)
-{ am_freetable(solver, &row->terms); }
+static void am_freerow(am_Solver *S, am_Row *row)
+{ am_freetable(S, &row->terms); }
 
 static void am_resetrow(am_Row *row)
 { row->constant = 0.0f; am_resettable(&row->terms); }
@@ -442,54 +446,54 @@ static void am_multiply(am_Row *row, am_Num multiplier) {
         *am_val(am_Num,it) *= multiplier;
 }
 
-static void am_addvar(am_Solver *solver, am_Row *row, am_Symbol sym, am_Num value) {
+static void am_addvar(am_Solver *S, am_Row *row, am_Symbol sym, am_Num value) {
     am_Num *term;
     if (sym.id == 0 || am_nearzero(value)) return;
     term = (am_Num*)am_gettable(&row->terms, sym.id);
     if (term == NULL) {
-        term = (am_Num*)am_settable(solver, &row->terms, sym);
+        term = (am_Num*)am_settable(S, &row->terms, sym);
         assert(term != NULL);
         *term = value;
     } else if (am_nearzero(*term += value))
         am_deltable(&row->terms, term);
 }
 
-static void am_addrow(am_Solver *solver, am_Row *row, const am_Row *other, am_Num multiplier) {
+static void am_addrow(am_Solver *S, am_Row *row, const am_Row *other, am_Num multiplier) {
     am_Iterator it = am_itertable(&other->terms);
     row->constant += other->constant*multiplier;
     while (am_nextentry(&it))
-        am_addvar(solver, row, it.key, *am_val(am_Num,it)*multiplier);
+        am_addvar(S, row, it.key, *am_val(am_Num,it)*multiplier);
 }
 
-static void am_solvefor(am_Solver *solver, am_Row *row, am_Symbol enter, am_Symbol leave) {
+static void am_solvefor(am_Solver *S, am_Row *row, am_Symbol enter, am_Symbol leave) {
     am_Num *term = (am_Num*)am_gettable(&row->terms, enter.id);
     am_Num reciprocal = 1.0f / *term;
     assert(enter.id != leave.id && !am_nearzero(*term));
     am_deltable(&row->terms, term);
     if (!am_approx(reciprocal, -1.0f)) am_multiply(row, -reciprocal);
-    if (leave.id != 0) am_addvar(solver, row, leave, reciprocal);
+    if (leave.id != 0) am_addvar(S, row, leave, reciprocal);
 }
 
-static void am_eliminate(am_Solver *solver, am_Row *dst, am_Symbol out, const am_Row *row) {
+static void am_eliminate(am_Solver *S, am_Row *dst, am_Symbol out, const am_Row *row) {
     am_Num *term = (am_Num*)am_gettable(&dst->terms, out.id);
     if (!term) return;
     am_deltable(&dst->terms, term);
-    am_addrow(solver, dst, row, *term);
+    am_addrow(S, dst, row, *term);
 }
 
 /* variables & constraints */
 
 #define am_checkvalue(t,p) if (!(p)) { am_deltable((t),(p)); return NULL; }
 
-static am_Var *am_id2var(am_Solver *solver, am_Id var)
-{ return solver ? (am_Var*)am_gettable(&solver->vars, var) : NULL; }
+static am_Var *am_id2var(am_Solver *S, am_Id var)
+{ return S ? (am_Var*)am_gettable(&S->vars, var) : NULL; }
 
-AM_API am_Id am_newvariable(am_Solver *solver, am_Num *pvalue) {
+AM_API am_Id am_newvariable(am_Solver *S, am_Num *pvalue) {
     am_Symbol sym;
     am_Var *ve;
-    if (solver == NULL || pvalue == NULL) return 0;
-    sym = am_newsymbol(solver, AM_EXTERNAL);
-    ve = (am_Var*)am_settable(solver, &solver->vars, sym);
+    if (S == NULL || pvalue == NULL) return 0;
+    sym = am_newsymbol(S, AM_EXTERNAL);
+    ve = (am_Var*)am_settable(S, &S->vars, sym);
     if (ve == NULL) return 0;
     memset(ve, 0, sizeof(*ve));
     ve->pvalue   = pvalue;
@@ -497,38 +501,38 @@ AM_API am_Id am_newvariable(am_Solver *solver, am_Num *pvalue) {
     return sym.id;
 }
 
-AM_API void am_delvariable(am_Solver *solver, am_Id var) {
-    am_Var *ve = am_id2var(solver, var);
+AM_API void am_delvariable(am_Solver *S, am_Id var) {
+    am_Var *ve = am_id2var(S, var);
     if (ve && --ve->refcount == 0) {
         assert(!am_isdummy(ve->next));
-        am_deledit(solver, var);
-        am_deltable(&solver->vars, ve);
+        am_deledit(S, var);
+        am_deltable(&S->vars, ve);
     }
 }
 
-AM_API int am_refcount(am_Solver *solver, am_Id var) {
-    am_Var *ve = am_id2var(solver, var);
+AM_API int am_refcount(am_Solver *S, am_Id var) {
+    am_Var *ve = am_id2var(S, var);
     return ve ? ve->refcount : 0;
 }
 
-AM_API am_Num *am_varvalue(am_Solver *solver, am_Id var, am_Num *newvalue) {
-    am_Var *ve = am_id2var(solver, var);
+AM_API am_Num *am_varvalue(am_Solver *S, am_Id var, am_Num *newvalue) {
+    am_Var *ve = am_id2var(S, var);
     am_Num *pvalue = ve ? ve->pvalue : NULL;
     if (ve && newvalue) ve->pvalue = newvalue;
     return pvalue;
 }
 
-AM_API am_Constraint *am_newconstraint(am_Solver *solver, am_Num strength) {
-    am_Symbol sym = { 0, AM_EXTERNAL };
+AM_API am_Constraint *am_newconstraint(am_Solver *S, am_Num strength) {
+    am_Symbol sym = {0, AM_EXTERNAL};
     am_Constraint **ce;
-    if (solver == NULL || strength < 0.f) return NULL;
-    sym.id = ++solver->cons_count;
-    ce = (am_Constraint**)am_settable(solver, &solver->constraints, sym);
+    if (S == NULL || strength < 0.f) return NULL;
+    sym.id = ++S->cons_count;
+    ce = (am_Constraint**)am_settable(S, &S->constraints, sym);
     assert(ce != NULL);
-    *ce = (am_Constraint*)am_alloc(solver, &solver->conspool);
-    am_checkvalue(&solver->constraints, ce);
+    *ce = (am_Constraint*)am_alloc(S, &S->conspool);
+    am_checkvalue(&S->constraints, ce);
     memset(*ce, 0, sizeof(**ce));
-    (*ce)->solver   = solver;
+    (*ce)->S   = S;
     (*ce)->sym      = sym;
     (*ce)->strength = am_nearzero(strength) ? AM_REQUIRED : strength;
     am_initrow(&(*ce)->expression);
@@ -536,25 +540,25 @@ AM_API am_Constraint *am_newconstraint(am_Solver *solver, am_Num strength) {
 }
 
 AM_API void am_delconstraint(am_Constraint *cons) {
-    am_Solver *solver = cons ? cons->solver : NULL;
+    am_Solver *S = cons ? cons->S : NULL;
     am_Iterator it;
     am_Constraint **ce;
-    if (solver == NULL) return;
+    if (S == NULL) return;
     am_remove(cons);
-    ce = (am_Constraint**)am_gettable(&solver->constraints, cons->sym.id);
+    ce = (am_Constraint**)am_gettable(&S->constraints, cons->sym.id);
     assert(ce != NULL);
-    am_deltable(&solver->constraints, ce);
+    am_deltable(&S->constraints, ce);
     it = am_itertable(&cons->expression.terms);
     while (am_nextentry(&it))
-        am_delvariable(cons->solver, it.key.id);
-    am_freerow(solver, &cons->expression);
-    am_free(&solver->conspool, cons);
+        am_delvariable(cons->S, it.key.id);
+    am_freerow(S, &cons->expression);
+    am_free(&S->conspool, cons);
 }
 
 AM_API am_Constraint *am_cloneconstraint(am_Constraint *other, am_Num strength) {
     am_Constraint *cons;
     if (other == NULL) return NULL;
-    cons = am_newconstraint(other->solver,
+    cons = am_newconstraint(other->S,
             am_nearzero(strength) ? other->strength : strength);
     am_mergeconstraint(cons, other, 1.0f);
     cons->relation = other->relation;
@@ -564,15 +568,15 @@ AM_API am_Constraint *am_cloneconstraint(am_Constraint *other, am_Num strength) 
 AM_API int am_mergeconstraint(am_Constraint *cons, const am_Constraint *other, am_Num multiplier) {
     am_Iterator it;
     if (cons == NULL || other == NULL || cons->marker.id != 0
-            || cons->solver != other->solver) return AM_FAILED;
+            || cons->S != other->S) return AM_FAILED;
     if (cons->relation == AM_GREATEQUAL) multiplier = -multiplier;
     cons->expression.constant += other->expression.constant*multiplier;
     it = am_itertable(&other->expression.terms);
     while (am_nextentry(&it)) {
-        am_Var *ve = (am_Var*)am_gettable(&cons->solver->vars, it.key.id);
+        am_Var *ve = (am_Var*)am_gettable(&cons->S->vars, it.key.id);
         assert(ve != NULL);
         ve->refcount += 1;
-        am_addvar(cons->solver, &cons->expression, it.key,
+        am_addvar(cons->S, &cons->expression, it.key,
                 *am_val(am_Num,it)*multiplier);
     }
     return AM_OK;
@@ -585,7 +589,7 @@ AM_API void am_resetconstraint(am_Constraint *cons) {
     cons->relation = 0;
     it = am_itertable(&cons->expression.terms);
     while (am_nextentry(&it))
-        am_delvariable(cons->solver, it.key.id);
+        am_delvariable(cons->S, it.key.id);
     am_resetrow(&cons->expression);
 }
 
@@ -594,9 +598,9 @@ AM_API int am_addterm(am_Constraint *cons, am_Id var, am_Num multiplier) {
     am_Var *ve;
     if (cons == NULL || var == 0 || cons->marker.id != 0) return AM_FAILED;
     if (cons->relation == AM_GREATEQUAL) multiplier = -multiplier;
-    ve = (am_Var*)am_gettable(&cons->solver->vars, var);
+    ve = (am_Var*)am_gettable(&cons->S->vars, var);
     if (ve == NULL) return AM_FAILED;
-    am_addvar(cons->solver, &cons->expression, (sym.id=var, sym), multiplier);
+    am_addvar(cons->S, &cons->expression, (sym.id=var, sym), multiplier);
     return ve->refcount += 1, AM_OK;
 }
 
@@ -621,53 +625,53 @@ AM_API int am_setrelation(am_Constraint *cons, int relation) {
 AM_API int am_hasconstraint(am_Constraint *cons)
 { return cons != NULL && cons->marker.id != 0; }
 
-AM_API void am_autoupdate(am_Solver *solver, int auto_update)
-{ solver->auto_update = auto_update; }
+AM_API void am_autoupdate(am_Solver *S, int auto_update)
+{ S->auto_update = auto_update; }
 
-static void am_infeasible(am_Solver *solver, am_Symbol sym, am_Row *row) {
+static void am_infeasible(am_Solver *S, am_Symbol sym, am_Row *row) {
     if (row->constant < 0.0f && !am_isdummy(row->infeasible_next)) {
-        row->infeasible_next.id = solver->infeasible_rows.id;
+        row->infeasible_next.id = S->infeasible_rows.id;
         row->infeasible_next.type = AM_DUMMY;
-        solver->infeasible_rows = sym;
+        S->infeasible_rows = sym;
     }
 }
 
-static void am_markdirty(am_Solver *solver, am_Symbol var) {
-    am_Var *ve = (am_Var*)am_gettable(&solver->vars, var.id);
+static void am_markdirty(am_Solver *S, am_Symbol var) {
+    am_Var *ve = (am_Var*)am_gettable(&S->vars, var.id);
     assert(ve != NULL);
     if (am_isdummy(ve->next)) return;
-    ve->next.id = solver->dirty_vars.id;
+    ve->next.id = S->dirty_vars.id;
     ve->next.type = AM_DUMMY;
-    solver->dirty_vars = var;
+    S->dirty_vars = var;
     ve->refcount += 1;
 }
 
-static void am_substitute_rows(am_Solver *solver, am_Symbol var, am_Row *expr) {
-    am_Iterator it = am_itertable(&solver->rows);
+static void am_substitute_rows(am_Solver *S, am_Symbol var, am_Row *expr) {
+    am_Iterator it = am_itertable(&S->rows);
     while (am_nextentry(&it)) {
         am_Row *row = am_val(am_Row,it);
-        am_eliminate(solver, row, var, expr);
+        am_eliminate(S, row, var, expr);
         if (am_isexternal(it.key))
-            am_markdirty(solver, it.key);
+            am_markdirty(S, it.key);
         else
-            am_infeasible(solver, it.key, row);
+            am_infeasible(S, it.key, row);
     }
-    am_eliminate(solver, &solver->objective, var, expr);
+    am_eliminate(S, &S->objective, var, expr);
 }
 
-static int am_takerow(am_Solver *solver, am_Symbol sym, am_Row *dst) {
-    am_Row *row = (am_Row*)am_gettable(&solver->rows, sym.id);
+static int am_takerow(am_Solver *S, am_Symbol sym, am_Row *dst) {
+    am_Row *row = (am_Row*)am_gettable(&S->rows, sym.id);
     if (row == NULL) return AM_FAILED;
-    am_deltable(&solver->rows, row);
+    am_deltable(&S->rows, row);
     dst->constant   = row->constant;
     dst->terms      = row->terms;
     return AM_OK;
 }
 
-static int am_putrow(am_Solver *solver, am_Symbol sym, const am_Row *src) {
+static int am_putrow(am_Solver *S, am_Symbol sym, const am_Row *src) {
     am_Row *row;
-    assert(am_gettable(&solver->rows, sym.id) == NULL);
-    row = (am_Row*)am_settable(solver, &solver->rows, sym);
+    assert(am_gettable(&S->rows, sym.id) == NULL);
+    row = (am_Row*)am_settable(S, &S->rows, sym);
     assert(row != NULL);
     row->infeasible_next = am_null();
     row->constant = src->constant;
@@ -675,28 +679,28 @@ static int am_putrow(am_Solver *solver, am_Symbol sym, const am_Row *src) {
     return AM_OK;
 }
 
-static void am_mergerow(am_Solver *solver, am_Row *row, am_Symbol var, am_Num multiplier) {
-    am_Row *oldrow = (am_Row*)am_gettable(&solver->rows, var.id);
+static void am_mergerow(am_Solver *S, am_Row *row, am_Symbol var, am_Num multiplier) {
+    am_Row *oldrow = (am_Row*)am_gettable(&S->rows, var.id);
     if (oldrow)
-        am_addrow(solver, row, oldrow, multiplier);
+        am_addrow(S, row, oldrow, multiplier);
     else
-        am_addvar(solver, row, var, multiplier);
+        am_addvar(S, row, var, multiplier);
 }
 
-static int am_optimize(am_Solver *solver, am_Row *objective) {
+static int am_optimize(am_Solver *S, am_Row *objective) {
     for (;;) {
         am_Symbol enter = am_null(), leave = am_null();
         am_Num r, min_ratio = AM_NUM_MAX, *term;
         am_Iterator it = am_itertable(&objective->terms);
         am_Row tmp;
 
-        assert(solver->infeasible_rows.id == 0);
+        assert(S->infeasible_rows.id == 0);
         while (am_nextentry(&it))
             if (!am_isdummy(it.key) && *am_val(am_Num,it) < 0.0f)
             { enter = it.key; break; }
         if (enter.id == 0) return AM_OK;
 
-        it = am_itertable(&solver->rows);
+        it = am_itertable(&S->rows);
         while (am_nextentry(&it)) {
             am_Row *row = am_val(am_Row,it);
             if (am_isexternal(it.key)) continue;
@@ -710,94 +714,94 @@ static int am_optimize(am_Solver *solver, am_Row *objective) {
         assert(leave.id != 0);
         if (leave.id == 0) return AM_UNBOUND;
 
-        am_takerow(solver, leave, &tmp);
-        am_solvefor(solver, &tmp, enter, leave);
-        am_substitute_rows(solver, enter, &tmp);
-        if (objective != &solver->objective)
-            am_eliminate(solver, objective, enter, &tmp);
-        am_putrow(solver, enter, &tmp);
+        am_takerow(S, leave, &tmp);
+        am_solvefor(S, &tmp, enter, leave);
+        am_substitute_rows(S, enter, &tmp);
+        if (objective != &S->objective)
+            am_eliminate(S, objective, enter, &tmp);
+        am_putrow(S, enter, &tmp);
     }
 }
 
-static am_Row am_makerow(am_Solver *solver, am_Constraint *cons) {
+static am_Row am_makerow(am_Solver *S, am_Constraint *cons) {
     am_Iterator it = am_itertable(&cons->expression.terms);
     am_Row row;
     am_initrow(&row);
     row.constant = cons->expression.constant;
     while (am_nextentry(&it)) {
-        am_markdirty(solver, it.key);
-        am_mergerow(solver, &row, it.key, *am_val(am_Num,it));
+        am_markdirty(S, it.key);
+        am_mergerow(S, &row, it.key, *am_val(am_Num,it));
     }
     if (cons->relation != AM_EQUAL) {
         cons->marker.id = cons->marker_id, cons->marker.type = AM_SLACK;
-        am_addvar(solver, &row, cons->marker, -1.0f);
+        am_addvar(S, &row, cons->marker, -1.0f);
         if (cons->strength < AM_REQUIRED) {
             cons->other.id = cons->other_id, cons->other.type = AM_ERROR;
-            am_addvar(solver, &row, cons->other, 1.0f);
-            am_addvar(solver, &solver->objective, cons->other, cons->strength);
+            am_addvar(S, &row, cons->other, 1.0f);
+            am_addvar(S, &S->objective, cons->other, cons->strength);
         }
     } else if (cons->strength >= AM_REQUIRED) {
         cons->marker.id = cons->marker_id, cons->marker.type = AM_DUMMY;
-        am_addvar(solver, &row, cons->marker, 1.0f);
+        am_addvar(S, &row, cons->marker, 1.0f);
     } else {
         cons->marker.id = cons->marker_id, cons->marker.type = AM_ERROR;
         cons->other.id = cons->other_id, cons->other.type = AM_ERROR;
-        am_addvar(solver, &row, cons->marker, -1.0f);
-        am_addvar(solver, &row, cons->other,   1.0f);
-        am_addvar(solver, &solver->objective, cons->marker, cons->strength);
-        am_addvar(solver, &solver->objective, cons->other,  cons->strength);
+        am_addvar(S, &row, cons->marker, -1.0f);
+        am_addvar(S, &row, cons->other,   1.0f);
+        am_addvar(S, &S->objective, cons->marker, cons->strength);
+        am_addvar(S, &S->objective, cons->other,  cons->strength);
     }
     if (row.constant < 0.0f) am_multiply(&row, -1.0f);
     return row;
 }
 
-static void am_remove_errors(am_Solver *solver, am_Constraint *cons) {
+static void am_remove_errors(am_Solver *S, am_Constraint *cons) {
     if (am_iserror(cons->marker))
-        am_mergerow(solver, &solver->objective, cons->marker, -cons->strength);
+        am_mergerow(S, &S->objective, cons->marker, -cons->strength);
     if (am_iserror(cons->other))
-        am_mergerow(solver, &solver->objective, cons->other, -cons->strength);
-    if (solver->objective.terms.count == 0)
-        solver->objective.constant = 0.0f;
+        am_mergerow(S, &S->objective, cons->other, -cons->strength);
+    if (S->objective.terms.count == 0)
+        S->objective.constant = 0.0f;
     cons->marker = cons->other = am_null();
 }
 
-static int am_add_with_artificial(am_Solver *solver, am_Row *row, am_Constraint *cons) {
-    am_Symbol a = am_newsymbol(solver, AM_SLACK);
+static int am_add_with_artificial(am_Solver *S, am_Row *row, am_Constraint *cons) {
+    am_Symbol a = am_newsymbol(S, AM_SLACK);
     am_Iterator it;
     am_Row tmp;
     am_Num *term;
     int ret;
-    --solver->id_count; /* artificial variable will be removed */
+    --S->id_count; /* artificial variable will be removed */
     am_initrow(&tmp);
-    am_addrow(solver, &tmp, row, 1.0f);
-    am_putrow(solver, a, row);
-    if (am_optimize(solver, &tmp)) return AM_UNBOUND;
+    am_addrow(S, &tmp, row, 1.0f);
+    am_putrow(S, a, row);
+    if (am_optimize(S, &tmp)) return AM_UNBOUND;
     ret = am_nearzero(tmp.constant) ? AM_OK : AM_UNBOUND;
-    am_freerow(solver, &tmp);
-    if (am_takerow(solver, a, &tmp) == AM_OK) {
+    am_freerow(S, &tmp);
+    if (am_takerow(S, a, &tmp) == AM_OK) {
         am_Symbol enter = am_null();
-        if (tmp.terms.count == 0) return am_freerow(solver, &tmp), ret;
+        if (tmp.terms.count == 0) return am_freerow(S, &tmp), ret;
         it = am_itertable(&tmp.terms);
         while (am_nextentry(&it))
             if (am_ispivotable(it.key)) { enter = it.key; break; }
-        if (enter.id == 0) { am_freerow(solver, &tmp); return AM_UNBOUND; }
-        am_solvefor(solver, &tmp, enter, a);
-        am_substitute_rows(solver, enter, &tmp);
-        am_putrow(solver, enter, &tmp);
+        if (enter.id == 0) { am_freerow(S, &tmp); return AM_UNBOUND; }
+        am_solvefor(S, &tmp, enter, a);
+        am_substitute_rows(S, enter, &tmp);
+        am_putrow(S, enter, &tmp);
     }
-    it = am_itertable(&solver->rows);
+    it = am_itertable(&S->rows);
     while (am_nextentry(&it)) {
         am_Row *row = am_val(am_Row,it);
         am_Num *term = (am_Num*)am_gettable(&row->terms, a.id);
         if (term) am_deltable(&row->terms, term);
     }
-    term = (am_Num*)am_gettable(&solver->objective.terms, a.id);
-    if (term) am_deltable(&solver->objective.terms, term);
+    term = (am_Num*)am_gettable(&S->objective.terms, a.id);
+    if (term) am_deltable(&S->objective.terms, term);
     if (ret != AM_OK) am_remove(cons);
     return ret;
 }
 
-static int am_try_addrow(am_Solver *solver, am_Row *row, am_Constraint *cons) {
+static int am_try_addrow(am_Solver *S, am_Row *row, am_Constraint *cons) {
     am_Symbol subject = am_null();
     am_Iterator it = am_itertable(&row->terms);
     while (am_nextentry(&it))
@@ -818,23 +822,23 @@ static int am_try_addrow(am_Solver *solver, am_Row *row, am_Constraint *cons) {
             if (am_nearzero(row->constant))
                 subject = cons->marker;
             else {
-                am_freerow(solver, row);
+                am_freerow(S, row);
                 return AM_UNSATISFIED;
             }
         }
     }
     if (subject.id == 0)
-        return am_add_with_artificial(solver, row, cons);
-    am_solvefor(solver, row, subject, am_null());
-    am_substitute_rows(solver, subject, row);
-    am_putrow(solver, subject, row);
+        return am_add_with_artificial(S, row, cons);
+    am_solvefor(S, row, subject, am_null());
+    am_substitute_rows(S, subject, row);
+    am_putrow(S, subject, row);
     return AM_OK;
 }
 
-static am_Symbol am_get_leaving_row(am_Solver *solver, am_Symbol marker) {
+static am_Symbol am_get_leaving_row(am_Solver *S, am_Symbol marker) {
     am_Symbol first = am_null(), second = am_null(), third = am_null();
     am_Num r1 = AM_NUM_MAX, r2 = AM_NUM_MAX;
-    am_Iterator it = am_itertable(&solver->rows);
+    am_Iterator it = am_itertable(&S->rows);
     while (am_nextentry(&it)) {
         am_Row *row = am_val(am_Row,it);
         am_Num *term = (am_Num*)am_gettable(&row->terms, marker.id);
@@ -862,71 +866,71 @@ static void *am_default_allocf(void *ud, void *ptr, size_t nsize, size_t osize) 
 }
 
 AM_API am_Solver *am_newsolver(am_Allocf *allocf, void *ud) {
-    am_Solver *solver;
+    am_Solver *S;
     if (allocf == NULL) allocf = am_default_allocf;
-    if ((solver = (am_Solver*)allocf(ud, NULL, sizeof(am_Solver), 0)) == NULL)
+    if ((S = (am_Solver*)allocf(ud, NULL, sizeof(am_Solver), 0)) == NULL)
         return NULL;
-    memset(solver, 0, sizeof(*solver));
-    solver->allocf = allocf;
-    solver->ud     = ud;
-    am_initrow(&solver->objective);
-    am_inittable(&solver->vars, sizeof(am_Var));
-    am_inittable(&solver->constraints, sizeof(am_Constraint*));
-    am_inittable(&solver->suggests, sizeof(am_Suggest));
-    am_inittable(&solver->rows, sizeof(am_Row));
-    am_initpool(&solver->conspool, sizeof(am_Constraint));
-    return solver;
+    memset(S, 0, sizeof(*S));
+    S->allocf = allocf;
+    S->ud     = ud;
+    am_initrow(&S->objective);
+    am_inittable(&S->vars, sizeof(am_Var));
+    am_inittable(&S->constraints, sizeof(am_Constraint*));
+    am_inittable(&S->suggests, sizeof(am_Suggest));
+    am_inittable(&S->rows, sizeof(am_Row));
+    am_initpool(&S->conspool, sizeof(am_Constraint));
+    return S;
 }
 
-AM_API void am_delsolver(am_Solver *solver) {
-    am_Iterator it = am_itertable(&solver->constraints);
+AM_API void am_delsolver(am_Solver *S) {
+    am_Iterator it = am_itertable(&S->constraints);
     while (am_nextentry(&it))
-        am_freerow(solver, &(*am_val(am_Constraint*,it))->expression);
-    it = am_itertable(&solver->suggests);
+        am_freerow(S, &(*am_val(am_Constraint*,it))->expression);
+    it = am_itertable(&S->suggests);
     while (am_nextentry(&it))
-        am_freetable(solver, &am_val(am_Suggest,it)->dirtyset);
-    it = am_itertable(&solver->rows);
+        am_freetable(S, &am_val(am_Suggest,it)->dirtyset);
+    it = am_itertable(&S->rows);
     while (am_nextentry(&it))
-        am_freerow(solver, am_val(am_Row,it));
-    am_freerow(solver, &solver->objective);
-    am_freetable(solver, &solver->vars);
-    am_freetable(solver, &solver->constraints);
-    am_freetable(solver, &solver->suggests);
-    am_freetable(solver, &solver->rows);
-    am_freepool(solver, &solver->conspool);
-    solver->allocf(solver->ud, solver, 0, sizeof(*solver));
+        am_freerow(S, am_val(am_Row,it));
+    am_freerow(S, &S->objective);
+    am_freetable(S, &S->vars);
+    am_freetable(S, &S->constraints);
+    am_freetable(S, &S->suggests);
+    am_freetable(S, &S->rows);
+    am_freepool(S, &S->conspool);
+    S->allocf(S->ud, S, 0, sizeof(*S));
 }
 
-AM_API void am_resetsolver(am_Solver *solver) {
+AM_API void am_resetsolver(am_Solver *S) {
     am_Iterator it;
-    if (solver == NULL) return;
-    am_clearedits(solver);
-    it = am_itertable(&solver->constraints);
+    if (S == NULL) return;
+    am_clearedits(S);
+    it = am_itertable(&S->constraints);
     while (am_nextentry(&it)) {
         am_Constraint *cons = *am_val(am_Constraint*,it);
         cons->marker = cons->other = am_null();
     }
-    it = am_itertable(&solver->rows);
+    it = am_itertable(&S->rows);
     while (am_nextentry(&it))
-        am_freerow(solver, am_val(am_Row,it));
-    am_resettable(&solver->rows);
-    am_resetrow(&solver->objective);
-    assert(solver->infeasible_rows.id == 0);
-    solver->age = 0;
+        am_freerow(S, am_val(am_Row,it));
+    am_resettable(&S->rows);
+    am_resetrow(&S->objective);
+    assert(S->infeasible_rows.id == 0);
+    S->age = 0;
 }
 
-AM_API void am_updatevars(am_Solver *solver) {
-    while (solver->dirty_vars.id != 0) {
-        am_Symbol var = solver->dirty_vars;
-        am_Var *ve = (am_Var*)am_gettable(&solver->vars, var.id);
+AM_API void am_updatevars(am_Solver *S) {
+    while (S->dirty_vars.id != 0) {
+        am_Symbol var = S->dirty_vars;
+        am_Var *ve = (am_Var*)am_gettable(&S->vars, var.id);
         assert(ve != NULL);
-        solver->dirty_vars = ve->next;
+        S->dirty_vars = ve->next;
         ve->next = am_null();
         if (ve->refcount == 1) {
-            am_deledit(solver, var.id);
-            am_deltable(&solver->vars, ve);
+            am_deledit(S, var.id);
+            am_deltable(&S->vars, ve);
         } else {
-            am_Row *row = (am_Row*)am_gettable(&solver->rows, var.id);
+            am_Row *row = (am_Row*)am_gettable(&S->rows, var.id);
             *ve->pvalue = row ? row->constant : 0.0f;
             ve->refcount -= 1;
         }
@@ -934,47 +938,47 @@ AM_API void am_updatevars(am_Solver *solver) {
 }
 
 AM_API int am_add(am_Constraint *cons) {
-    am_Solver *solver = cons ? cons->solver : NULL;
+    am_Solver *S = cons ? cons->S : NULL;
     am_Symbol sym;
     am_Row row;
     int ret;
-    if (solver == NULL || cons->marker.id != 0) return AM_FAILED;
+    if (S == NULL || cons->marker.id != 0) return AM_FAILED;
     if (!cons->marker_id)
-        cons->marker_id = ((sym = am_newsymbol(solver, 0)), sym.id);
+        cons->marker_id = ((sym = am_newsymbol(S, 0)), sym.id);
     if (!cons->other_id && cons->strength < AM_REQUIRED)
-        cons->other_id = ((sym = am_newsymbol(solver, 0)), sym.id);
-    row = am_makerow(solver, cons);
-    if ((ret = am_try_addrow(solver, &row, cons)) != AM_OK)
-        am_remove_errors(solver, cons);
+        cons->other_id = ((sym = am_newsymbol(S, 0)), sym.id);
+    row = am_makerow(S, cons);
+    if ((ret = am_try_addrow(S, &row, cons)) != AM_OK)
+        am_remove_errors(S, cons);
     else {
-        if (am_optimize(solver, &solver->objective)) return AM_UNBOUND;
-        if (solver->auto_update) am_updatevars(solver);
-        solver->age += 1;
+        if (am_optimize(S, &S->objective)) return AM_UNBOUND;
+        if (S->auto_update) am_updatevars(S);
+        S->age += 1;
     }
-    assert(solver->infeasible_rows.id == 0);
+    assert(S->infeasible_rows.id == 0);
     return ret;
 }
 
 AM_API void am_remove(am_Constraint *cons) {
-    am_Solver *solver;
+    am_Solver *S;
     am_Symbol marker;
     am_Row tmp;
     int ret;
     if (cons == NULL || cons->marker.id == 0) return;
-    solver = cons->solver, marker = cons->marker;
-    am_remove_errors(solver, cons);
-    if (am_takerow(solver, marker, &tmp) != AM_OK) {
-        am_Symbol leave = am_get_leaving_row(solver, marker);
+    S = cons->S, marker = cons->marker;
+    am_remove_errors(S, cons);
+    if (am_takerow(S, marker, &tmp) != AM_OK) {
+        am_Symbol leave = am_get_leaving_row(S, marker);
         assert(leave.id != 0);
-        am_takerow(solver, leave, &tmp);
-        am_solvefor(solver, &tmp, marker, leave);
-        am_substitute_rows(solver, marker, &tmp);
+        am_takerow(S, leave, &tmp);
+        am_solvefor(S, &tmp, marker, leave);
+        am_substitute_rows(S, marker, &tmp);
     }
-    am_freerow(solver, &tmp);
-    ret = am_optimize(solver, &solver->objective);
+    am_freerow(S, &tmp);
+    ret = am_optimize(S, &S->objective);
     assert(ret == AM_OK), (void)ret;
-    solver->age += 1;
-    if (solver->auto_update) am_updatevars(solver);
+    S->age += 1;
+    if (S->auto_update) am_updatevars(S);
 }
 
 AM_API int am_setstrength(am_Constraint *cons, am_Num strength) {
@@ -984,31 +988,31 @@ AM_API int am_setstrength(am_Constraint *cons, am_Num strength) {
     if (cons->strength >= AM_REQUIRED || strength >= AM_REQUIRED)
         return am_remove(cons), cons->strength = strength, am_add(cons);
     if (cons->marker.id != 0) {
-        am_Solver *solver = cons->solver;
+        am_Solver *S = cons->S;
         am_Num diff = strength - cons->strength;
-        am_mergerow(solver, &solver->objective, cons->marker, diff);
-        am_mergerow(solver, &solver->objective, cons->other,  diff);
-        if (am_optimize(solver, &solver->objective)) return AM_UNBOUND;
-        if (solver->auto_update) am_updatevars(solver);
-        solver->age += 1;
+        am_mergerow(S, &S->objective, cons->marker, diff);
+        am_mergerow(S, &S->objective, cons->other,  diff);
+        if (am_optimize(S, &S->objective)) return AM_UNBOUND;
+        if (S->auto_update) am_updatevars(S);
+        S->age += 1;
     }
     cons->strength = strength;
     return AM_OK;
 }
 
-AM_API int am_hasedit(am_Solver *solver, am_Id var) {
-    if (solver == NULL) return 0;
-    return am_gettable(&solver->suggests, var) != NULL;
+AM_API int am_hasedit(am_Solver *S, am_Id var) {
+    if (S == NULL) return 0;
+    return am_gettable(&S->suggests, var) != NULL;
 }
 
-static am_Suggest *am_newedit(am_Solver *solver, am_Id var, am_Num strength) {
+static am_Suggest *am_newedit(am_Solver *S, am_Id var, am_Num strength) {
     am_Symbol sym = {0, AM_EXTERNAL};
     am_Suggest *s;
     int ret;
-    am_Var *ve = (am_Var*)am_gettable(&solver->vars, var);
+    am_Var *ve = (am_Var*)am_gettable(&S->vars, var);
     if (ve == NULL) return NULL;
-    s = (am_Suggest*)am_settable(solver, &solver->suggests, (sym.id=var, sym));
-    s->constraint = am_newconstraint(solver, strength);
+    s = (am_Suggest*)am_settable(S, &S->suggests, (sym.id=var, sym));
+    s->constraint = am_newconstraint(S, strength);
     am_setrelation(s->constraint, AM_EQUAL);
     am_addterm(s->constraint, var, 1.0f); /* var must have positive signture */
     am_addconstant(s->constraint, -*ve->pvalue);
@@ -1018,92 +1022,92 @@ static am_Suggest *am_newedit(am_Solver *solver, am_Id var, am_Num strength) {
     return s;
 }
 
-AM_API int am_addedit(am_Solver *solver, am_Id var, am_Num strength) {
+AM_API int am_addedit(am_Solver *S, am_Id var, am_Num strength) {
     am_Suggest *s;
-    if (solver == NULL || var == 0) return AM_FAILED;
+    if (S == NULL || var == 0) return AM_FAILED;
     if (strength >= AM_STRONG) strength = AM_STRONG;
-    s = (am_Suggest*)am_gettable(&solver->suggests, var);
+    s = (am_Suggest*)am_gettable(&S->suggests, var);
     if (s) return am_setstrength(s->constraint, strength);
-    return am_newedit(solver, var, strength) ? AM_OK : AM_FAILED;
+    return am_newedit(S, var, strength) ? AM_OK : AM_FAILED;
 }
 
-AM_API void am_deledit(am_Solver *solver, am_Id var) {
+AM_API void am_deledit(am_Solver *S, am_Id var) {
     am_Suggest *s;
-    if (solver == NULL || var == 0) return;
-    s = (am_Suggest*)am_gettable(&solver->suggests, var);
+    if (S == NULL || var == 0) return;
+    s = (am_Suggest*)am_gettable(&S->suggests, var);
     if (s == NULL) return;
-    am_freetable(solver, &s->dirtyset);
+    am_freetable(S, &s->dirtyset);
     am_delconstraint(s->constraint);
-    am_deltable(&solver->suggests, s);
+    am_deltable(&S->suggests, s);
 }
 
-AM_API void am_clearedits(am_Solver *solver) {
+AM_API void am_clearedits(am_Solver *S) {
     am_Iterator it;
-    if (solver == NULL) return;
-    it = am_itertable(&solver->suggests);
-    if (!solver->auto_update) am_updatevars(solver);
+    if (S == NULL) return;
+    it = am_itertable(&S->suggests);
+    if (!S->auto_update) am_updatevars(S);
     while (am_nextentry(&it)) {
         am_Suggest *s = am_val(am_Suggest,it);
-        am_freetable(solver, &s->dirtyset);
+        am_freetable(S, &s->dirtyset);
         am_delconstraint(s->constraint);
     }
-    am_resettable(&solver->suggests);
+    am_resettable(&S->suggests);
 }
 
-static void am_cached_sugggest(am_Solver *solver, am_Suggest *s, am_Num delta) {
+static void am_cached_sugggest(am_Solver *S, am_Suggest *s, am_Num delta) {
     am_Iterator it = am_itertable(&s->dirtyset);
     am_Symbol marker = s->constraint->marker;
     int pure = 1;
     while (am_nextentry(&it)) {
-        am_Row *row = (am_Row*)am_gettable(&solver->rows, it.key.id);
+        am_Row *row = (am_Row*)am_gettable(&S->rows, it.key.id);
         am_Num *term;
         assert(row != NULL);
         term = (am_Num*)am_gettable(&row->terms, marker.id);
         assert(term != NULL);
         row->constant += *term * delta;
         if (am_isexternal(it.key))
-            am_markdirty(solver, it.key);
+            am_markdirty(S, it.key);
         else if (!am_nearzero(row->constant) && row->constant < 0.0f)
-            pure = 0, am_infeasible(solver, it.key, row);
+            pure = 0, am_infeasible(S, it.key, row);
     }
     if (!pure) s->age = 0;
 }
 
-static void am_delta_edit_constant(am_Solver *solver, am_Suggest *s, am_Num delta) {
-    am_Iterator it = am_itertable(&solver->rows);
+static void am_delta_edit_constant(am_Solver *S, am_Suggest *s, am_Num delta) {
+    am_Iterator it = am_itertable(&S->rows);
     am_Constraint *cons = s->constraint;
     am_Row *row;
     int pure = 1;
-    if ((row = (am_Row*)am_gettable(&solver->rows, cons->marker.id)) != NULL)
-    { row->constant -= delta, am_infeasible(solver, cons->marker, row); return; }
-    if ((row = (am_Row*)am_gettable(&solver->rows, cons->other.id)) != NULL)
-    { row->constant += delta, am_infeasible(solver, cons->other, row); return; }
-    if (s->age == solver->age) { am_cached_sugggest(solver, s, delta); return; }
+    if ((row = (am_Row*)am_gettable(&S->rows, cons->marker.id)) != NULL)
+    { row->constant -= delta, am_infeasible(S, cons->marker, row); return; }
+    if ((row = (am_Row*)am_gettable(&S->rows, cons->other.id)) != NULL)
+    { row->constant += delta, am_infeasible(S, cons->other, row); return; }
+    if (s->age == S->age) { am_cached_sugggest(S, s, delta); return; }
     am_resettable(&s->dirtyset);
     while (am_nextentry(&it)) {
         am_Row *row = am_val(am_Row,it);
         am_Num *term = (am_Num*)am_gettable(&row->terms, cons->marker.id);
         if (term == NULL) continue;
         row->constant += *term*delta;
-        am_settable(solver, &s->dirtyset, it.key);
+        am_settable(S, &s->dirtyset, it.key);
         if (am_isexternal(it.key))
-            am_markdirty(solver, it.key);
+            am_markdirty(S, it.key);
         else if (!am_nearzero(row->constant) && row->constant < 0.0f)
-            pure = 0, am_infeasible(solver, it.key, row);
+            pure = 0, am_infeasible(S, it.key, row);
     }
-    if (pure) s->age = solver->age;
+    if (pure) s->age = S->age;
 }
 
-static void am_dual_optimize(am_Solver *solver) {
-    while (solver->infeasible_rows.id != 0) {
+static void am_dual_optimize(am_Solver *S) {
+    while (S->infeasible_rows.id != 0) {
         am_Symbol enter = am_null(), leave;
         am_Num r, min_ratio = AM_NUM_MAX;
         am_Iterator it;
         am_Row tmp, *row =
-            (am_Row*)am_gettable(&solver->rows, solver->infeasible_rows.id);
+            (am_Row*)am_gettable(&S->rows, S->infeasible_rows.id);
         assert(row != NULL);
-        leave = solver->infeasible_rows;
-        solver->infeasible_rows = row->infeasible_next;
+        leave = S->infeasible_rows;
+        S->infeasible_rows = row->infeasible_next;
         row->infeasible_next = am_null();
         if (am_nearzero(row->constant) || row->constant >= 0.0f) continue;
         it = am_itertable(&row->terms);
@@ -1111,28 +1115,28 @@ static void am_dual_optimize(am_Solver *solver) {
             am_Num term = *am_val(am_Num,it);
             am_Num *objterm;
             if (am_isdummy(it.key) || term <= 0.0f) continue;
-            objterm = (am_Num*)am_gettable(&solver->objective.terms, it.key.id);
+            objterm = (am_Num*)am_gettable(&S->objective.terms, it.key.id);
             r = objterm ? *objterm / term : 0.0f;
             if (min_ratio > r) min_ratio = r, enter = it.key;
         }
         assert(enter.id != 0);
-        am_takerow(solver, leave, &tmp);
-        am_solvefor(solver, &tmp, enter, leave);
-        am_substitute_rows(solver, enter, &tmp);
-        am_putrow(solver, enter, &tmp);
+        am_takerow(S, leave, &tmp);
+        am_solvefor(S, &tmp, enter, leave);
+        am_substitute_rows(S, enter, &tmp);
+        am_putrow(S, enter, &tmp);
     }
 }
 
-AM_API void am_suggest(am_Solver *solver, am_Id var, am_Num value) {
+AM_API void am_suggest(am_Solver *S, am_Id var, am_Num value) {
     am_Suggest *s;
     am_Num delta;
-    if (solver == NULL || var == 0) return;
-    s = (am_Suggest*)am_gettable(&solver->suggests, var);
-    if (s == NULL) s = am_newedit(solver, var, AM_MEDIUM), assert(s != NULL);
+    if (S == NULL || var == 0) return;
+    s = (am_Suggest*)am_gettable(&S->suggests, var);
+    if (s == NULL) s = am_newedit(S, var, AM_MEDIUM), assert(s != NULL);
     delta = value - s->edit_value, s->edit_value = value;
-    am_delta_edit_constant(solver, s, delta);
-    am_dual_optimize(solver);
-    if (solver->auto_update) am_updatevars(solver);
+    am_delta_edit_constant(S, s, delta);
+    am_dual_optimize(S);
+    if (S->auto_update) am_updatevars(S);
 }
 
 /* dump & load */
@@ -1145,8 +1149,7 @@ AM_API void am_suggest(am_Solver *solver, am_Id var, am_Num value) {
 #endif /* AM_BUF_LEN */
 
 #define amC(cond) do { if (!(cond)) return \
-    printf(__FILE__ ":%d: " #cond "\n", __LINE__),\
-    AM_FAILED; } while (0)
+    AM_DEBUG(__FILE__ ":%d: " #cond "\n", __LINE__), AM_FAILED; } while (0)
 #define amE(cond) amC((cond) == AM_OK)
 
 static int am_islittleendian(void) {
@@ -1155,7 +1158,7 @@ static int am_islittleendian(void) {
 }
 
 typedef struct am_DumpCtx {
-    const am_Solver *solver;
+    const am_Solver *S;
     unsigned  *syms; 
     unsigned  *cons;
     am_Table   symmap;
@@ -1268,11 +1271,11 @@ static int am_writerow(am_DumpCtx *ctx, const am_Row *row) {
 }
 
 static int am_writevars(am_DumpCtx *ctx) {
-    const am_Solver *solver = ctx->solver;
+    const am_Solver *S = ctx->S;
     am_Size i;
-    amE(am_writecount(ctx, solver->vars.count));
-    for (i = 0; i < solver->vars.count; ++i) {
-        am_Var *ve = (am_Var*)am_gettable(&solver->vars, ctx->syms[i]);
+    amE(am_writecount(ctx, S->vars.count));
+    for (i = 0; i < S->vars.count; ++i) {
+        am_Var *ve = (am_Var*)am_gettable(&S->vars, ctx->syms[i]);
         assert(ve != NULL);
         amE(am_writestring(ctx,
                     ctx->dumper->var_name(ctx->dumper, i, ctx->syms[i], ve->pvalue)));
@@ -1281,12 +1284,12 @@ static int am_writevars(am_DumpCtx *ctx) {
 }
 
 static int am_writeconstraints(am_DumpCtx *ctx) {
-    const am_Solver *solver = ctx->solver;
+    const am_Solver *S = ctx->S;
     am_Size i;
-    amE(am_writecount(ctx, solver->constraints.count));
-    for (i = 0; i < solver->constraints.count; ++i) {
+    amE(am_writecount(ctx, S->constraints.count));
+    for (i = 0; i < S->constraints.count; ++i) {
         am_Constraint **ce = (am_Constraint**)am_gettable(
-                &solver->constraints, ctx->cons[i]);
+                &S->constraints, ctx->cons[i]);
         unsigned id;
         assert(ce != NULL);
         amE(am_writecount(ctx, 6));
@@ -1308,9 +1311,9 @@ static int am_writeconstraints(am_DumpCtx *ctx) {
 }
 
 static int am_writerows(am_DumpCtx *ctx) {
-    const am_Solver *solver = ctx->solver;
-    am_Iterator it = am_itertable(&solver->rows);
-    amE(am_writecount(ctx, solver->rows.count*2));
+    const am_Solver *S = ctx->S;
+    am_Iterator it = am_itertable(&S->rows);
+    amE(am_writecount(ctx, S->rows.count*2));
     while (am_nextentry(&it)) {
         amE(am_writeuint32(ctx, am_mapid(ctx, it.key.id) << 2 | it.key.type));
         amE(am_writerow(ctx, am_val(am_Row,it)));
@@ -1319,11 +1322,11 @@ static int am_writerows(am_DumpCtx *ctx) {
 }
 
 static int am_collect(am_DumpCtx *ctx) {
-    const am_Solver *solver = ctx->solver;
-    size_t i, vc = solver->vars.count, cc = 0, count = 0;
-    am_Iterator it = am_itertable(&solver->vars);
+    const am_Solver *S = ctx->S;
+    size_t i, vc = S->vars.count, cc = 0, count = 0;
+    am_Iterator it = am_itertable(&S->vars);
     while (am_nextentry(&it)) ctx->syms[count++] = it.key.id;
-    it = am_itertable(&solver->constraints);
+    it = am_itertable(&S->constraints);
     while (am_nextentry(&it)) {
         am_Constraint *cons = *am_val(am_Constraint*,it);
         if (cons->marker.type) ctx->syms[count++] = cons->marker_id;
@@ -1335,10 +1338,10 @@ static int am_collect(am_DumpCtx *ctx) {
     qsort(ctx->syms + vc, count - vc, sizeof(unsigned), am_intcmp);
     am_inittable(&ctx->symmap, sizeof(unsigned));
     ctx->symmap.count = count/2;
-    if (!amH_alloc(solver, &ctx->symmap)) return AM_FAILED;
+    if (!amH_alloc(S, &ctx->symmap)) return AM_FAILED;
     for (i = 0; i < count; ++i) {
         am_Symbol sym = {0, 0};
-        unsigned *val = (unsigned*)am_settable(solver, &ctx->symmap,
+        unsigned *val = (unsigned*)am_settable(S, &ctx->symmap,
                 (sym.id = ctx->syms[i], sym));
         assert(val != NULL), *val = i;
     }
@@ -1346,7 +1349,7 @@ static int am_collect(am_DumpCtx *ctx) {
 }
 
 static int am_dumpall(am_DumpCtx *ctx) {
-    const am_Solver *solver = ctx->solver;
+    const am_Solver *S = ctx->S;
     am_Dumper *d = ctx->dumper;
     amE(am_writecount(ctx, 5));
     /* [total, vars, constraints, rows, objective] */
@@ -1354,39 +1357,39 @@ static int am_dumpall(am_DumpCtx *ctx) {
     amE(am_writevars(ctx));
     amE(am_writeconstraints(ctx));
     amE(am_writerows(ctx));
-    amE(am_writerow(ctx, &solver->objective));
+    amE(am_writerow(ctx, &S->objective));
     if (ctx->p > ctx->buf)
         amE(ctx->ret = d->writer(d, ctx->buf, (ctx->p - ctx->buf)));
     return ctx->ret;
 }
 
-AM_API int am_dump(am_Solver *solver, am_Dumper *dumper) {
+AM_API int am_dump(am_Solver *S, am_Dumper *dumper) {
     size_t cons_alloc, sym_alloc;
     am_DumpCtx ctx;
     ctx.ret = AM_FAILED;
-    if (solver == NULL || dumper == NULL || dumper->writer == NULL
+    if (S == NULL || dumper == NULL || dumper->writer == NULL
             || dumper->var_name == NULL) return AM_FAILED;
-    am_clearedits(solver);
-    cons_alloc = sizeof(unsigned) * solver->constraints.count;
-    sym_alloc = sizeof(unsigned) * (cons_alloc*2 + solver->vars.count);
+    am_clearedits(S);
+    cons_alloc = sizeof(unsigned) * S->constraints.count;
+    sym_alloc = sizeof(unsigned) * (cons_alloc*2 + S->vars.count);
     memset(&ctx, 0, sizeof(ctx));
-    ctx.syms = (unsigned*)solver->allocf(solver->ud, NULL, sym_alloc, 0);
-    ctx.cons = (unsigned*)solver->allocf(solver->ud, NULL, cons_alloc, 0);
-    ctx.solver = solver;
+    ctx.syms = (unsigned*)S->allocf(S->ud, NULL, sym_alloc, 0);
+    ctx.cons = (unsigned*)S->allocf(S->ud, NULL, cons_alloc, 0);
+    ctx.S = S;
     if (ctx.syms && ctx.cons && (ctx.ret = am_collect(&ctx)) == AM_OK) {
         ctx.endian = am_islittleendian();
         ctx.dumper = dumper;
         ctx.p = ctx.buf;
         ctx.ret = am_dumpall(&ctx);
     }
-    if (ctx.syms) solver->allocf(solver->ud, ctx.syms, 0, sym_alloc);
-    if (ctx.cons) solver->allocf(solver->ud, ctx.cons, 0, cons_alloc);
-    am_freetable(solver, &ctx.symmap);
+    if (ctx.syms) S->allocf(S->ud, ctx.syms, 0, sym_alloc);
+    if (ctx.cons) S->allocf(S->ud, ctx.cons, 0, cons_alloc);
+    am_freetable(S, &ctx.symmap);
     return ctx.ret;
 }
 
 typedef struct am_LoadCtx {
-    am_Solver  *solver;
+    am_Solver  *S;
     am_Loader  *loader;
     size_t      n;
     const char *p, *s;
@@ -1483,14 +1486,14 @@ static int am_readrow(am_LoadCtx *ctx, am_Row *row) {
         am_Num *term;
         amE(am_readuint32(ctx, &value));
         sym.id = ctx->offset+(value>>2), sym.type = value & 3;
-        amC(term = (am_Num*)am_settable(ctx->solver, &row->terms, sym));
+        amC(term = (am_Num*)am_settable(ctx->S, &row->terms, sym));
         amE(am_readfloat32(ctx, term));
     }
     return AM_OK;
 }
 
 static int am_readvars(am_LoadCtx *ctx) {
-    am_Solver *solver = ctx->solver;
+    am_Solver *S = ctx->S;
     am_Size i, count;
     am_Symbol sym = {0, AM_EXTERNAL};
     amE(am_readcount(ctx, &count));
@@ -1501,7 +1504,7 @@ static int am_readvars(am_LoadCtx *ctx) {
         pvalue = ctx->loader->load_var(ctx->loader, ctx->s, i, ctx->offset+i);
         amC(pvalue != NULL);
         sym.id = ctx->offset+i;
-        amC(ve = (am_Var*)am_settable(solver, &solver->vars, sym));
+        amC(ve = (am_Var*)am_settable(S, &S->vars, sym));
         memset(ve, 0, sizeof(*ve));
         ve->pvalue   = pvalue;
         ve->refcount = 1;
@@ -1520,7 +1523,7 @@ static int am_readmarker(am_LoadCtx *ctx, am_Symbol *sym, unsigned *id) {
 
 static int am_readconstraints(am_LoadCtx *ctx) {
     am_Size i, count, value;
-    am_Solver *solver = ctx->solver;
+    am_Solver *S = ctx->S;
     amE(am_readcount(ctx, &count));
     for (i = 0; i < count; ++i) {
         am_Constraint *cons;
@@ -1529,7 +1532,7 @@ static int am_readconstraints(am_LoadCtx *ctx) {
         amC(value == 6); /* [name, strength, marker, other, relation, row] */
         amE(am_readstring(ctx));
         amE(am_readfloat32(ctx, &strength));
-        amC(cons = am_newconstraint(solver, strength));
+        amC(cons = am_newconstraint(S, strength));
         if (ctx->loader->load_cons)
             ctx->loader->load_cons(ctx->loader, ctx->s, i, cons);
         amE(am_readmarker(ctx, &cons->marker, &cons->marker_id));
@@ -1544,7 +1547,7 @@ static int am_readconstraints(am_LoadCtx *ctx) {
 }
 
 static int am_readrows(am_LoadCtx *ctx) {
-    am_Solver *solver = ctx->solver;
+    am_Solver *S = ctx->S;
     am_Size i, count, value;
     amE(am_readcount(ctx, &count));
     amC((count & 1) == 0);
@@ -1553,33 +1556,33 @@ static int am_readrows(am_LoadCtx *ctx) {
         am_Row *row;
         amE(am_readuint32(ctx, &value));
         sym.id = ctx->offset + (value >> 2), sym.type = value & 3;
-        amC(row = (am_Row*)am_settable(solver, &solver->rows, sym));
+        amC(row = (am_Row*)am_settable(S, &S->rows, sym));
         am_initrow(row);
         amE(am_readrow(ctx, row));
     }
     return AM_OK;
 }
 
-AM_API int am_load(am_Solver *solver, am_Loader *loader) {
+AM_API int am_load(am_Solver *S, am_Loader *loader) {
     am_LoadCtx ctx;
     am_Size count, total;
-    if (solver == NULL || loader == NULL || loader->reader == NULL
+    if (S == NULL || loader == NULL || loader->reader == NULL
             || loader->load_var == NULL) return AM_FAILED;
     memset(&ctx, 0, sizeof(ctx));
-    ctx.solver = solver;
-    ctx.offset = solver->id_count + 1;
+    ctx.S = S;
+    ctx.offset = S->id_count + 1;
     ctx.endian = am_islittleendian();
     ctx.loader = loader;
     amE(am_readcount(&ctx, &count));
     amC(count == 5); /* [total, vars, constraints, rows, objective] */
     amE(am_readuint32(&ctx, &total));
     amC(ctx.offset + total <= 0x3FFFFFFF);
-    am_resetsolver(solver);
+    am_resetsolver(S);
     amE(am_readvars(&ctx));
     amE(am_readconstraints(&ctx));
     amE(am_readrows(&ctx));
-    amE(am_readrow(&ctx, &solver->objective));
-    return solver->id_count = ctx.offset + total, AM_OK;
+    amE(am_readrow(&ctx, &S->objective));
+    return S->id_count = ctx.offset + total, AM_OK;
 }
 
 
