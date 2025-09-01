@@ -169,6 +169,9 @@ AM_NS_END
 #endif
 
 #ifndef AM_DEBUG
+# ifdef __GNUC__
+#   pragma GCC diagnostic ignored "-Wvariadic-macros"
+# endif
 # define AM_DEBUG(...) ((void)0)
 #endif /* AM_DEBUG */
 
@@ -246,13 +249,13 @@ struct am_Solver {
     am_Row     objective;
     am_Table   vars;            /* symbol -> am_Var */
     am_Table   constraints;     /* symbol -> am_Constraint* */
-    am_Table   suggests;        /* symbol -> am_Suggest */
+    am_Table   suggests;        /* symbol -> am_Suggest* */
     am_Table   rows;            /* symbol -> am_Row */
     am_MemPool conspool;
-    am_Size    id_count;
-    am_Size    cons_count;
     am_Size    auto_update;
     am_Size    age; /* counts of rows changed */
+    am_Size    current_id;
+    am_Size    current_cons;
     am_Symbol  infeasible_rows;
     am_Symbol  dirty_vars;
 };
@@ -310,8 +313,8 @@ static void am_free(am_MemPool *pool, void *obj) {
 
 static am_Symbol am_newsymbol(am_Solver *S, int type) {
     am_Symbol sym;
-    unsigned id = ++S->id_count;
-    if (id > 0x3FFFFFFF) id = S->id_count = 1;
+    unsigned id = ++S->current_id;
+    if (id > 0x3FFFFFFF) abort(); /* id runs out */
     assert(type >= AM_EXTERNAL && type <= AM_DUMMY);
     sym.id   = id;
     sym.type = type;
@@ -547,9 +550,9 @@ AM_API am_Constraint *am_newconstraint(am_Solver *S, am_Num strength) {
     if (S == NULL || strength < 0.f) return NULL;
     cons = (am_Constraint*)am_alloc(S, &S->conspool);
     if (cons == NULL) return NULL;
-    sym.id = ++S->cons_count;
+    sym.id = ++S->current_cons;
     ret = am_initconstraint(S, sym, strength, cons);
-    if (ret != AM_OK) return am_free(&S->conspool, cons), NULL;
+    if (ret != AM_OK) return am_free(&S->conspool, cons), (am_Constraint*)NULL;
     return cons;
 }
 
@@ -648,10 +651,10 @@ static am_Suggest *am_newedit(am_Solver *S, am_Id var, am_Num strength) {
     if ((ve = (am_Var*)am_gettable(&S->vars, var)) == NULL) return NULL;
     s = (am_Suggest**)am_settable(S, &S->suggests, (sym.id=var, sym));
     if (s == NULL) return NULL;
-    *s = S->allocf(S->ud, NULL, sizeof(am_Suggest), 0);
-    if (*s == NULL) return am_deltable(&S->suggests, s), NULL;
+    *s = (am_Suggest*)S->allocf(S->ud, NULL, sizeof(am_Suggest), 0);
+    if (*s == NULL) return am_deltable(&S->suggests, s), (am_Suggest*)NULL;
     memset(*s, 0, sizeof(**s));
-    sym.id = ++S->cons_count, sym.type = AM_DUMMY; /* local cons */
+    sym.id = ++S->current_cons, sym.type = AM_DUMMY; /* local cons */
     am_initconstraint(S, sym, strength, &(*s)->constraint);
     am_setrelation(&(*s)->constraint, AM_EQUAL);
     am_addterm(&(*s)->constraint, var, 1.0f); /* var must have positive signture */
@@ -846,7 +849,7 @@ static int am_add_with_artificial(am_Solver *S, am_Row *row, am_Constraint *cons
     am_Row tmp;
     am_Num *term;
     int ret;
-    --S->id_count; /* artificial variable will be removed */
+    --S->current_id; /* artificial variable will be removed */
     am_initrow(&tmp);
     am_addrow(S, &tmp, row, 1.0f);
     am_putrow(S, a, row);
@@ -1588,7 +1591,7 @@ AM_API int am_load(am_Solver *S, am_Loader *loader) {
             || loader->load_var == NULL) return AM_FAILED;
     memset(&ctx, 0, sizeof(ctx));
     ctx.S = S;
-    ctx.offset = S->id_count + 1;
+    ctx.offset = S->current_id + 1;
     ctx.endian = am_islittleendian();
     ctx.loader = loader;
     amE(am_readcount(&ctx, &count));
@@ -1600,7 +1603,7 @@ AM_API int am_load(am_Solver *S, am_Loader *loader) {
     amE(am_readconstraints(&ctx));
     amE(am_readrows(&ctx));
     amE(am_readrow(&ctx, &S->objective));
-    return S->id_count = ctx.offset + total, AM_OK;
+    return S->current_id = ctx.offset + total, AM_OK;
 }
 
 
@@ -1608,7 +1611,7 @@ AM_NS_END
 
 #endif /* AM_IMPLEMENTATION */
 
-/* cc: flags+='-shared -O2 -DAM_IMPLEMENTATION -xc'
+/* cc: flags+='-shared -O2 -pedantic -std=c89 -DAM_IMPLEMENTATION -xc'
    unixcc: output='amoeba.so'
    win32cc: output='amoeba.dll' */
 
