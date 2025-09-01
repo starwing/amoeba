@@ -220,17 +220,10 @@ typedef struct am_Var {
     am_Num   *pvalue;
 } am_Var;
 
-typedef struct am_Suggest {
-    am_Size        age;
-    am_Num         edit_value;
-    am_Constraint *constraint;
-    am_Table       dirtyset;
-} am_Suggest;
-
 struct am_Constraint {
     void      *ud;
     am_Row     expression;
-    am_Symbol  sym;
+    am_Symbol  sym; /* AM_EXTERNAL for pool cons, AM_DUMMY for suggest */
     am_Symbol  marker;
     am_Symbol  other;
     unsigned   marker_id;
@@ -239,6 +232,13 @@ struct am_Constraint {
     am_Num     strength;
     am_Solver *S;
 };
+
+typedef struct am_Suggest {
+    am_Size       age;
+    am_Num        edit_value;
+    am_Constraint constraint;
+    am_Table      dirtyset;
+} am_Suggest;
 
 struct am_Solver {
     am_Allocf *allocf;
@@ -483,8 +483,6 @@ static void am_eliminate(am_Solver *S, am_Row *dst, am_Symbol out, const am_Row 
 
 /* variables & constraints */
 
-#define am_checkvalue(t,p) if (!(p)) { am_deltable((t),(p)); return NULL; }
-
 static am_Var *am_id2var(am_Solver *S, am_Id var)
 { return S ? (am_Var*)am_gettable(&S->vars, var) : NULL; }
 
@@ -522,21 +520,29 @@ AM_API am_Num *am_varvalue(am_Solver *S, am_Id var, am_Num *newvalue) {
     return pvalue;
 }
 
-AM_API am_Constraint *am_newconstraint(am_Solver *S, am_Num strength) {
-    am_Symbol sym = {0, AM_EXTERNAL};
-    am_Constraint **ce;
-    if (S == NULL || strength < 0.f) return NULL;
-    sym.id = ++S->cons_count;
-    ce = (am_Constraint**)am_settable(S, &S->constraints, sym);
-    assert(ce != NULL);
-    *ce = (am_Constraint*)am_alloc(S, &S->conspool);
-    am_checkvalue(&S->constraints, ce);
-    memset(*ce, 0, sizeof(**ce));
-    (*ce)->S   = S;
-    (*ce)->sym      = sym;
-    (*ce)->strength = am_nearzero(strength) ? AM_REQUIRED : strength;
+static int am_initconstraint(am_Solver *S, am_Symbol sym, am_Num strength, am_Constraint *cons) {
+    am_Constraint **ce = (am_Constraint**)am_settable(S, &S->constraints, sym);
+    if (ce == NULL) return AM_FAILED;
+    *ce = cons;
+    memset(cons, 0, sizeof(*cons));
+    cons->S        = S;
+    cons->sym      = sym;
+    cons->strength = am_nearzero(strength) ? AM_REQUIRED : strength;
     am_initrow(&(*ce)->expression);
-    return *ce;
+    return AM_OK;
+}
+
+AM_API am_Constraint *am_newconstraint(am_Solver *S, am_Num strength) {
+    am_Symbol sym = {0, AM_EXTERNAL}; /* AM_EXTERNAL for pool cons */
+    am_Constraint *cons;
+    int ret;
+    if (S == NULL || strength < 0.f) return NULL;
+    cons = (am_Constraint*)am_alloc(S, &S->conspool);
+    if (cons == NULL) return NULL;
+    sym.id = ++S->cons_count;
+    ret = am_initconstraint(S, sym, strength, cons);
+    if (ret != AM_OK) return am_free(&S->conspool, cons), NULL;
+    return cons;
 }
 
 AM_API void am_delconstraint(am_Constraint *cons) {
@@ -552,7 +558,7 @@ AM_API void am_delconstraint(am_Constraint *cons) {
     while (am_nextentry(&it))
         am_delvariable(cons->S, it.key.id);
     am_freerow(S, &cons->expression);
-    am_free(&S->conspool, cons);
+    if (am_isexternal(cons->sym)) am_free(&S->conspool, cons);
 }
 
 AM_API am_Constraint *am_cloneconstraint(am_Constraint *other, am_Num strength) {
@@ -876,7 +882,7 @@ AM_API am_Solver *am_newsolver(am_Allocf *allocf, void *ud) {
     am_initrow(&S->objective);
     am_inittable(&S->vars, sizeof(am_Var));
     am_inittable(&S->constraints, sizeof(am_Constraint*));
-    am_inittable(&S->suggests, sizeof(am_Suggest));
+    am_inittable(&S->suggests, sizeof(am_Suggest*));
     am_inittable(&S->rows, sizeof(am_Row));
     am_initpool(&S->conspool, sizeof(am_Constraint));
     return S;
@@ -887,8 +893,12 @@ AM_API void am_delsolver(am_Solver *S) {
     while (am_nextentry(&it))
         am_freerow(S, &(*am_val(am_Constraint*,it))->expression);
     it = am_itertable(&S->suggests);
-    while (am_nextentry(&it))
-        am_freetable(S, &am_val(am_Suggest,it)->dirtyset);
+    while (am_nextentry(&it)) {
+        am_Suggest *s = *am_val(am_Suggest*,it);
+        am_freetable(S, &s->dirtyset);
+        am_freetable(S, &s->constraint.expression.terms);
+        S->allocf(S->ud, s, 0, sizeof(am_Suggest));
+    }
     it = am_itertable(&S->rows);
     while (am_nextentry(&it))
         am_freerow(S, am_val(am_Row,it));
@@ -1007,37 +1017,45 @@ AM_API int am_hasedit(am_Solver *S, am_Id var) {
 
 static am_Suggest *am_newedit(am_Solver *S, am_Id var, am_Num strength) {
     am_Symbol sym = {0, AM_EXTERNAL};
-    am_Suggest *s;
+    am_Suggest **s;
+    am_Var *ve;
     int ret;
-    am_Var *ve = (am_Var*)am_gettable(&S->vars, var);
-    if (ve == NULL) return NULL;
-    s = (am_Suggest*)am_settable(S, &S->suggests, (sym.id=var, sym));
-    s->constraint = am_newconstraint(S, strength);
-    am_setrelation(s->constraint, AM_EQUAL);
-    am_addterm(s->constraint, var, 1.0f); /* var must have positive signture */
-    am_addconstant(s->constraint, -*ve->pvalue);
-    ret = am_add(s->constraint);
+    if (S == NULL || var == 0 || strength < 0.f) return NULL;
+    if ((ve = (am_Var*)am_gettable(&S->vars, var)) == NULL) return NULL;
+    s = (am_Suggest**)am_settable(S, &S->suggests, (sym.id=var, sym));
+    if (s == NULL) return NULL;
+    *s = S->allocf(S->ud, NULL, sizeof(am_Suggest), 0);
+    if (*s == NULL) return am_deltable(&S->suggests, s), NULL;
+    memset(*s, 0, sizeof(**s));
+    sym.id = ++S->cons_count, sym.type = AM_DUMMY; /* local cons */
+    am_initconstraint(S, sym, strength, &(*s)->constraint);
+    am_setrelation(&(*s)->constraint, AM_EQUAL);
+    am_addterm(&(*s)->constraint, var, 1.0f); /* var must have positive signture */
+    am_addconstant(&(*s)->constraint, -*ve->pvalue);
+    ret = am_add(&(*s)->constraint);
     assert(ret == AM_OK), (void)ret;
-    s->edit_value = *ve->pvalue;
-    return s;
+    (*s)->edit_value = *ve->pvalue;
+    return *s;
 }
 
 AM_API int am_addedit(am_Solver *S, am_Id var, am_Num strength) {
-    am_Suggest *s;
+    am_Suggest **s;
     if (S == NULL || var == 0) return AM_FAILED;
     if (strength >= AM_STRONG) strength = AM_STRONG;
-    s = (am_Suggest*)am_gettable(&S->suggests, var);
-    if (s) return am_setstrength(s->constraint, strength);
+    s = (am_Suggest**)am_gettable(&S->suggests, var);
+    if (s) return assert(*s), am_setstrength(&(*s)->constraint, strength);
     return am_newedit(S, var, strength) ? AM_OK : AM_FAILED;
 }
 
 AM_API void am_deledit(am_Solver *S, am_Id var) {
-    am_Suggest *s;
+    am_Suggest **s;
     if (S == NULL || var == 0) return;
-    s = (am_Suggest*)am_gettable(&S->suggests, var);
+    s = (am_Suggest**)am_gettable(&S->suggests, var);
     if (s == NULL) return;
-    am_freetable(S, &s->dirtyset);
-    am_delconstraint(s->constraint);
+    assert(*s != NULL);
+    am_freetable(S, &(*s)->dirtyset);
+    am_delconstraint(&(*s)->constraint);
+    S->allocf(S->ud, *s, 0, sizeof(am_Suggest));
     am_deltable(&S->suggests, s);
 }
 
@@ -1047,16 +1065,17 @@ AM_API void am_clearedits(am_Solver *S) {
     it = am_itertable(&S->suggests);
     if (!S->auto_update) am_updatevars(S);
     while (am_nextentry(&it)) {
-        am_Suggest *s = am_val(am_Suggest,it);
+        am_Suggest *s = *am_val(am_Suggest*,it);
         am_freetable(S, &s->dirtyset);
-        am_delconstraint(s->constraint);
+        am_delconstraint(&s->constraint);
+        S->allocf(S->ud, s, 0, sizeof(am_Suggest));
     }
     am_resettable(&S->suggests);
 }
 
 static void am_cached_sugggest(am_Solver *S, am_Suggest *s, am_Num delta) {
     am_Iterator it = am_itertable(&s->dirtyset);
-    am_Symbol marker = s->constraint->marker;
+    am_Symbol marker = s->constraint.marker;
     int pure = 1;
     while (am_nextentry(&it)) {
         am_Row *row = (am_Row*)am_gettable(&S->rows, it.key.id);
@@ -1075,7 +1094,7 @@ static void am_cached_sugggest(am_Solver *S, am_Suggest *s, am_Num delta) {
 
 static void am_delta_edit_constant(am_Solver *S, am_Suggest *s, am_Num delta) {
     am_Iterator it = am_itertable(&S->rows);
-    am_Constraint *cons = s->constraint;
+    am_Constraint *cons = &s->constraint;
     am_Row *row;
     int pure = 1;
     if ((row = (am_Row*)am_gettable(&S->rows, cons->marker.id)) != NULL)
@@ -1128,11 +1147,12 @@ static void am_dual_optimize(am_Solver *S) {
 }
 
 AM_API void am_suggest(am_Solver *S, am_Id var, am_Num value) {
-    am_Suggest *s;
+    am_Suggest **ps, *s;
     am_Num delta;
     if (S == NULL || var == 0) return;
-    s = (am_Suggest*)am_gettable(&S->suggests, var);
-    if (s == NULL) s = am_newedit(S, var, AM_MEDIUM), assert(s != NULL);
+    ps = (am_Suggest**)am_gettable(&S->suggests, var);
+    s = ps ? *ps : am_newedit(S, var, AM_MEDIUM);
+    assert(s != NULL);
     delta = value - s->edit_value, s->edit_value = value;
     am_delta_edit_constant(S, s, delta);
     am_dual_optimize(S);
