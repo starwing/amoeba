@@ -68,10 +68,18 @@ typedef struct am_Constraint am_Constraint;
 
 typedef unsigned am_Id;
 
-typedef void *am_Allocf (void *ud, void *ptr, size_t nsize, size_t osize);
+typedef enum am_AllocType {
+    am_AllocSolver = 1,
+    am_AllocConstraint,
+    am_AllocSuggest,
+    am_AllocHash,
+    am_AllocDump
+} am_AllocType;
+
+typedef void *am_Allocf (void **pud, void *ptr,
+        size_t nsize, size_t osize, am_AllocType ty);
 
 AM_API am_Solver *am_newsolver   (am_Allocf *allocf, void *ud);
-AM_API am_Solver *am_subsolver   (am_Solver *S);
 AM_API void       am_resetsolver (am_Solver *S);
 AM_API void       am_delsolver   (am_Solver *S);
 
@@ -155,9 +163,11 @@ AM_NS_END
 #define am_isdummy(key)      ((key).type == AM_DUMMY)
 #define am_ispivotable(key)  (am_isslack(key) || am_iserror(key))
 
-#define AM_POOLSIZE     4096
-#define AM_MIN_HASHSIZE 8
+#define am_alloc(T,S,ty) ((T*)(S)->allocf((void**)(S),NULL,sizeof(T),0,(ty)))
+#define am_free(S,p,ty)  ((S)->allocf((void**)(S),(p),0,sizeof(*(p)),(ty)))
 
+#define AM_MIN_HASHSIZE  8
+#define AM_POOL_SIZE     4096
 #define AM_UNSIGNED_BITS (sizeof(unsigned)*CHAR_BIT)
 
 #ifdef AM_USE_FLOAT
@@ -244,20 +254,20 @@ typedef struct am_Suggest {
 } am_Suggest;
 
 struct am_Solver {
+    void      *ud; /* must be the first for `am_default_allocf` */
     am_Allocf *allocf;
-    void      *ud;
     am_Row     objective;
     am_Table   vars;            /* symbol -> am_Var */
     am_Table   constraints;     /* symbol -> am_Constraint* */
     am_Table   suggests;        /* symbol -> am_Suggest* */
     am_Table   rows;            /* symbol -> am_Row */
-    am_MemPool conspool;
     am_Size    auto_update;
     am_Size    age; /* counts of rows changed */
     am_Size    current_id;
     am_Size    current_cons;
     am_Symbol  infeasible_rows;
     am_Symbol  dirty_vars;
+    am_MemPool conspool;
 };
 
 /* utils */
@@ -271,27 +281,30 @@ static int am_nearzero(am_Num a)
 static am_Symbol am_null(void)
 { am_Symbol null = { 0, 0 }; return null; }
 
+static void am_poolfree(am_MemPool *pool, void *obj)
+{ *(void**)obj = pool->freed, pool->freed = obj; }
+
 static void am_initpool(am_MemPool *pool, size_t size) {
     pool->size  = size;
     pool->freed = pool->pages = NULL;
-    assert(size > sizeof(void*) && size < AM_POOLSIZE/4);
+    assert(size > sizeof(void*) && size < AM_POOL_SIZE/4);
 }
 
-static void am_freepool(am_Solver *S, am_MemPool *pool) {
-    const size_t offset = AM_POOLSIZE - sizeof(void*);
+static void am_freepool(am_MemPool *pool) {
+    const size_t offset = AM_POOL_SIZE - sizeof(void*);
     while (pool->pages != NULL) {
         void *next = *(void**)((char*)pool->pages + offset);
-        S->allocf(S->ud, pool->pages, 0, AM_POOLSIZE);
+        free(pool->pages);
         pool->pages = next;
     }
-    am_initpool(pool, pool->size);
 }
 
-static void *am_alloc(am_Solver *S, am_MemPool *pool) {
+static void *am_poolalloc(am_MemPool *pool) {
     void *obj = pool->freed;
     if (obj == NULL) {
-        const size_t offset = AM_POOLSIZE - sizeof(void*);
-        void *end, *ptr = S->allocf(S->ud, NULL, AM_POOLSIZE, 0);
+        const size_t offset = AM_POOL_SIZE - sizeof(void*);
+        void *end, *ptr = malloc(AM_POOL_SIZE);
+        if (ptr == NULL) abort();
         *(void**)((char*)ptr + offset) = pool->pages;
         pool->pages = ptr;
         end = (char*)ptr + (offset/pool->size-1)*pool->size;
@@ -306,9 +319,17 @@ static void *am_alloc(am_Solver *S, am_MemPool *pool) {
     return obj;
 }
 
-static void am_free(am_MemPool *pool, void *obj) {
-    *(void**)obj = pool->freed;
-    pool->freed = obj;
+static void *am_default_allocf(void **pud, void *ptr, size_t nsize, size_t osize, am_AllocType ty) {
+    void *newptr;
+    (void)osize;
+    if (ty == am_AllocConstraint) {
+        am_Solver *S = (am_Solver*)pud;
+        if (nsize) return am_poolalloc(&S->conspool);
+        return am_poolfree(&S->conspool, ptr), (void*)NULL;
+    }
+    if (nsize == 0) return free(ptr), (void*)NULL;
+    if ((newptr = realloc(ptr, nsize)) == NULL) abort();
+    return newptr;
 }
 
 static am_Symbol am_newsymbol(am_Solver *S, int type) {
@@ -346,7 +367,7 @@ static int am_nextentry(am_Iterator *it) {
 static void am_freetable(const am_Solver *S, am_Table *t) {
     size_t hsize = t->size * (sizeof(am_Key) + t->value_size);
     if (hsize == 0) return;
-    S->allocf(S->ud, t->keys, 0, hsize);
+    S->allocf((void**)S, t->keys, 0, hsize, am_AllocHash);
     am_inittable(t, t->value_size);
 }
 
@@ -366,7 +387,7 @@ static int amH_alloc(const am_Solver *S, am_Table *t) {
     while (size < need) size <<= 1;
     assert((size & (size-1)) == 0);
     hsize = size * (sizeof(am_Key) + t->value_size);
-    keys = (am_Key*)S->allocf(S->ud, NULL, hsize, 0);
+    keys = (am_Key*)S->allocf((void**)S, NULL, hsize, 0, am_AllocHash);
     if (keys == NULL) return 0;
     t->size = (am_Size)size;
     t->keys = keys;
@@ -548,11 +569,11 @@ AM_API am_Constraint *am_newconstraint(am_Solver *S, am_Num strength) {
     am_Constraint *cons;
     int ret;
     if (S == NULL || strength < 0.f) return NULL;
-    cons = (am_Constraint*)am_alloc(S, &S->conspool);
+    cons = am_alloc(am_Constraint, S, am_AllocConstraint);
     if (cons == NULL) return NULL;
     sym.id = ++S->current_cons;
     ret = am_initconstraint(S, sym, strength, cons);
-    if (ret != AM_OK) return am_free(&S->conspool, cons), (am_Constraint*)NULL;
+    if (ret != AM_OK) am_free(S, cons, am_AllocConstraint), cons = NULL;
     return cons;
 }
 
@@ -563,13 +584,13 @@ AM_API void am_delconstraint(am_Constraint *cons) {
     if (S == NULL) return;
     am_remove(cons);
     ce = (am_Constraint**)am_gettable(&S->constraints, cons->sym.id);
-    assert(ce != NULL);
+    assert(ce != NULL && *ce == cons);
     am_deltable(&S->constraints, ce);
     it = am_itertable(&cons->expression.terms);
     while (am_nextentry(&it))
         am_delvariable(cons->S, it.key.id);
     am_freerow(S, &cons->expression);
-    if (am_isexternal(cons->sym)) am_free(&S->conspool, cons);
+    if (am_isexternal(cons->sym)) am_free(S, cons, am_AllocConstraint);
 }
 
 AM_API am_Constraint *am_cloneconstraint(am_Constraint *other, am_Num strength) {
@@ -651,7 +672,7 @@ static am_Suggest *am_newedit(am_Solver *S, am_Id var, am_Num strength) {
     if ((ve = (am_Var*)am_gettable(&S->vars, var)) == NULL) return NULL;
     s = (am_Suggest**)am_settable(S, &S->suggests, (sym.id=var, sym));
     if (s == NULL) return NULL;
-    *s = (am_Suggest*)S->allocf(S->ud, NULL, sizeof(am_Suggest), 0);
+    *s = am_alloc(am_Suggest, S, am_AllocSuggest);
     if (*s == NULL) return am_deltable(&S->suggests, s), (am_Suggest*)NULL;
     memset(*s, 0, sizeof(**s));
     sym.id = ++S->current_cons, sym.type = AM_DUMMY; /* local cons */
@@ -675,15 +696,14 @@ AM_API int am_addedit(am_Solver *S, am_Id var, am_Num strength) {
 }
 
 AM_API void am_deledit(am_Solver *S, am_Id var) {
-    am_Suggest **s;
+    am_Suggest **ps, *s;
     if (S == NULL || var == 0) return;
-    s = (am_Suggest**)am_gettable(&S->suggests, var);
-    if (s == NULL) return;
-    assert(*s != NULL);
-    am_freetable(S, &(*s)->dirtyset);
-    am_delconstraint(&(*s)->constraint);
-    S->allocf(S->ud, *s, 0, sizeof(am_Suggest));
-    am_deltable(&S->suggests, s);
+    ps = (am_Suggest**)am_gettable(&S->suggests, var);
+    if (ps == NULL) return;
+    s = *ps, am_deltable(&S->suggests, ps);
+    am_freetable(S, &s->dirtyset);
+    am_delconstraint(&(s->constraint));
+    am_free(S, s, am_AllocSuggest);
 }
 
 AM_API void am_clearedits(am_Solver *S) {
@@ -695,7 +715,7 @@ AM_API void am_clearedits(am_Solver *S) {
         am_Suggest *s = *am_val(am_Suggest*,it);
         am_freetable(S, &s->dirtyset);
         am_delconstraint(&s->constraint);
-        S->allocf(S->ud, s, 0, sizeof(am_Suggest));
+        am_free(S, s, am_AllocSuggest);
     }
     am_resettable(&S->suggests);
 }
@@ -1093,23 +1113,14 @@ AM_API void am_suggest(am_Solver *S, am_Id var, am_Num value) {
     if (S->auto_update) am_updatevars(S);
 }
 
-static void *am_default_allocf(void *ud, void *ptr, size_t nsize, size_t osize) {
-    void *newptr;
-    (void)ud, (void)osize;
-    if (nsize == 0) { free(ptr); return NULL; }
-    newptr = realloc(ptr, nsize);
-    if (newptr == NULL) abort();
-    return newptr;
-}
-
 AM_API am_Solver *am_newsolver(am_Allocf *allocf, void *ud) {
     am_Solver *S;
     if (allocf == NULL) allocf = am_default_allocf;
-    if ((S = (am_Solver*)allocf(ud, NULL, sizeof(am_Solver), 0)) == NULL)
-        return NULL;
+    S = (am_Solver*)allocf(&ud, NULL, sizeof(am_Solver), 0, am_AllocSolver);
+    if (S == NULL) return NULL;
     memset(S, 0, sizeof(*S));
-    S->allocf = allocf;
     S->ud     = ud;
+    S->allocf = allocf;
     am_initrow(&S->objective);
     am_inittable(&S->vars, sizeof(am_Var));
     am_inittable(&S->constraints, sizeof(am_Constraint*));
@@ -1121,14 +1132,17 @@ AM_API am_Solver *am_newsolver(am_Allocf *allocf, void *ud) {
 
 AM_API void am_delsolver(am_Solver *S) {
     am_Iterator it = am_itertable(&S->constraints);
-    while (am_nextentry(&it))
-        am_freerow(S, &(*am_val(am_Constraint*,it))->expression);
+    while (am_nextentry(&it)) {
+        am_Constraint *cons = *am_val(am_Constraint*,it);
+        am_freerow(S, &cons->expression);
+        if (am_isexternal(cons->sym)) am_free(S, cons, am_AllocConstraint);
+    }
     it = am_itertable(&S->suggests);
     while (am_nextentry(&it)) {
         am_Suggest *s = *am_val(am_Suggest*,it);
         am_freetable(S, &s->dirtyset);
         am_freetable(S, &s->constraint.expression.terms);
-        S->allocf(S->ud, s, 0, sizeof(am_Suggest));
+        am_free(S, s, am_AllocSuggest);
     }
     it = am_itertable(&S->rows);
     while (am_nextentry(&it))
@@ -1138,8 +1152,8 @@ AM_API void am_delsolver(am_Solver *S) {
     am_freetable(S, &S->constraints);
     am_freetable(S, &S->suggests);
     am_freetable(S, &S->rows);
-    am_freepool(S, &S->conspool);
-    S->allocf(S->ud, S, 0, sizeof(*S));
+    am_freepool(&S->conspool);
+    am_free(S, S, am_AllocSolver);
 }
 
 AM_API void am_resetsolver(am_Solver *S) {
@@ -1394,8 +1408,8 @@ AM_API int am_dump(am_Solver *S, am_Dumper *dumper) {
     cons_alloc = sizeof(unsigned) * S->constraints.count;
     sym_alloc = sizeof(unsigned) * (cons_alloc*2 + S->vars.count);
     memset(&ctx, 0, sizeof(ctx));
-    ctx.syms = (unsigned*)S->allocf(S->ud, NULL, sym_alloc, 0);
-    ctx.cons = (unsigned*)S->allocf(S->ud, NULL, cons_alloc, 0);
+    ctx.syms = (unsigned*)S->allocf(&S->ud, NULL, sym_alloc, 0, am_AllocDump);
+    ctx.cons = (unsigned*)S->allocf(&S->ud, NULL, cons_alloc, 0, am_AllocDump);
     ctx.S = S;
     if (ctx.syms && ctx.cons && (ctx.ret = am_collect(&ctx)) == AM_OK) {
         ctx.endian = am_islittleendian();
@@ -1403,8 +1417,8 @@ AM_API int am_dump(am_Solver *S, am_Dumper *dumper) {
         ctx.p = ctx.buf;
         ctx.ret = am_dumpall(&ctx);
     }
-    if (ctx.syms) S->allocf(S->ud, ctx.syms, 0, sym_alloc);
-    if (ctx.cons) S->allocf(S->ud, ctx.cons, 0, cons_alloc);
+    if (ctx.syms) S->allocf(&S->ud, ctx.syms, 0, sym_alloc, am_AllocDump);
+    if (ctx.cons) S->allocf(&S->ud, ctx.cons, 0, cons_alloc, am_AllocDump);
     am_freetable(S, &ctx.symmap);
     return ctx.ret;
 }

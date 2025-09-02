@@ -217,8 +217,25 @@ static void build_solver(am_Solver* S, am_Id width, am_Id height, am_Num *values
 int main() {
     am_Num values[35];
 
+    // demo how to use a memory pool across solvers.
+    am_MemPool mempool;
+    am_initpool(&mempool, sizeof(am_Constraint));
+    auto alloc = [&mempool](void *ptr, size_t ns, am_AllocType ty) {
+        if (ty == am_AllocConstraint) {
+            if (ns) return am_poolalloc(&mempool);
+            return am_poolfree(&mempool, ptr), (void*)0;
+        }
+        if (ns) return realloc(ptr, ns);
+        return free(ptr), (void*)0;
+    };
+    auto alloc_func = [](void** pud, void *ptr, size_t ns, size_t, am_AllocType ty) {
+        const auto func = &decltype(alloc)::operator();
+        auto alloc_ptr = *(decltype(alloc)**)(pud);
+        return (alloc_ptr->*func)(ptr, ns, ty);
+    };
+
     ankerl::nanobench::Bench().minEpochIterations(100).run("building solver", [&] {
-        am_Solver *S = am_newsolver(NULL, NULL);
+        am_Solver *S = am_newsolver(alloc_func, &alloc);
         am_Num w, h;
         am_Id width = am_newvariable(S, &w);
         am_Id height = am_newvariable(S, &h);
@@ -226,6 +243,7 @@ int main() {
         ankerl::nanobench::doNotOptimizeAway(S); //< prevent the compiler to optimize away the S
         am_delsolver(S);
     });
+    am_freepool(&mempool);
 
     std::vector<char> buf; 
     {

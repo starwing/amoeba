@@ -15,9 +15,9 @@ static size_t allmem = 0;
 static size_t maxmem = 0;
 static void *END = NULL;
 
-static void *debug_allocf(void *ud, void *ptr, size_t ns, size_t os) {
+static void *debug_allocf(void **pud, void *ptr, size_t ns, size_t os, am_AllocType ty) {
     void *newptr = NULL;
-    (void)ud;
+    (void)pud, (void)ty;
     allmem += ns;
     allmem -= os;
     if (maxmem < allmem) maxmem = allmem;
@@ -31,9 +31,6 @@ static void *debug_allocf(void *ud, void *ptr, size_t ns, size_t os) {
 #endif
     return newptr;
 }
-
-static void *null_allocf(void *ud, void *ptr, size_t ns, size_t os)
-{ (void)ud, (void)ptr, (void)ns, (void)os; return NULL; }
 
 static void am_dumpkey(am_Symbol sym) {
     int ch = 'v';
@@ -108,18 +105,23 @@ static void test_all(void) {
     am_Id xl, xm, xr, xd;
     am_Num vxl, vxm, vxr, vxd;
     am_Constraint *c1, *c2, *c3, *c4, *c5, *c6;
-    int ret = setjmp(jbuf);
+    am_Constraint *cs[50];
+    int i, ret = setjmp(jbuf);
     printf("\n\n==========\ntest all\n");
     printf("ret = %d\n", ret);
     if (ret < 0) { perror("setjmp"); return; }
     else if (ret != 0) { printf("out of memory!\n"); return; }
 
-    S = am_newsolver(null_allocf, NULL);
-    assert(S == NULL);
-
     S = am_newsolver(NULL, NULL);
     assert(S != NULL);
+    for (i = 0; i < 50; ++i) {
+        cs[i] = am_newconstraint(S, AM_REQUIRED);
+        assert(cs[i] != NULL);
+    }
+    for (i = 0; i < 50; ++i) 
+        am_delconstraint(cs[i]);
     am_delsolver(S);
+    assert(allmem == 0);
 
     S = am_newsolver(debug_allocf, NULL);
     xl = am_newvariable(S, &vxl);
@@ -1194,5 +1196,6 @@ int main(void) {
     return 0;
 }
 
-/* cc: flags='-ggdb -Wall -fprofile-arcs -ftest-coverage -O0 -Wextra -pedantic -std=c89' */
+/* cc: flags='-ggdb -Wall -fprofile-arcs -ftest-coverage -O0 -Wextra -pedantic -std=c89'
+ * cc: run='!rm -f *.gcda; $executable $args' */
 
