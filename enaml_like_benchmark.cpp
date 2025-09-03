@@ -216,6 +216,7 @@ static void build_solver(am_Solver* S, am_Id width, am_Id height, am_Num *values
 
 int main() {
     am_Num values[35];
+    am_Solver *S;
 
     // demo how to use a memory pool across solvers.
     am_MemPool mempool;
@@ -234,6 +235,7 @@ int main() {
         return (alloc_ptr->*func)(ptr, ns, ty);
     };
 
+#if !DISABLE_BUILD
     ankerl::nanobench::Bench().minEpochIterations(100).run("building solver", [&] {
         am_Solver *S = am_newsolver(alloc_func, &alloc);
         am_Num w, h;
@@ -243,12 +245,13 @@ int main() {
         ankerl::nanobench::doNotOptimizeAway(S); //< prevent the compiler to optimize away the S
         am_delsolver(S);
     });
-    am_freepool(&mempool);
+#endif /* !DISABLE_BUILD */
 
+#if !DISABLE_LOAD
     std::vector<char> buf; 
     {
-        am_Solver *S = am_newsolver(NULL, NULL);
         am_Num w, h;
+        S = am_newsolver(NULL, NULL);
         am_Id width = am_newvariable(S, &w);
         am_Id height = am_newvariable(S, &h);
         build_solver(S, width, height, values);
@@ -270,10 +273,10 @@ int main() {
         };
         int ret = am_dump(S, &d.base);
         assert(ret == AM_OK), (void)ret;
+        am_delsolver(S);
     }
 
-    ankerl::nanobench::Bench().minEpochIterations(100).run("load solver", [&] {
-        am_Solver *S = am_newsolver(NULL, NULL);
+    ankerl::nanobench::Bench().minEpochIterations(2000).run("load solver", [&] {
         struct MyLoader {
             am_Loader base;
             am_Num values[37];
@@ -296,12 +299,15 @@ int main() {
             }
             return (const char*)nullptr;
         };
+        am_Solver *S = am_newsolver(alloc_func, &alloc);
         int ret = am_load(S, &l.base);
         assert(ret == AM_OK), (void)ret;
         ankerl::nanobench::doNotOptimizeAway(S); //< prevent the compiler to optimize away the S
         am_delsolver(S);
     });
+#endif /* !DISABLE_LOAD */
 
+#if !DISABLE_SUGGEST
     struct Size {
         int width;
         int height;
@@ -316,7 +322,7 @@ int main() {
         { 800, 400 }
     };
 
-    am_Solver *S = am_newsolver(NULL, NULL);
+    S = am_newsolver(NULL, NULL);
     am_Num width, height;
     am_Id widthVar = am_newvariable(S, &width);
     am_Id heightVar = am_newvariable(S, &height);
@@ -334,7 +340,10 @@ int main() {
     }
 
     am_delsolver(S);
+#endif /* !DISABLE_SUGGEST */
+
+    am_freepool(&mempool);
     return 0;
 }
 
-// cc: flags+='-ggdb -O3 -DNDEBUG'
+// cc: flags+='-ggdb -O3 -DNDEBUG -DDISABLE_BUILD -DDISABLE_SUGGEST'

@@ -709,7 +709,7 @@ static void test_suggest(void) {
     printf("\n\n==========\ntest suggest\n");
     for(pos = -10; pos < 86; pos++) {
         am_suggest(S, splitter_bar_l, pos);
-        printf("pos: %4g | ", pos);
+        /* printf("pos: %4g | ", pos);
         printf("splitter_l l=%2g, w=%2g, r=%2g | ", vsplitter_l,
                 vsplitter_w, vsplitter_r);
         printf("left_child_l l=%2g, w=%2g, r=%2g | ", vleft_child_l,
@@ -718,7 +718,7 @@ static void test_suggest(void) {
                 vsplitter_bar_w, vsplitter_bar_r);
         printf("right_child_l l=%2g, w=%2g, r=%2g | ", vright_child_l,
                 vright_child_w, vright_child_r);
-        printf("\n");
+        printf("\n"); */
     }
 
     am_delsolver(S);
@@ -786,8 +786,8 @@ static void test_dirty(void) {
     printf("xl:%f, xr:%f, xw:%f\n", vxl, vxr, vxw);
 
     /* Manual cleanup */
-    am_delconstraint(c1);
     am_remove(c1);
+    am_delconstraint(c1);
 
     am_delvariable(S, xl);
     am_delvariable(S, xr);
@@ -1141,17 +1141,68 @@ static void test_dumpload(void) {
     build_solver(S, width, height, values);
 
     {
+        /* dump converage */
+        MyDumper d;
+        am_DumpCtx ctx;
+        char buf[10];
+        size_t len = 0;
+        d.base.writer = dump_writer;
+        d.p = buf;
+        d.len = &len;
+        ctx.dumper = &d.base;
+        ctx.p = ctx.buf;
+
+        assert(am_writeraw(NULL, 0, 0) == AM_FAILED);
+        assert(am_writeuint32(&ctx, 0xFFFFFFFF) == AM_OK);
+        ctx.ret = dump_writer(&d.base, ctx.buf, (ctx.p - ctx.buf));
+        assert(len == 5);
+        assert(memcmp(buf, "\xCE\xFF\xFF\xFF\xFF", 5) == 0);
+
+        len = 0;
+        ctx.p = ctx.buf;
+        assert(am_writecount(&ctx, 0xFFFFFFFF) == AM_OK);
+        ctx.ret = dump_writer(&d.base, ctx.buf, (ctx.p - ctx.buf));
+        assert(len == 5);
+        assert(memcmp(buf, "\xDD\xFF\xFF\xFF\xFF", 5) == 0);
+    }
+
+    {
+        /* load coverage */
+        am_LoadCtx ctx;
+        am_Size value;
+        am_Num flt;
+
+        assert(am_readraw(NULL, NULL, 0) == AM_FAILED);
+        ctx.p = "\xCE\xFF\xFF\xFF\xFF", ctx.n = 5;
+        assert(am_readuint32(&ctx, &value) == AM_OK);
+        assert(value == 0xFFFFFFFF && ctx.n == 0);
+
+        ctx.p = "\xCA\x0\x0\x0\x0", ctx.n = 5;
+        assert(am_readfloat32(&ctx, &flt) == AM_OK);
+        assert(flt == 0.f && ctx.n == 0);
+
+        ctx.p = "\xCC\x0\x0\x0\x0", ctx.n = 5;
+        assert(am_readfloat32(&ctx, &flt) == AM_FAILED);
+        assert(ctx.n == 4);
+
+        ctx.p = "\xDD\xFF\xFF\xFF\xFF", ctx.n = 5;
+        assert(am_readcount(&ctx, &value) == AM_OK);
+        assert(value == 0xFFFFFFFF && ctx.n == 0);
+    }
+
+    {
         MyDumper myd;
         myd.base.var_name = dump_varname;
         myd.base.cons_name = dump_consname;
         myd.base.writer = dump_writer;
         myd.p = buf, myd.len = &len;
+
         printf("before dump\n");
         ret = am_dump(S, &myd.base);
         printf("after dump: ret=%d\n", ret);
         assert(ret == AM_OK);
         printf("dumpped len=%d\n", (int)len);
-        assert(len == 16042);
+        assert(len == 16045);
     }
 
     {
@@ -1193,6 +1244,9 @@ int main(void) {
     test_dirty();
     test_dumpload();
     test_all();
+    printf("constraint: %d\n", (int)(sizeof(am_Constraint)));
+    printf("table: %d\n", (int)(sizeof(am_Table)));
+    printf("row: %d\n", (int)(sizeof(am_Row)));
     return 0;
 }
 
