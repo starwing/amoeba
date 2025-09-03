@@ -18,8 +18,6 @@ jobs:
   test_ubuntu:
     if: "! contains(toJSON(github.event.commits.*.message), '[skip ci]')"
     runs-on: ${{ matrix.os }}
-    env:
-      ROCKSPEC: rockspecs/lua-protobuf-scm-1.rockspec
     strategy:
       matrix:
         os: ["ubuntu-latest"]

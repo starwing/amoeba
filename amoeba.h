@@ -1265,7 +1265,7 @@ static int am_writefloat(am_DumpCtx *ctx, am_Num n) {
     if (sizeof(am_Num) == sizeof(float))
         u.f32 = n;
     else
-        u.f64 = n, u.f32 = u.f64;
+        u.f64 = n, u.f32 = (float)u.f64;
     amE(am_writechar(ctx, 0xCA));
     amE(am_writeraw(ctx, u.u32, 32));
     return AM_OK;

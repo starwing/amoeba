@@ -219,20 +219,25 @@ int main() {
     am_Solver *S;
 
     // demo how to use a memory pool across solvers.
-    am_MemPool mempool;
-    am_initpool(&mempool, sizeof(am_Constraint));
-    auto alloc = [&mempool](void *ptr, size_t ns, am_AllocType ty) {
+    am_MemPool conspool; am_initpool(&conspool, sizeof(am_Constraint));
+    const size_t hash_size = (sizeof(am_Num) + sizeof(am_Key)) * 8;
+    am_MemPool hashpool; am_initpool(&hashpool, hash_size);
+    auto alloc = [&](void *ptr, size_t ns, size_t os, am_AllocType ty) {
         if (ty == am_AllocConstraint) {
-            if (ns) return am_poolalloc(&mempool);
-            return am_poolfree(&mempool, ptr), (void*)0;
+            if (ns) return am_poolalloc(&conspool);
+            return am_poolfree(&conspool, ptr), (void*)0;
+        }
+        if (ty == am_AllocHash) {
+            if (ns == hash_size && os == 0) return am_poolalloc(&hashpool);
+            if (os == hash_size && ns == 0) return am_poolfree(&hashpool, ptr), (void*)0;
         }
         if (ns) return realloc(ptr, ns);
         return free(ptr), (void*)0;
     };
-    auto alloc_func = [](void** pud, void *ptr, size_t ns, size_t, am_AllocType ty) {
+    auto alloc_func = [](void** pud, void *ptr, size_t ns, size_t os, am_AllocType ty) {
         const auto func = &decltype(alloc)::operator();
         auto alloc_ptr = *(decltype(alloc)**)(pud);
-        return (alloc_ptr->*func)(ptr, ns, ty);
+        return (alloc_ptr->*func)(ptr, ns, os, ty);
     };
 
 #if !DISABLE_BUILD
@@ -276,7 +281,7 @@ int main() {
         am_delsolver(S);
     }
 
-    ankerl::nanobench::Bench().minEpochIterations(2000).run("load solver", [&] {
+    ankerl::nanobench::Bench().minEpochIterations(10000).run("load solver", [&] {
         struct MyLoader {
             am_Loader base;
             am_Num values[37];
@@ -302,7 +307,6 @@ int main() {
         am_Solver *S = am_newsolver(alloc_func, &alloc);
         int ret = am_load(S, &l.base);
         assert(ret == AM_OK), (void)ret;
-        ankerl::nanobench::doNotOptimizeAway(S); //< prevent the compiler to optimize away the S
         am_delsolver(S);
     });
 #endif /* !DISABLE_LOAD */
@@ -329,8 +333,8 @@ int main() {
     build_solver(S, widthVar, heightVar, values);
 
     for (const Size& size : sizes) {
-        am_Num width = size.width;
-        am_Num height = size.height;
+        am_Num width = (am_Num)size.width;
+        am_Num height = (am_Num)size.height;
 
         ankerl::nanobench::Bench().minEpochIterations(100000).run("suggest value " + std::to_string(size.width) + "x" + std::to_string(size.height), [&] {
             am_suggest(S, widthVar, width);
@@ -339,11 +343,15 @@ int main() {
         });
     }
 
+    ankerl::nanobench::doNotOptimizeAway(width);
+    ankerl::nanobench::doNotOptimizeAway(height);
+
     am_delsolver(S);
 #endif /* !DISABLE_SUGGEST */
 
-    am_freepool(&mempool);
+    am_freepool(&conspool);
+    am_freepool(&hashpool);
     return 0;
 }
 
-// cc: flags+='-ggdb -O3 -DNDEBUG -DDISABLE_BUILD -DDISABLE_SUGGEST'
+// cc: flags+='-ggdb -O3 -DNDEBUG'
