@@ -821,7 +821,7 @@ static int am_putrow(am_Solver *S, am_Symbol sym, const am_Row *src) {
     return AM_OK;
 }
 
-static int am_optimize(am_Solver *S, am_Row *objective) {
+static void am_optimize(am_Solver *S, am_Row *objective) {
     for (;;) {
         am_Symbol enter = am_null(), leave = am_null();
         am_Num r, min_ratio = AM_NUM_MAX, *term;
@@ -832,7 +832,7 @@ static int am_optimize(am_Solver *S, am_Row *objective) {
         while (am_nextentry(&it))
             if (!am_isdummy(it.key) && *am_val(am_Num,it) < 0.0f)
             { enter = it.key; break; }
-        if (enter.id == 0) return AM_OK;
+        if (enter.id == 0) return;
 
         it = am_itertable(&S->rows);
         while (am_nextentry(&it)) {
@@ -846,8 +846,6 @@ static int am_optimize(am_Solver *S, am_Row *objective) {
                 min_ratio = r, leave = it.key;
         }
         assert(leave.id != 0);
-        if (leave.id == 0) return AM_UNBOUND;
-
         am_takerow(S, leave, &tmp);
         am_solvefor(S, &tmp, enter, leave);
         am_substitute_rows(S, enter, &tmp);
@@ -905,7 +903,7 @@ static int am_add_with_artificial(am_Solver *S, am_Row *row, am_Constraint *cons
     am_initrow(&tmp);
     am_addrow(S, &tmp, row, 1.0f);
     am_putrow(S, a, row);
-    if (am_optimize(S, &tmp)) return AM_UNBOUND;
+    am_optimize(S, &tmp);
     ret = am_nearzero(tmp.constant) ? AM_OK : AM_UNBOUND;
     am_freerow(S, &tmp);
     if (am_takerow(S, a, &tmp) == AM_OK) {
@@ -914,7 +912,7 @@ static int am_add_with_artificial(am_Solver *S, am_Row *row, am_Constraint *cons
         it = am_itertable(&tmp.terms);
         while (am_nextentry(&it))
             if (am_ispivotable(it.key)) { enter = it.key; break; }
-        if (enter.id == 0) { am_freerow(S, &tmp); return AM_UNBOUND; }
+        if (enter.id == 0) return am_freerow(S, &tmp), AM_UNBOUND;
         am_solvefor(S, &tmp, enter, a);
         am_substitute_rows(S, enter, &tmp);
         am_putrow(S, enter, &tmp);
@@ -957,8 +955,7 @@ static int am_try_addrow(am_Solver *S, am_Row *row, am_Constraint *cons) {
             }
         }
     }
-    if (subject.id == 0)
-        return am_add_with_artificial(S, row, cons);
+    if (subject.id == 0) return am_add_with_artificial(S, row, cons);
     am_solvefor(S, row, subject, am_null());
     am_substitute_rows(S, subject, row);
     am_putrow(S, subject, row);
@@ -981,15 +978,15 @@ AM_API int am_add(am_Constraint *cons) {
     am_Row row;
     int ret;
     amC(S && cons->marker.id == 0);
-    if (!cons->marker_id)
+    if (cons->marker_id == 0)
         cons->marker_id = ((sym = am_newsymbol(S, 0)), sym.id);
-    if (!cons->other_id && cons->strength < AM_REQUIRED)
+    if (cons->other_id == 0 && cons->strength < AM_REQUIRED)
         cons->other_id = ((sym = am_newsymbol(S, 0)), sym.id);
     row = am_makerow(S, cons);
     if ((ret = am_try_addrow(S, &row, cons)) != AM_OK)
         am_remove_errors(S, cons);
     else {
-        if (am_optimize(S, &S->objective)) return AM_UNBOUND;
+        am_optimize(S, &S->objective);
         if (S->auto_update) am_updatevars(S);
         S->age += 1;
     }
@@ -1022,7 +1019,6 @@ AM_API void am_remove(am_Constraint *cons) {
     am_Solver *S;
     am_Symbol marker;
     am_Row tmp;
-    int ret;
     if (cons == NULL || cons->marker.id == 0) return;
     S = cons->S, marker = cons->marker;
     am_remove_errors(S, cons);
@@ -1034,8 +1030,7 @@ AM_API void am_remove(am_Constraint *cons) {
         am_substitute_rows(S, marker, &tmp);
     }
     am_freerow(S, &tmp);
-    ret = am_optimize(S, &S->objective);
-    assert(ret == AM_OK), (void)ret;
+    am_optimize(S, &S->objective);
     S->age += 1;
     if (S->auto_update) am_updatevars(S);
 }
@@ -1051,7 +1046,7 @@ AM_API int am_setstrength(am_Constraint *cons, am_Num strength) {
         am_Num diff = strength - cons->strength;
         am_mergerow(S, &S->objective, cons->marker, diff);
         am_mergerow(S, &S->objective, cons->other,  diff);
-        if (am_optimize(S, &S->objective)) return AM_UNBOUND;
+        am_optimize(S, &S->objective);
         if (S->auto_update) am_updatevars(S);
         S->age += 1;
     }
