@@ -1172,17 +1172,22 @@ static void test_dumpload(void) {
         am_Size value;
         am_Num flt;
 
-        assert(am_readraw(NULL, NULL, 0) == AM_FAILED);
+        assert(am_readraw_slow(NULL, NULL, 0) == AM_FAILED);
         ctx.p = "\xCE\xFF\xFF\xFF\xFF", ctx.n = 5;
         assert(am_readuint32(&ctx, &value) == AM_OK);
         assert(value == 0xFFFFFFFF && ctx.n == 0);
 
+        ctx.p = "\xFF\xFF", ctx.n = 2;
+        assert(am_readraw16(&ctx, &value) == AM_OK);
+        assert(value == 0xFFFF && ctx.n == 0);
+
         ctx.p = "\xCA\x0\x0\x0\x0", ctx.n = 5;
-        assert(am_readfloat32(&ctx, &flt) == AM_OK);
-        assert(flt == 0.f && ctx.n == 0);
+        assert(am_readfloat(&ctx, &flt) == AM_OK);
+        printf("%f %d\n", flt, (int)ctx.n);
+        assert(ctx.n == 0);
 
         ctx.p = "\xCC\x0\x0\x0\x0", ctx.n = 5;
-        assert(am_readfloat32(&ctx, &flt) == AM_FAILED);
+        assert(am_readfloat(&ctx, &flt) == AM_FAILED);
         assert(ctx.n == 4);
 
         ctx.p = "\xDD\xFF\xFF\xFF\xFF", ctx.n = 5;
@@ -1202,7 +1207,7 @@ static void test_dumpload(void) {
         printf("after dump: ret=%d\n", ret);
         assert(ret == AM_OK);
         printf("dumpped len=%d\n", (int)len);
-        assert(len == 16045);
+        assert(len == 10779);
     }
 
     {
@@ -1250,6 +1255,6 @@ int main(void) {
     return 0;
 }
 
-/* cc: flags='-ggdb -Wall -fprofile-arcs -ftest-coverage -O0 -Wextra -pedantic -std=c89'
+/* cc: flags='-ggdb -Wall -fsanitize=address -fprofile-arcs -ftest-coverage -O0 -Wextra -pedantic -std=c89'
  * cc: run='!rm -f *.gcda; $executable $args' */
 

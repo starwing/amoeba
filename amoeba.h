@@ -47,9 +47,9 @@
 #define AM_EQUAL        (2)
 #define AM_GREATEQUAL   (3)
 
-#define AM_REQUIRED     ((am_Num)1000000000)
-#define AM_STRONG       ((am_Num)1000000)
-#define AM_MEDIUM       ((am_Num)1000)
+#define AM_REQUIRED     ((am_Num)10000000)
+#define AM_STRONG       ((am_Num)10000)
+#define AM_MEDIUM       ((am_Num)100)
 #define AM_WEAK         ((am_Num)1)
 
 #include <stddef.h>
@@ -57,10 +57,12 @@
 AM_NS_BEGIN
 
 
-#ifdef AM_USE_FLOAT
-typedef float  am_Num;
-#else
+#ifdef AM_NUM
+typedef AM_NUM am_Num;
+#elif defined(AM_USE_DOUBLE)
 typedef double am_Num;
+#else
+typedef float  am_Num;
 #endif
 
 typedef struct am_Solver     am_Solver;
@@ -170,12 +172,12 @@ AM_NS_END
 #define AM_POOL_SIZE     4096
 #define AM_UNSIGNED_BITS (sizeof(unsigned)*CHAR_BIT)
 
-#ifdef AM_USE_FLOAT
-# define AM_NUM_MAX FLT_MAX
-# define AM_NUM_EPS 1e-4f
-#else
+#ifdef AM_USE_DOUBLE
 # define AM_NUM_MAX DBL_MAX
 # define AM_NUM_EPS 1e-6
+#else
+# define AM_NUM_MAX FLT_MAX
+# define AM_NUM_EPS 1e-4
 #endif
 
 #ifndef AM_DEBUG
@@ -1215,11 +1217,6 @@ AM_API void am_resetsolver(am_Solver *S) {
 # define AM_BUF_LEN  4096
 #endif /* AM_BUF_LEN */
 
-static int am_islittleendian(void) {
-    union { unsigned short u16[2]; unsigned u32; } u;
-    return u.u16[0] = 1, u.u32 == 1;
-}
-
 typedef struct am_DumpCtx {
     const am_Solver *S;
     unsigned  *syms; 
@@ -1228,7 +1225,6 @@ typedef struct am_DumpCtx {
     am_Dumper *dumper;
     char      *p;
     int        ret;
-    int        endian;
     char       buf[AM_BUF_LEN];
 } am_DumpCtx;
 
@@ -1269,19 +1265,14 @@ static int am_writeuint32(am_DumpCtx *ctx, am_Size n) {
     return AM_OK;
 }
 
-static int am_writefloat32(am_DumpCtx *ctx, am_Num n) {
-    if (sizeof(am_Num) == sizeof(float)) {
-        union { float flt; unsigned u32; } u;
-        u.flt = n;
-        amE(am_writechar(ctx, 0xCA));
-        amE(am_writeraw(ctx, u.u32, 32));
-    } else {
-        union { double flt; unsigned u32[2]; } u;
-        u.flt = n;
-        amE(am_writechar(ctx, 0xCB));
-        amE(am_writeraw(ctx, u.u32[ctx->endian], 32));
-        amE(am_writeraw(ctx, u.u32[!ctx->endian], 32));
-    }
+static int am_writefloat(am_DumpCtx *ctx, am_Num n) {
+    union { double f64; float f32; unsigned u32; } u;
+    if (sizeof(am_Num) == sizeof(float))
+        u.f32 = n;
+    else
+        u.f64 = n, u.f32 = u.f64;
+    amE(am_writechar(ctx, 0xCA));
+    amE(am_writeraw(ctx, u.u32, 32));
     return AM_OK;
 }
 
@@ -1290,10 +1281,10 @@ static int am_writestring(am_DumpCtx *ctx, const char *name) {
     size_t namelen = (name ? strlen(name) : 0), buflen;
     amC(namelen < AM_NAME_LEN && namelen <= 0xFF);
     if (namelen < 32)
-        amE(am_writechar(ctx, 0xA0 + namelen));
+        amE(am_writechar(ctx, 0xA0 + (int)namelen));
     else {
         amE(am_writechar(ctx, 0xD9));
-        amE(am_writechar(ctx, namelen));
+        amE(am_writechar(ctx, (int)namelen));
     }
     if ((buflen = (ctx->p - ctx->buf)) + namelen > AM_BUF_LEN) {
         ctx->p = ctx->buf;
@@ -1325,10 +1316,10 @@ static unsigned am_mapid(am_DumpCtx *ctx, unsigned key) {
 static int am_writerow(am_DumpCtx *ctx, const am_Row *row) {
     am_Iterator it = am_itertable(&row->terms);
     amE(am_writecount(ctx, row->terms.count * 2 + 1));
-    amE(am_writefloat32(ctx, row->constant));
+    amE(am_writefloat(ctx, row->constant));
     while (am_nextentry(&it)) {
         amE(am_writeuint32(ctx, am_mapid(ctx, it.key.id) << 2 | it.key.type));
-        amE(am_writefloat32(ctx, *am_val(am_Num,it)));
+        amE(am_writefloat(ctx, *am_val(am_Num,it)));
     }
     return AM_OK;
 }
@@ -1359,7 +1350,7 @@ static int am_writeconstraints(am_DumpCtx *ctx) {
         /* [name, strength, marker, other, relation, row] */
         amE(am_writestring(ctx, ctx->dumper->cons_name ?
                     ctx->dumper->cons_name(ctx->dumper, i, (*ce)) : NULL));
-        amE(am_writefloat32(ctx, (*ce)->strength));
+        amE(am_writefloat(ctx, (*ce)->strength));
         if (id = 0, (*ce)->marker.type)
             id = am_mapid(ctx, (*ce)->marker_id) << 2 | (*ce)->marker.type;
         amE(am_writeuint32(ctx, id));
@@ -1380,7 +1371,7 @@ static int am_writerows(am_DumpCtx *ctx) {
         arena += am_calcsize(am_val(am_Row,it)->terms.count);
     if (arena > ~(am_Size)0) arena = 0;
     amE(am_writecount(ctx, S->rows.count*2 + 1));
-    amE(am_writeuint32(ctx, arena));
+    amE(am_writeuint32(ctx, (am_Size)arena));
     while (am_nextentry(&it)) {
         amE(am_writeuint32(ctx, am_mapid(ctx, it.key.id) << 2 | it.key.type));
         amE(am_writerow(ctx, am_val(am_Row,it)));
@@ -1409,7 +1400,7 @@ static int am_collect(am_DumpCtx *ctx) {
     for (i = 0; i < count; ++i) {
         unsigned *val = (unsigned*)am_settable(S, &ctx->symmap,
                 (sym.id = ctx->syms[i], sym));
-        assert(val != NULL), *val = i;
+        assert(val != NULL), *val = (unsigned)i;
     }
     return assert(count == ctx->symmap.count), AM_OK;
 }
@@ -1442,7 +1433,6 @@ AM_API int am_dump(am_Solver *S, am_Dumper *dumper) {
     ctx.cons = (unsigned*)S->allocf(&S->ud, NULL, cons_alloc, 0, am_AllocDump);
     ctx.S = S;
     if (ctx.syms && ctx.cons && (ctx.ret = am_collect(&ctx)) == AM_OK) {
-        ctx.endian = am_islittleendian();
         ctx.dumper = dumper;
         ctx.p = ctx.buf;
         ctx.ret = am_dumpall(&ctx);
@@ -1459,7 +1449,6 @@ typedef struct am_LoadCtx {
     size_t      n;
     const char *p, *s;
     am_Size     offset;
-    int         endian;
     char        buf[AM_NAME_LEN];
 } am_LoadCtx;
 
@@ -1471,7 +1460,7 @@ static int am_fill(am_LoadCtx *ctx) {
     return ctx->n -= 1, *ctx->p++ & 0xFF;
 }
 
-static int am_readraw(am_LoadCtx *ctx, unsigned *pv, int width) {
+static int am_readraw_slow(am_LoadCtx *ctx, unsigned *pv, int width) {
     int c1 = 0, c2 = 0, c3, c4;
     switch (width) {
     default: return AM_FAILED;
@@ -1483,30 +1472,42 @@ static int am_readraw(am_LoadCtx *ctx, unsigned *pv, int width) {
     return (*pv = c1 << 24 | c2 << 16 | c3 << 8 | c4), AM_OK;
 }
 
+static int am_readraw32(am_LoadCtx *ctx, unsigned *pv) {
+    if (ctx->n >= 4) {
+        unsigned n = *ctx->p++ & 0xFF;
+        n <<= 8; n |= *ctx->p++ & 0xFF;
+        n <<= 8; n |= *ctx->p++ & 0xFF;
+        n <<= 8; n |= *ctx->p++ & 0xFF;
+        return *pv = n, ctx->n -= 4, AM_OK;
+    }
+    return am_readraw_slow(ctx, pv, 32);
+}
+
+static int am_readraw16(am_LoadCtx *ctx, unsigned *pv) {
+    if (ctx->n >= 2) {
+        unsigned n = *ctx->p++ & 0xFF;
+        n <<= 8; n |= *ctx->p++ & 0xFF;
+        return *pv = n, ctx->n -= 2, AM_OK;
+    }
+    return am_readraw_slow(ctx, pv, 16);
+}
+
 static int am_readuint32(am_LoadCtx *ctx, am_Size *pv) {
     int ty, c;
     switch (ty = am_getchar(ctx)) {
     default: amC(ty <= 0x7F); *pv = ty; break;
     case 0xCC: amC((c = am_getchar(ctx)) != AM_FAILED); *pv = c; break;
-    case 0xCD: amE(am_readraw(ctx, pv, 16)); break;
-    case 0xCE: amE(am_readraw(ctx, pv, 32)); break;
+    case 0xCD: amE(am_readraw16(ctx, pv)); break;
+    case 0xCE: amE(am_readraw32(ctx, pv)); break;
     }
     return AM_OK;
 }
 
-static int am_readfloat32(am_LoadCtx *ctx, am_Num *pv) {
-    int ty = am_getchar(ctx);
-    if (ty == 0xCA) {
-        union { float flt; unsigned u32; } u;
-        amE(am_readraw(ctx, &u.u32, 32));
-        return (*pv = u.flt), AM_OK;
-    } else if (ty == 0xCB) {
-        union { double flt; unsigned u32[2]; } u;
-        amE(am_readraw(ctx, &u.u32[ctx->endian], 32));
-        amE(am_readraw(ctx, &u.u32[!ctx->endian], 32));
-        return (*pv = u.flt), AM_OK;
-    }
-    return AM_FAILED; /* LCOV_EXCL_LINE */
+static int am_readfloat(am_LoadCtx *ctx, am_Num *pv) {
+    union { float f32; unsigned u32[2]; } u;
+    amC(am_getchar(ctx) == 0xCA);
+    amE(am_readraw32(ctx, &u.u32[0]));
+    return *pv = (am_Num)u.f32, AM_OK;
 }
 
 static int am_readstring(am_LoadCtx *ctx) {
@@ -1522,7 +1523,7 @@ static int am_readstring(am_LoadCtx *ctx) {
         return memcpy(ctx->buf, ctx->p, size), ctx->buf[size] = 0,
                ctx->p += size, ctx->n -= size, AM_OK;
     for (;;) {
-        memcpy(buf, ctx->p, ctx->n), buf += ctx->n, size -= ctx->n;
+        memcpy(buf, ctx->p, ctx->n), buf += ctx->n, size -= (am_Size)ctx->n;
         amC((c = am_fill(ctx)) != AM_FAILED);
         *buf++ = c, size -= 1;
         if (size <= ctx->n) {
@@ -1536,8 +1537,8 @@ static int am_readcount(am_LoadCtx *ctx, am_Size *pcount) {
     int ty;
     switch (ty = am_getchar(ctx)) {
     default: amC(ty >= 0x90 && ty <= 0x9F); *pcount = ty - 0x90; break;
-    case 0xDC: amE(am_readraw(ctx, pcount, 16)); break;
-    case 0xDD: amE(am_readraw(ctx, pcount, 32)); break; 
+    case 0xDC: amE(am_readraw16(ctx, pcount)); break;
+    case 0xDD: amE(am_readraw32(ctx, pcount)); break; 
     }
     return AM_OK;
 }
@@ -1547,14 +1548,14 @@ static int am_readrow(am_LoadCtx *ctx, am_Row *row, void **arena) {
     amE(am_readcount(ctx, &count));
     amC(count >= 1 && (count & 1) == 1);
     amE(am_growtable(ctx->S, &row->terms, count/2, arena));
-    amE(am_readfloat32(ctx, &row->constant));
+    amE(am_readfloat(ctx, &row->constant));
     for (i = 1; i < count; i += 2) {
         am_Symbol sym = {0, 0};
         am_Num *term;
         amE(am_readuint32(ctx, &value));
         sym.id = ctx->offset+(value>>2), sym.type = value & 3;
         amC(term = (am_Num*)am_settable(ctx->S, &row->terms, sym));
-        amE(am_readfloat32(ctx, term));
+        amE(am_readfloat(ctx, term));
     }
     return AM_OK;
 }
@@ -1600,7 +1601,7 @@ static int am_readconstraints(am_LoadCtx *ctx) {
         amE(am_readcount(ctx, &value));
         amC(value == 6); /* [name, strength, marker, other, relation, row] */
         amE(am_readstring(ctx));
-        amE(am_readfloat32(ctx, &strength));
+        amE(am_readfloat(ctx, &strength));
         amC(cons = am_newconstraint(S, strength));
         if (ctx->loader->load_cons)
             ctx->loader->load_cons(ctx->loader, ctx->s, i, cons);
@@ -1647,7 +1648,6 @@ AM_API int am_load(am_Solver *S, am_Loader *loader) {
     memset(&ctx, 0, sizeof(ctx));
     ctx.S = S;
     ctx.offset = S->current_id + 1;
-    ctx.endian = am_islittleendian();
     ctx.loader = loader;
     amE(am_readcount(&ctx, &count));
     amC(count == 5); /* [total, vars, constraints, rows, objective] */
