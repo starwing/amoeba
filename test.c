@@ -150,7 +150,8 @@ static void test_all(void) {
     am_dumpsolver(S);
 
     assert(am_setrelation(c1, AM_GREATEQUAL) == AM_FAILED);
-    assert(am_setstrength(c1, AM_REQUIRED-10) == AM_OK);
+    assert(AM_REQUIRED - 10 == AM_REQUIRED);
+    assert(am_setstrength(c1, AM_STRONG) == AM_OK);
     assert(am_setstrength(c1, AM_REQUIRED) == AM_OK);
 
     assert(am_hasconstraint(c1));
