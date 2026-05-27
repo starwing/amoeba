@@ -697,6 +697,7 @@ AM_API int am_hasedit(am_Solver *S, am_Id var) {
 static am_Suggest *am_newedit(am_Solver *S, am_Id var, am_Num strength) {
     am_Symbol sym = {0, AM_EXTERNAL};
     am_Suggest **s;
+    am_Row *row;
     am_Var *ve;
     int ret;
     if (S == NULL || var == 0 || strength < 0.f) return NULL;
@@ -707,13 +708,14 @@ static am_Suggest *am_newedit(am_Solver *S, am_Id var, am_Num strength) {
     if (*s == NULL) return am_deltable(&S->suggests, s), (am_Suggest*)NULL;
     memset(*s, 0, sizeof(**s));
     sym.id = ++S->current_cons, sym.type = AM_DUMMY; /* local cons */
+    (*s)->edit_value = !am_isdummy(ve->next) ? *ve->pvalue :
+        (row = (am_Row*)am_gettable(&S->rows, var)) ? row->constant : 0.0f;
     am_initconstraint(S, sym, strength, &(*s)->constraint);
     am_setrelation(&(*s)->constraint, AM_EQUAL);
     am_addterm(&(*s)->constraint, var, 1.0f); /* var must have positive signture */
-    am_addconstant(&(*s)->constraint, -*ve->pvalue);
+    am_addconstant(&(*s)->constraint, -(*s)->edit_value);
     ret = am_add(&(*s)->constraint);
     assert(ret == AM_OK), (void)ret;
-    (*s)->edit_value = *ve->pvalue;
     return *s;
 }
 
