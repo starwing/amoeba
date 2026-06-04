@@ -1327,9 +1327,10 @@ static int am_writevars(am_DumpCtx *ctx) {
     amE(am_writecount(ctx, S->vars.count));
     for (i = 0; i < S->vars.count; ++i) {
         am_Var *ve = (am_Var*)am_gettable(&S->vars, ctx->syms[i]);
+        const char *vn;
         assert(ve != NULL);
-        amE(am_writestring(ctx,
-                    ctx->dumper->var_name(ctx->dumper, i, ctx->syms[i], ve->pvalue)));
+        vn = ctx->dumper->var_name(ctx->dumper, i, ctx->syms[i], ve->pvalue);
+        amE(am_writestring(ctx, vn));
     }
     return AM_OK;
 }
@@ -1423,6 +1424,7 @@ AM_API int am_dump(am_Solver *S, am_Dumper *dumper) {
     ctx.ret = AM_FAILED;
     amC(S && dumper && dumper->writer && dumper->var_name);
     am_clearedits(S);
+    if (!S->auto_update) am_updatevars(S);
     cons_alloc = sizeof(unsigned) * S->constraints.count;
     sym_alloc = sizeof(unsigned) * (cons_alloc*2 + S->vars.count);
     memset(&ctx, 0, sizeof(ctx));
@@ -1430,8 +1432,7 @@ AM_API int am_dump(am_Solver *S, am_Dumper *dumper) {
     ctx.cons = (unsigned*)S->allocf(&S->ud, NULL, cons_alloc, 0, am_AllocDump);
     ctx.S = S;
     if (ctx.syms && ctx.cons && (ctx.ret = am_collect(&ctx)) == AM_OK) {
-        ctx.dumper = dumper;
-        ctx.p = ctx.buf;
+        ctx.dumper = dumper, ctx.p = ctx.buf;
         ctx.ret = am_dumpall(&ctx);
     }
     if (ctx.syms) S->allocf(&S->ud, ctx.syms, 0, sym_alloc, am_AllocDump);
