@@ -288,11 +288,9 @@ struct am_Solver {
 static int am_approx(am_Num a, am_Num b)
 { return a > b ? a - b < AM_NUM_EPS : b - a < AM_NUM_EPS; }
 
-static int am_nearzero(am_Num a)
-{ return am_approx(a, 0.0f); }
-
-static am_Symbol am_null(void)
-{ am_Symbol null = { 0, 0 }; return null; }
+static int am_nearzero(am_Num a) { return am_approx(a, 0.f); }
+static int am_negative(am_Num a) { return !am_nearzero(a) && a < 0.f; }
+static am_Symbol am_null(void) { am_Symbol null = { 0, 0 }; return null; }
 
 static void am_poolfree(am_MemPool *pool, void *obj)
 { *(void**)obj = pool->freed, pool->freed = obj; }
@@ -489,11 +487,10 @@ static void am_freerow(am_Solver *S, am_Row *row)
 { am_freetable(S, &row->terms); }
 
 static void am_resetrow(am_Row *row)
-{ row->constant = 0.0f; am_resettable(&row->terms); }
+{ row->constant = 0.f; am_resettable(&row->terms); }
 
 static void am_initrow(am_Row *row) {
-    row->infeasible_next = am_null();
-    row->constant = 0.0f;
+    row->infeasible_next = am_null(), row->constant = 0.f;
     am_inittable(&row->terms, sizeof(am_Num));
 }
 
@@ -580,7 +577,7 @@ AM_API void am_updatevars(am_Solver *S) {
             am_deltable(&S->vars, ve);
         } else {
             am_Row *row = (am_Row*)am_gettable(&S->rows, var.id);
-            *ve->pvalue = row ? row->constant : 0.0f;
+            *ve->pvalue = row ? row->constant : 0.f;
             ve->refcount -= 1;
         }
     }
@@ -602,7 +599,7 @@ AM_API am_Constraint *am_newconstraint(am_Solver *S, am_Num strength) {
     am_Symbol sym = {0, AM_EXTERNAL}; /* AM_EXTERNAL for pool cons */
     am_Constraint *cons;
     int ret;
-    if (S == NULL || strength < 0.f) return NULL;
+    if (S == NULL || am_negative(strength)) return NULL;
     cons = am_alloc(am_Constraint, S, am_AllocConstraint);
     if (cons == NULL) return NULL;
     sym.id = ++S->current_cons;
@@ -700,7 +697,7 @@ static am_Suggest *am_newedit(am_Solver *S, am_Id var, am_Num strength) {
     am_Row *row;
     am_Var *ve;
     int ret;
-    if (S == NULL || var == 0 || strength < 0.f) return NULL;
+    if (S == NULL || var == 0 || am_negative(strength)) return NULL;
     if ((ve = (am_Var*)am_gettable(&S->vars, var)) == NULL) return NULL;
     s = (am_Suggest**)am_settable(S, &S->suggests, (sym.id=var, sym));
     if (s == NULL) return NULL;
@@ -709,7 +706,7 @@ static am_Suggest *am_newedit(am_Solver *S, am_Id var, am_Num strength) {
     memset(*s, 0, sizeof(**s));
     sym.id = ++S->current_cons, sym.type = AM_DUMMY; /* local cons */
     (*s)->edit_value = !am_isdummy(ve->next) ? *ve->pvalue :
-        (row = (am_Row*)am_gettable(&S->rows, var)) ? row->constant : 0.0f;
+        (row = (am_Row*)am_gettable(&S->rows, var)) ? row->constant : 0.f;
     am_initconstraint(S, sym, strength, &(*s)->constraint);
     am_setrelation(&(*s)->constraint, AM_EQUAL);
     am_addterm(&(*s)->constraint, var, 1.0f); /* var must have positive signture */
@@ -791,12 +788,14 @@ static void am_markdirty(am_Solver *S, am_Symbol var) {
     ve->refcount += 1;
 }
 
-static void am_infeasible(am_Solver *S, am_Symbol sym, am_Row *row) {
-    if (row->constant < 0.0f && !am_isdummy(row->infeasible_next)) {
+static int am_infeasible(am_Solver *S, am_Symbol sym, am_Row *row) {
+    if (am_isdummy(row->infeasible_next)) return 1;
+    if (am_negative(row->constant)) {
         row->infeasible_next.id = S->infeasible_rows.id;
         row->infeasible_next.type = AM_DUMMY;
-        S->infeasible_rows = sym;
+        return (S->infeasible_rows = sym), 1;
     }
+    return 0;
 }
 
 static void am_substitute_rows(am_Solver *S, am_Symbol var, am_Row *expr) {
@@ -832,16 +831,16 @@ static void am_optimize(am_Solver *S, am_Row *objective) {
 
         assert(S->infeasible_rows.id == 0);
         while (am_nextentry(&it))
-            if (!am_isdummy(it.key) && *am_val(am_Num,it) < 0.0f)
-            { enter = it.key; break; }
-        if (enter.id == 0) return;
+            if (!am_isdummy(it.key) && am_negative(*am_val(am_Num, it))) break;
+        if (it.key.id == 0) return;
+        enter = it.key;
 
         it = am_itertable(&S->rows);
         while (am_nextentry(&it)) {
             am_Row *row = am_val(am_Row,it);
             if (am_isexternal(it.key)) continue;
             term = (am_Num*)am_gettable(&row->terms, enter.id);
-            if (term == NULL || *term > 0.0f) continue;
+            if (term == NULL || *term > 0.f) continue;
             r = -row->constant / *term;
             if (r < min_ratio || (am_approx(r, min_ratio)
                         && it.key.id < leave.id))
@@ -891,7 +890,7 @@ static am_Row am_makerow(am_Solver *S, am_Constraint *cons) {
         am_addvar(S, &S->objective, cons->marker, cons->strength);
         am_addvar(S, &S->objective, cons->other,  cons->strength);
     }
-    if (row.constant < 0.0f) am_multiply(&row, -1.0f);
+    if (row.constant < 0.f) am_multiply(&row, -1.0f);
     return row;
 }
 
@@ -938,23 +937,20 @@ static int am_try_addrow(am_Solver *S, am_Row *row, am_Constraint *cons) {
         if (am_isexternal(it.key)) { subject = it.key; break; }
     if (subject.id == 0 && am_ispivotable(cons->marker)) {
         am_Num *term = (am_Num*)am_gettable(&row->terms, cons->marker.id);
-        if (*term < 0.0f) subject = cons->marker;
+        if (*term < 0.f) subject = cons->marker;
     }
     if (subject.id == 0 && am_ispivotable(cons->other)) {
         am_Num *term = (am_Num*)am_gettable(&row->terms, cons->other.id);
-        if (*term < 0.0f) subject = cons->other;
+        if (*term < 0.f) subject = cons->other;
     }
     if (subject.id == 0) {
         it = am_itertable(&row->terms);
         while (am_nextentry(&it))
             if (!am_isdummy(it.key)) break;
         if (it.offset == 0) {
-            if (am_nearzero(row->constant))
-                subject = cons->marker;
-            else {
-                am_freerow(S, row);
-                return AM_UNSATISFIED;
-            }
+            if (!am_nearzero(row->constant))
+                return am_freerow(S, row), AM_UNSATISFIED;
+            subject = cons->marker;
         }
     }
     if (subject.id == 0) return am_add_with_artificial(S, row, cons);
@@ -970,7 +966,7 @@ static void am_remove_errors(am_Solver *S, am_Constraint *cons) {
     if (am_iserror(cons->other))
         am_mergerow(S, &S->objective, cons->other, -cons->strength);
     if (S->objective.terms.count == 0)
-        S->objective.constant = 0.0f;
+        S->objective.constant = 0.f;
     cons->marker = cons->other = am_null();
 }
 
@@ -1006,7 +1002,7 @@ static am_Symbol am_get_leaving_row(am_Solver *S, am_Symbol marker) {
         if (term == NULL) continue;
         if (am_isexternal(it.key))
             third = it.key;
-        else if (*term < 0.0f) {
+        else if (*term < 0.f) {
             am_Num r = -row->constant / *term;
             if (r < r1) r1 = r, first = it.key;
         } else {
@@ -1069,8 +1065,8 @@ static void am_cached_sugggest(am_Solver *S, am_Suggest *s, am_Num delta) {
         row->constant += *term * delta;
         if (am_isexternal(it.key))
             am_markdirty(S, it.key);
-        else if (!am_nearzero(row->constant) && row->constant < 0.0f)
-            pure = 0, am_infeasible(S, it.key, row);
+        else if (am_infeasible(S, it.key, row))
+            pure = 0;
     }
     if (!pure) s->age = 0;
 }
@@ -1094,8 +1090,8 @@ static void am_delta_edit_constant(am_Solver *S, am_Suggest *s, am_Num delta) {
         am_settable(S, &s->dirtyset, it.key);
         if (am_isexternal(it.key))
             am_markdirty(S, it.key);
-        else if (!am_nearzero(row->constant) && row->constant < 0.0f)
-            pure = 0, am_infeasible(S, it.key, row);
+        else if (am_infeasible(S, it.key, row))
+            pure = 0;
     }
     if (pure) s->age = S->age;
 }
@@ -1111,14 +1107,14 @@ static void am_dual_optimize(am_Solver *S) {
         leave = S->infeasible_rows;
         S->infeasible_rows = row->infeasible_next;
         row->infeasible_next = am_null();
-        if (am_nearzero(row->constant) || row->constant >= 0.0f) continue;
+        if (!am_negative(row->constant)) continue;
         it = am_itertable(&row->terms);
         while (am_nextentry(&it)) {
             am_Num term = *am_val(am_Num,it);
             am_Num *objterm;
-            if (am_isdummy(it.key) || term <= 0.0f) continue;
+            if (am_isdummy(it.key) || term <= 0.f) continue;
             objterm = (am_Num*)am_gettable(&S->objective.terms, it.key.id);
-            r = objterm ? *objterm / term : 0.0f;
+            r = objterm ? *objterm / term : 0.f;
             if (min_ratio > r) min_ratio = r, enter = it.key;
         }
         assert(enter.id != 0);

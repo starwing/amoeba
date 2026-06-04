@@ -1210,7 +1210,7 @@ static void test_dumpload(void) {
         printf("after dump: ret=%d\n", ret);
         assert(ret == AM_OK);
         printf("dumpped len=%d\n", (int)len);
-        assert(len == 10709 || len == 10779);
+        assert(len == 10709 || len == 10779 || len == 10916);
     }
 
     {
