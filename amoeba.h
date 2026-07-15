@@ -47,12 +47,13 @@
 #define AM_EQUAL        (2)
 #define AM_GREATEQUAL   (3)
 
-#define AM_REQUIRED     ((am_Num)1 / 0.0) /* INFINITY */
+#define AM_REQUIRED     ((am_Num)INFINITY)
 #define AM_STRONG       ((am_Num)1000000)
 #define AM_MEDIUM       ((am_Num)1000)
 #define AM_WEAK         ((am_Num)1)
 
 #include <stddef.h>
+#include <math.h>
 
 AM_NS_BEGIN
 
