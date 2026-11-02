@@ -6,10 +6,11 @@
 - `dump_test.c` — `tests/dump_test.c` 的快照，多出两块从 live 测试移出的**白盒 coverage
   块**（直调 `am_writeuint32()` / `am_readuint32()` / `am_readfloat()` 等 `static` helper），
   以及 TODO #3 的值断言（`assertclose()`，等 `am_load()` 刷新绑定修好后启回 live）。
-- `api_test.c` — `tests/api_test.c` 的快照，多出 TODO #5/#6/#7 的回归用例：
+- `api_test.c` — `tests/api_test.c` 的快照，多出 TODO #5/#6 的回归用例：
   `load_rejects_short_arena`、`addterm_refcount_balances`、
-  `mergeconstraint_refcount_balances`、`setstrength_tighten_failure_restores`。
-  （#2 的 `setstrength_unadded_does_not_register` 已随修复搬回 live。）
+  `mergeconstraint_refcount_balances`。
+  （`setstrength_unadded_does_not_register`（#2）与
+  `setstrength_tighten_failure_restores`（#7）已随修复搬回 live。）
 
 快照是历史状态，允许引用已经不存在或签名已变的内部函数（例如 `am_readraw_slow()` 已拆成
 `am_readraw_slow16/32()`），所以**不要直接编译，也不要直接覆盖 live 测试**。搬回去时按当时

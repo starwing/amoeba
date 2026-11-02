@@ -11,7 +11,7 @@
 
 用一个 `AM_IMPLEMENTATION` 的最小程序 + ASan/UBSan 逐条复现（实验都在仓库副本里做），结论：
 
-1. **复核时 #2～#7 在 HEAD 全部复现**，没有一个是「已经悄悄修好」的（#2 已修复并提交，见下面的修复队列）。
+1. **复核时 #2～#7 在 HEAD 全部复现**，没有一个是「已经悄悄修好」的（#2、#7 已修复并提交，见下面的修复队列）。
 2. **A1 已不成立**：HEAD 上 `am_add()` 失败会走 `am_remove_errors()` 清 marker
    （`amoeba.h:985-986`），重试返回 `AM_UNSATISFIED` 而不是 `AM_FAILED`。这一条可以从
    P0 队列里删掉（详见 §A1）。
@@ -59,11 +59,11 @@
 | 4 | `am_readconstraints` | 高：会回收仍被引用的变量 | 建议 #6 先 | 需新建 | 中 |
 | A3 | 流头 | 中：静默版本错读 | 放最后 | — | 中 |
 
-**建议顺序**：`#2`（已完成）`→ #7 → #5 → A2 → #6 → #4 → #3 → A3`。
+**建议顺序**：`#2`、`#7`（已完成）`→ #5 → A2 → #6 → #4 → #3 → A3`。
 理由：#2/#7 共用一段代码；#5/A2 都是「畸形输入」，同一个读路径一起收口；#6 先落地 #4 才能
 干净复用；A3 改格式头必须最后。若以安全优先，把 #5 提到最前也成立，只是不再是「最小步长」。
 
-## 修复队列：还剩 5 个（#3～#7），另加 A2、A3
+## 修复队列：还剩 4 个（#3～#6），另加 A2、A3
 
 顺序 = 上面的建议顺序，**一次只改一个**。每个提交必须自带用例并且 `just check` 全绿；
 同一处被审后返工用 `git commit --amend`，不追加「修修补补」提交。
@@ -76,21 +76,36 @@
 | 4 | `am_load()` 不恢复每项引用计数：load 后删一条约束会把别的约束还在用的变量回收 | ~8 行 | 待做（建议先做 #6） | 新建 `load_then_remove_keeps_vars` |
 | 5 | `am_load()` 信任流里声明的 arena 槽数，`amH_alloc()` 越界写（ASan 复现堆溢出） | ~10 行 | 待做（用例按上面的建议重写） | `load_rejects_short_arena` + `load_accepts_correct_arena` |
 | 6 | `am_addterm()`/`am_mergeconstraint()` 无条件 `refcount += 1`，合并/抵消时计数漂移（`am_Var` 泄漏） | ~10 行 | 待做 | `addterm_refcount_balances` + `mergeconstraint_refcount_balances` |
-| 7 | `am_setstrength()` 收紧到 REQUIRED 失败时，约束既没恢复强度也不在 solver 里 | ~8 行 | 待做（依赖 #2） | `setstrength_tighten_failure_restores` |
+| 7 | `am_setstrength()` 收紧到 REQUIRED 失败时，约束既没恢复强度也不在 solver 里 | ~8 行 | **已完成**：失败时回滚到旧强度并重新加入（`amoeba.h:1041`） | `setstrength_tighten_failure_restores`（已搬回 live） |
 | A2 | `am_load()` 不校验符号索引上界（见 §A2） | ~2 行 | 待做 | 需新写 |
 | A3 | dump/load 没有 magic + 版本号（见 §A3） | ~8 行 | 待做（最后） | 改 `load_rejects_short_arena` 用带 magic 的流 |
 
-**#3～#7 的用例现在放在 `tests/pending/`**（`api_test.c` 快照 + `dump_test.c` 快照里的 #3
-值断言；#2 的用例已随修复搬回 live），不参与构建，见 [tests/pending/README.md](tests/pending/README.md)。每修完一个
+**#3～#6 的用例现在放在 `tests/pending/`**（`api_test.c` 快照 + `dump_test.c` 快照里的 #3
+值断言；#2、#7 的用例已随修复搬回 live），不参与构建，见 [tests/pending/README.md](tests/pending/README.md)。每修完一个
 就按 B9 把对应用例搬回 live，不要直接覆盖。
 
 ## 提交计划
 
-1. `fix: ...` × 7（#3～#7、A2、A3），顺序见上；每个提交 = 该问题的用例（从 `tests/pending/`
-   搬回或新写）+ 修复。#2 已完成（并入 baseline 提交，用例已搬回 live）。
+### 粒度（2026-11-02 定）
+
+所有 bug 修在**唯一的 format 提交之前**；修复按「一个 fix 一个提交」拆。
+
+- **在所有当前问题修完之前，不要 format**：不跑 `just format`、不手工重排格式，新改动按
+  现有风格写。提前格式化会让「唯一一次机械重排」这个前提失效。
+- 每个 `fix:` 提交**只修一个问题**（用户指定的那个），不要把几个 bug 连着修——那样用户
+  没法逐个审。提交里可以带为这一个问题服务的东西（用例、文档、记账），不是「除了代码
+  什么都不许有」。
+- 不推荐把这一串 fix squash 成一笔「pre-format 大提交」：`changes.md` 能补文档，补不回
+  `git bisect` 和单点 revert 的能力。（#2 是唯一例外：当时按 amend 并进了 baseline 提交。）
+
+### 顺序
+
+1. `fix: ...` × 6（#3～#6、A2、A3），顺序见上（`#5 → A2 → #6 → #4 → #3 → A3`），
+   每笔只修一个问题。**#2** 已并入 baseline 提交、**#7** 已提交，用例都已搬回 live。
 2. 白盒清理（B8、B9 的剩余部分），单独一个 `tests:` 提交。
 3. 单独一个 `style: apply .clang-format`
-   （`amoeba.h`、`lua_amoeba.c`、两个 benchmark；约 1800 行机械改动）。
+   （`amoeba.h`、`lua_amoeba.c`、两个 benchmark；约 1800 行机械改动）。它必须是**唯一一次
+   机械重排**：`git diff -w` 为空，且之后不再有语义改动混进来。
 4. 格式提交落地后：把它的 sha 写进 `.git-blame-ignore-revs`，再把 CI 的 `format-check`
    从 advisory 改成 blocking（见下面 B1）。
 
@@ -191,10 +206,33 @@
 
 - 现状：`tests/pending/{dump_test,api_test}.c` 是从 live 摘出来的快照，不参与构建：
   `dump_test.c` 里有两块被移出的白盒 coverage 和 #3 的值断言；`api_test.c` 里有
-  #2/#5/#6/#7 的回归用例。
+  #5/#6 的回归用例（#2、#7 已搬回 live）。
 - 做法：每修完一个 #N，只把**那一个**用例按当时的实现搬回 live；coverage 块改写成
   `am_dump()` 的 writer 回调 + `am_load()` 的 arena 之后再考虑回收。
 - 验收：pending 目录最终清空（或只剩明确标注的历史档）；每次搬回都跑 `just check`。
+
+### B10. 覆盖率口径：`-DNDEBUG`
+
+- 现状一：`just cov`（`tests/justfile`）的编译行是 `{{CC}} {{BASE}} -g -O0 --coverage`，
+  **没有** `-DNDEBUG`，所以 assert 的行/分支会进统计。例如 `am_setstrength()` 里只在
+  「回滚失败」时才触发的那句 `assert(ra == AM_OK)`，永远会被报成「分支未覆盖」——但按仓库
+  口径，**单测覆盖率应在 `-DNDEBUG` 下测**，assert 本来就不该被要求覆盖（当前实测
+  `DA:1050,3` / `BRDA:1050,0,1,0`，是带 assert 编译出来的数据）。
+- 现状二：直接加 `-DNDEBUG` 现在**编不过**：`tests/solver_test.c` 有 8 处
+  `-Werror,-Wunused-but-set-variable`（变量只被 `assert(...)` 用，例如 `:59 result`、
+  `:87 ret`、`:322 nResult`、`:686 ret`）。`dump_test.c` / `api_test.c` 能编过。
+- 现状三：tests 里共 **91 个裸 `assert(`**（`solver_test.c` 80、`dump_test.c` 11），NDEBUG
+  下会静默消失：覆盖率照样收集，但那次运行不再校验结果。harness 自己的
+  `asserteq` / `assertok` / `assertstreq` 不依赖 `assert`，NDEBUG 下仍然生效。
+- 做法：
+  1. 把 tests 里承载检查的裸 assert 换成 harness 宏（顺带消掉那 8 个 unused 变量）；
+  2. 给 `cov` 的编译行加 `-DNDEBUG`；
+  3. 把「覆盖率用 NDEBUG 口径、assert 不要求覆盖」写进 [notes/testing.md](notes/testing.md)。
+- 验收：`just cov` 在 `-DNDEBUG` 下编过并收集；`tests/build/amoeba.info` 里不再出现 assert
+  行的统计；覆盖率运行仍能靠 harness 宏发现失败（故意改坏一个断言，cov 运行要打印 FAILED）。
+- 备注：`just uncovered`（`tests/justfile:236`）现在靠「跳过含 assert 的行」兜底；做完这条
+  之后这个启发式可以保留，但不再必需。
+- 规模：`tests:` 类改动，涉及 `tests/justfile` + 两个 suite 的断言写法；建议单独一笔。
 
 ---
 

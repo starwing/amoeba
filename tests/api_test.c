@@ -75,6 +75,36 @@ TEST(setstrength_added_reoptimizes) {
     am_delsolver(S);
 }
 
+/* Tightening a constraint to REQUIRED can fail (it may conflict with what is
+ * already required).  The constraint must then be left exactly as it was,
+ * i.e. still weak and still installed -- not silently dropped. */
+TEST(setstrength_tighten_failure_restores) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         x = 0;
+    am_Id          vx = am_newvariable(S, &x);
+    am_Constraint *hard, *soft;
+
+    hard = am_newconstraint(S, AM_REQUIRED);
+    am_addterm(hard, vx, 1.f);
+    am_setrelation(hard, AM_EQUAL);
+    am_addconstant(hard, 1.f);
+    asserteq(am_add(hard), AM_OK);
+
+    soft = am_newconstraint(S, AM_WEAK);
+    am_addterm(soft, vx, 1.f);
+    am_setrelation(soft, AM_EQUAL);
+    am_addconstant(soft, 2.f);
+    asserteq(am_add(soft), AM_OK);
+
+    asserteq(am_setstrength(soft, AM_REQUIRED), AM_UNSATISFIED);
+    assertok(am_hasconstraint(soft));
+    assertnear(soft->strength, AM_WEAK, 1e-3);
+
+    am_updatevars(S);
+    assertnear(x, 1, 1e-4); /* the required constraint still decides */
+    am_delsolver(S);
+}
+
 /* ---------------------------------------------------------------------- */
 /* am_load() must bound the arena it reads rows into.
  *

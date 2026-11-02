@@ -190,7 +190,8 @@ AM_NS_END
 
 #define amC(cond) do { if (!(cond)) return \
     AM_DEBUG(__FILE__ ":%d: " #cond "\n", __LINE__), AM_FAILED; } while (0)
-#define amE(cond) amC((cond) == AM_OK)
+#define amE(expr) do { int r_; if ((r_ = (expr)) != AM_OK) return \
+    AM_DEBUG(__FILE__ ":%d: " #expr " err %d\n", __LINE__, r_), r_; } while (0)
 
 AM_NS_BEGIN
 
@@ -1035,26 +1036,25 @@ AM_API void am_remove(am_Constraint *cons) {
 }
 
 AM_API int am_setstrength(am_Constraint *cons, am_Num strength) {
+    am_Solver *S;
+    am_Num old, diff;
     amC(cons);
     strength = am_nearzero(strength) ? AM_REQUIRED : strength;
     if (cons->strength == strength) return AM_OK;
+    if (!am_hasconstraint(cons)) return (cons->strength = strength), AM_OK;
     if (cons->strength >= AM_REQUIRED || strength >= AM_REQUIRED) {
-        int added = am_hasconstraint(cons);
-        am_remove(cons); /* no-op when the constraint is not added */
-        cons->strength = strength;
-        return added ? am_add(cons) : AM_OK;
+        int r, ra = AM_OK;
+        old = cons->strength, am_remove(cons), cons->strength = strength;
+        if ((r = am_add(cons)) != AM_OK)
+            cons->strength = old, ra = am_add(cons);
+        return assert(ra == AM_OK), (void)ra, r;
     }
-    if (cons->marker.id != 0) {
-        am_Solver *S = cons->S;
-        am_Num diff = strength - cons->strength;
-        am_mergerow(S, &S->objective, cons->marker, diff);
-        am_mergerow(S, &S->objective, cons->other,  diff);
-        am_optimize(S, &S->objective);
-        if (S->auto_update) am_updatevars(S);
-        S->age += 1;
-    }
-    cons->strength = strength;
-    return AM_OK;
+    S = cons->S, diff = strength - cons->strength;
+    am_mergerow(S, &S->objective, cons->marker, diff);
+    am_mergerow(S, &S->objective, cons->other,  diff);
+    am_optimize(S, &S->objective);
+    if (S->auto_update) am_updatevars(S);
+    return (S->age += 1, cons->strength = strength), AM_OK;
 }
 
 static void am_cached_sugggest(am_Solver *S, am_Suggest *s, am_Num delta) {
