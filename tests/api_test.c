@@ -639,7 +639,6 @@ TEST(load_rejects_every_truncation) {
  * printed these sizes; assert the one that is actually a contract.) */
 TEST(symbol_fits_one_unsigned) {
     asserteq(sizeof(am_Symbol), sizeof(unsigned));
-    assertok(am_null().id == 0 && am_null().type == 0);
 }
 
 #include "api_test.gen.inc"

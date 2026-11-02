@@ -251,21 +251,39 @@ static void aml_dumpkey(luaL_Buffer *B, int idx, am_Symbol sym) {
     }
 }
 
+/* __tostring reads solver internals, but must not call the library's static
+ * helpers; these two readers walk the public structs directly. */
+static am_Num *aml_slot(const am_Table *t, am_Size i)
+{ return (am_Num*)((char*)t->vals + (size_t)i * t->value_size); }
+
+static am_Row *aml_row(am_Solver *S, unsigned id) {
+    am_Size i;
+    if (id == 0) return NULL;
+    for (i = 0; i < S->rows.size; ++i)
+        if (S->rows.keys[i].sym.id == id)
+            return (am_Row*)((char*)S->rows.vals
+                    + (size_t)i * S->rows.value_size);
+    return NULL;
+}
+
 static void aml_dumprow(luaL_Buffer *B, int idx, am_Row *row) {
-    am_Iterator it = am_itertable(&row->terms);
     lua_State *L = B->L;
+    am_Size i;
     lua_pushfstring(L, "%f", row->constant);
     luaL_addvalue(B);
-    while ((am_nextentry(&it))) {
-        am_Num coef = *am_val(am_Num,it);
+    for (i = 0; i < row->terms.size; ++i) {
+        am_Symbol key = row->terms.keys[i].sym;
+        am_Num    coef;
+        if (key.id == 0) continue;
+        coef = *aml_slot(&row->terms, i);
         lua_pushfstring(L, " %c ", coef > 0.0f ? '+' : '-');
         luaL_addvalue(B);
         if (coef < 0.0f) coef = -coef;
-        if (!am_approx(coef, 1.0f)) {
+        if (coef != 1.0f) {
             lua_pushfstring(L, "%f*", coef);
             luaL_addvalue(B);
         }
-        aml_dumpkey(B, idx, it.key);
+        aml_dumpkey(B, idx, key);
     }
 }
 
@@ -906,28 +924,30 @@ static int Ltostring(lua_State *L) {
     luaL_addstring(&B, "\n  objective = ");
     aml_dumprow(&B, 2, &S->solver->objective);
     if (S->solver->rows.count != 0) {
-        am_Iterator it = am_itertable(&S->solver->rows);
+        am_Size i;
         int idx = 0;
         lua_pushfstring(L, "\n  rows(%d):", S->solver->rows.count);
         luaL_addvalue(&B);
-        while (am_nextentry(&it)) {
-            am_Row *row = am_val(am_Row,it);
+        for (i = 0; i < S->solver->rows.size; ++i) {
+            am_Symbol key = S->solver->rows.keys[i].sym;
+            if (key.id == 0) continue;
             lua_pushfstring(L, "\n    %d. ", ++idx);
             luaL_addvalue(&B);
-            aml_dumpkey(&B, 2, it.key);
+            aml_dumpkey(&B, 2, key);
             luaL_addstring(&B, " = ");
-            aml_dumprow(&B, 2, row);
+            aml_dumprow(&B, 2, (am_Row*)((char*)S->solver->rows.vals
+                        + (size_t)i * S->solver->rows.value_size));
         }
     }
     if (S->solver->infeasible_rows.id != 0) {
         am_Symbol key = S->solver->infeasible_rows;
-        am_Row *row = (am_Row*)am_gettable(&S->solver->rows, key.id);
+        am_Row *row = aml_row(S->solver, key.id);
         luaL_addstring(&B, "\n  infeasible rows: ");
         aml_dumpkey(&B, 2, key);
         while (row != NULL) {
             luaL_addstring(&B, ", ");
             aml_dumpkey(&B, 2, key);
-            row = (am_Row*)am_gettable(&S->solver->rows, row->infeasible_next.id);
+            row = aml_row(S->solver, row->infeasible_next.id);
         }
     }
     luaL_addstring(&B, "\n}");

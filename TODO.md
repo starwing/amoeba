@@ -22,7 +22,7 @@
 | ID | P | 问题 | 依赖 | 用例 |
 |---|---|---|---|---|
 | #6 | P0 | `am_addterm()` / `am_mergeconstraint()` 无条件 `refcount += 1`，合并/抵消时计数漂移（`am_Var` 泄漏） | 无 | `addterm_refcount_balances` + `mergeconstraint_refcount_balances`（在 `tests/pending/`） |
-| #8 | P1 | `am_dump()` 在 `S->constraints.count == 0` 时返回 `AM_OK` 但写 0 字节（`ctx.ret` 被 `memset` 清零，`ctx.cons == NULL` 跳过 `am_dumpall()`） | 无 | 新建 `dump_empty` / `load_empty` |
+| #8 | P1 | `am_dump()` 在 `S->constraints.count == 0` 时返回 `AM_OK` 但写 0 字节（`ctx.ret` 被 `memset` 清零，`ctx.cons == NULL` 跳过 `amD_all()`） | 无 | 新建 `dump_empty` / `load_empty` |
 | #4 | P1 | `am_load()` 不恢复每项引用计数：load 后删一条约束会把别的约束还在用的变量回收 | 复用加项 helper 时需要 #6 | 新建 `load_then_remove_keeps_vars` |
 | #3 | P1 | `am_load()` 之后绑定值不刷新（`S->dirty_vars` 为空，`am_updatevars()` 空转） | 独立 | `dump_test::dumpload` 的值断言（在 `tests/pending/`） |
 | A3 | P1 | dump/load 没有 magic + 版本号 | 无 | 需新建（真 dump） |
@@ -37,7 +37,7 @@ B9 把对应用例搬回 live，不要直接覆盖。
   `#3` 是 load 尾部不刷新；`A3` 是流没有版本头。
 - **依赖**：
   - `#6 → #4`：`#4` 想复用「加项」helper 的话，先有 `#6` 才干净；也可以自己在
-    `am_readconstraints()` 补计数而解耦。
+    `amL_constraints()` 补计数而解耦。
   - `#4 → #3`：仅当 `#3` 借脏链刷新时；用全表刷新则不依赖。
   - `A3`：无前置；继续用「真 dump + 只改目标字段」的策略。
 - **A3 的用例策略**：继续用 `am_dump()` 生成真流、只改目标字段；手搓流会和真实 writer 不一致。
@@ -85,7 +85,7 @@ B9 把对应用例搬回 live，不要直接覆盖。
 
 ### #4. `am_load()` 不恢复 refcount
 
-- 现状：`am_readvars()` 给每个变量 `refcount = 1`；`am_readconstraints()` 把项直接塞进
+- 现状：`amL_vars()` 给每个变量 `refcount = 1`；`amL_constraints()` 把项直接塞进
   `expression` 表，没走 `am_exprterm()`。load 后删一条约束，会把别的约束还在用的变量当成
   「没人引用」回收。
 - 做法：读完每条约束后，按恢复出来的表达式补 refcount（或让读路径走同一个加项 helper）。
@@ -118,7 +118,7 @@ B9 把对应用例搬回 live，不要直接覆盖。
 
 ### B3. dump 的双精度保真
 
-- 现状：`am_writefloat()` 永远写 float32，`AM_USE_DOUBLE` 下 dump/load 有精度损失。
+- 现状：`amD_float()` 永远写 float32，`AM_USE_DOUBLE` 下 dump/load 有精度损失。
 - 做法：编码上区分 f32/f64（新增 `0xCB`），或者 `am_Num` 宽度写进版本头。
 - 验收：double 模式下 dump→load 的变量值与原始值逐位相等。
 
@@ -137,7 +137,7 @@ B9 把对应用例搬回 live，不要直接覆盖。
 
 ### B6. `assert` 承担安全职责的地方
 
-- 现状：`am_mapid()`（dump 侧）只有 `assert(id != NULL)`，release 构建里是 NULL 解引用。
+- 现状：`amD_mapid()`（dump 侧）只有 `assert(id != NULL)`，release 构建里是 NULL 解引用。
 - 做法：改成返回错误，让 `am_dump()` 返回 `AM_FAILED`；顺手扫一遍「`assert` 里做参数校验」
   的位置。
 - 验收：NULL 名字的 dump 不崩溃，返回错误码。
@@ -147,16 +147,6 @@ B9 把对应用例搬回 live，不要直接覆盖。
 - 现状：跑测试需要 `lua`（`misc/gen_entries.lua`），CI 里要额外装 lua5.4。
 - 做法：要么接受（现状，和 znet 一致），要么预生成并提交（省一个依赖，但多一步同步）。
 - 验收：随便选一个，并在 notes/testing.md 写清楚。
-
-### B8. live 测试里的白盒调用
-
-- 现状：`tests/solver_test.c` 的调试打印机 `am_dumpsolver()` 直调 `am_itertable()` /
-  `am_nextentry()` / `am_approx()`；`tests/api_test.c` 的 `symbol_fits_one_unsigned` 直调
-  `am_null()`。按 AGENTS.md §9，这些都属于「测试里调用 static 函数」，锁不住任何契约。
-- 做法：打印机改成直接读 `row->terms.keys/vals`、`S->rows.keys/vals`（读结构体是允许的）；
-  `am_null()` 换成 `am_Symbol s = {0, 0};`。
-- 验收：`grep -rn 'am_itertable\|am_nextentry\|am_approx\|am_null' tests/*.c`
-  只剩注释；`just check` 仍绿。
 
 ### B9. `tests/pending/` 快照的回收
 
@@ -208,7 +198,7 @@ B9 把对应用例搬回 live，不要直接覆盖。
 
 ### C4. 数值
 
-- [ ] `am_approx` 增加相对误差项（大坐标场景下绝对 eps 失效，见 notes/algorithm.md §8）；
+- [ ] `amN_approx` 增加相对误差项（大坐标场景下绝对 eps 失效，见 notes/algorithm.md §8）；
 - [ ] 评估把 `AM_NUM_EPS` 改成按 `am_Num` 的 `FLT_EPSILON * 大系数` 派生；
 - [ ] 补一个「大坐标」测试（1e5 / 1e6 量级）。
 

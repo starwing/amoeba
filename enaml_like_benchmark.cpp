@@ -214,11 +214,30 @@ static void build_solver(am_Solver* S, am_Id width, am_Id height, am_Num *values
     }
 }
 
-static void *bench_poolalloc(am_MemPool *pool) {
+/* A local copy of the library's fixed-size pool.  The benchmark must not call
+ * the library's internal helpers (they are static implementation details). */
+struct bench_pool {
+    size_t size;
+    void  *freed;
+    void  *pages;
+};
+
+static const size_t BENCH_POOL_SIZE = 4096;
+
+static void bench_poolinit(bench_pool *pool, size_t size) {
+    pool->size  = size;
+    pool->freed = pool->pages = NULL;
+    assert(size > sizeof(void*) && size < BENCH_POOL_SIZE/4);
+}
+
+static void bench_poolput(bench_pool *pool, void *obj)
+{ *(void**)obj = pool->freed, pool->freed = obj; }
+
+static void *bench_poolalloc(bench_pool *pool) {
     void *obj = pool->freed;
     if (obj == NULL) {
-        const size_t offset = AM_POOL_SIZE - sizeof(void*);
-        void *end, *ptr = malloc(AM_POOL_SIZE);
+        const size_t offset = BENCH_POOL_SIZE - sizeof(void*);
+        void *end, *ptr = malloc(BENCH_POOL_SIZE);
         if (ptr == NULL) abort();
         *(void**)((char*)ptr + offset) = pool->pages;
         pool->pages = ptr;
@@ -234,8 +253,8 @@ static void *bench_poolalloc(am_MemPool *pool) {
     return obj;
 }
 
-static void bench_poolfree(am_MemPool *pool) {
-    const size_t offset = AM_POOL_SIZE - sizeof(void*);
+static void bench_poolfree(bench_pool *pool) {
+    const size_t offset = BENCH_POOL_SIZE - sizeof(void*);
     while (pool->pages != NULL) {
         void *next = *(void**)((char*)pool->pages + offset);
         free(pool->pages);
@@ -248,17 +267,18 @@ int main() {
     am_Solver *S;
 
     // demo how to use a memory pool across solvers.
-    am_MemPool conspool; am_initpool(&conspool, sizeof(am_Constraint));
-    const size_t hash_size = (sizeof(am_Num) + sizeof(am_Key)) * 8;
-    am_MemPool hashpool; am_initpool(&hashpool, hash_size);
+    bench_pool conspool; bench_poolinit(&conspool, sizeof(am_Constraint));
+    /* sizeof(am_Key): the 8-slot hash table's key+value block. */
+    const size_t hash_size = (sizeof(am_Key) + sizeof(am_Num)) * 8;
+    bench_pool hashpool; bench_poolinit(&hashpool, hash_size);
     auto alloc = [&](void *ptr, size_t ns, size_t os, am_AllocType ty) {
         if (ty == am_AllocConstraint) {
             if (ns) return bench_poolalloc(&conspool);
-            return am_poolfree(&conspool, ptr), (void*)0;
+            return bench_poolput(&conspool, ptr), (void*)0;
         }
         if (ty == am_AllocHash) {
             if (ns == hash_size && os == 0) return bench_poolalloc(&hashpool);
-            if (os == hash_size && ns == 0) return am_poolfree(&hashpool, ptr), (void*)0;
+            if (os == hash_size && ns == 0) return bench_poolput(&hashpool, ptr), (void*)0;
         }
         if (ns) return realloc(ptr, ns);
         return free(ptr), (void*)0;
