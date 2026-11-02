@@ -34,7 +34,7 @@ This libary export a constraint solver interface, to solve a constraint problem,
   - `am_setstrength()` to specify the priority of this constraint in all constraints.
 - after make up a constraint, you could add it into solver by `am_add()`.
 - and you can read out the result of each variable from the binding `am_Num`.
-- or you can manually specify a new value to variable with `am_sugguest()`.
+- or you can manually specify a new value to variable with `am_suggest()`.
 - after done, use `am_delsolver()` to free al memory.
 
 below is a tiny example to demonstrate the steps:
@@ -96,6 +96,34 @@ int main(void) {
 ```
 
 
+## Building and testing
+
+The library itself needs nothing but a C compiler:
+
+```c
+#define AM_IMPLEMENTATION
+#include "amoeba.h"
+```
+
+The repository is driven by [just](https://github.com/casey/just):
+
+```sh
+just check           # every suite, ASan/UBSan, one process per test
+just check-release   # same suites at -O2
+just check-double    # AM_USE_DOUBLE
+just check-c89       # strict C89 compile check (no run)
+just check-cpp03     # strict C++03 compile check (no run)
+just test dump       # one suite; just test dump dumpload one test
+just cov             # lcov report
+just format          # clang-format the tree
+```
+
+Test sources live in `tests/`; `misc/gen_entries.lua` turns `TEST(name)`
+functions into the entry table (so a Lua interpreter is a build dependency of
+the tests).  Code style is defined by `.clang-format` (clang-format >= 19).
+See [notes/](notes/) for implementation notes and [TODO.md](TODO.md) for the
+roadmap.
+
 ## Reference
 
 ### Return value
@@ -104,12 +132,19 @@ All functions below that returns `int` are returning error codes:
 - `AM_OK`: Operations success.
 - `AM_FAILED`: The operation is failed, most caused by invalid arguments.
 - `AM_UNSATISFIED`: Specific constraints added cannot satisfied.
-- `AM_UNBOUND`: Failed to add constraints because there are unbound variables in it
+- `AM_UNBOUND`: The constraint conflicts with the constraints already in the
+  solver (the artificial variable could not be driven to zero). It is the same
+  kind of failure as `AM_UNSATISFIED`, reached through the inequality path.
 
 ### Dump & Load
 
 Amoeba supports to store whole state of solver into bianry data and to load
-back in new solver. Notice that the state of loaded solver will be earsed. 
+back in new solver. Notice that the state of loaded solver will be erased.
+
+`am_dump()` drops every suggest/edit (`am_clearedits()`): what gets dumped is the
+state after re-solving without them.  `am_load()` refreshes all variable bindings
+from the restored tableau, so no manual `am_updatevars()` is needed.  A load that
+fails leaves the solver half-filled: discard it.
 
 To perform a dump or load operations, you should prepare `am_Dumper` or
 `am_Loader` to control the behavior in operations.
@@ -284,15 +319,17 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
 
   Remove this variable, after that, it cannot be added into further constraints.
 
-- `void am_refcount(am_Solver *solver, am_Id var);`
+- `int am_refcount(am_Solver *solver, am_Id var);`
 
-  Retrieve the refcount of the variable.
+  Retrieve the internal reference count of the variable: one for the variable
+  itself, plus one per live term.  It is what decides when an unreferenced
+  variable is dropped; it is not a user-facing ownership count.
 
-- `void am_varvalue(am_Solver *solver, am_Id var, am_Num *newvalue);`
+- `am_Num *am_varvalue(am_Solver *solver, am_Id var, am_Num *newvalue);`
 
   Retrieve or reset the value binding of the variable. if `newvalue` is `NULL`,
-  Only retrieve the old value, otherwise the `newvalue` will be setted into
-  `var` and original value returned.
+  only retrieve the old pointer, otherwise the binding is retargeted to
+  `newvalue` and the original pointer is returned.
 
 - `int am_add(am_Constraint *cons);`
 

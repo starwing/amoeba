@@ -1038,8 +1038,12 @@ AM_API int am_setstrength(am_Constraint *cons, am_Num strength) {
     amC(cons);
     strength = am_nearzero(strength) ? AM_REQUIRED : strength;
     if (cons->strength == strength) return AM_OK;
-    if (cons->strength >= AM_REQUIRED || strength >= AM_REQUIRED)
-        return am_remove(cons), cons->strength = strength, am_add(cons);
+    if (cons->strength >= AM_REQUIRED || strength >= AM_REQUIRED) {
+        int added = am_hasconstraint(cons);
+        am_remove(cons); /* no-op when the constraint is not added */
+        cons->strength = strength;
+        return added ? am_add(cons) : AM_OK;
+    }
     if (cons->marker.id != 0) {
         am_Solver *S = cons->S;
         am_Num diff = strength - cons->strength;
@@ -1455,16 +1459,24 @@ static int am_fill(am_LoadCtx *ctx) {
     return ctx->n -= 1, *ctx->p++ & 0xFF;
 }
 
-static int am_readraw_slow(am_LoadCtx *ctx, unsigned *pv, int width) {
-    int c1 = 0, c2 = 0, c3, c4;
-    switch (width) {
-    default: return AM_FAILED;
-    case 32: amC((c1 = am_getchar(ctx)) != AM_FAILED);
-             amC((c2 = am_getchar(ctx)) != AM_FAILED); /* FALLTHROUGH */
-    case 16: amC((c3 = am_getchar(ctx)) != AM_FAILED);
-             amC((c4 = am_getchar(ctx)) != AM_FAILED);
-    }
-    return (*pv = c1 << 24 | c2 << 16 | c3 << 8 | c4), AM_OK;
+static int am_readraw_slow16(am_LoadCtx *ctx, unsigned *pv) {
+    unsigned r = 0;
+    int c;
+    amC((c = am_getchar(ctx)) != AM_FAILED);
+    r |= (unsigned)c << 8;
+    amC((c = am_getchar(ctx)) != AM_FAILED);
+    return (*pv = (r | (unsigned)c)), AM_OK;
+}
+
+static int am_readraw_slow32(am_LoadCtx *ctx, unsigned *pv) {
+    unsigned r = 0;
+    int c;
+    amC((c = am_getchar(ctx)) != AM_FAILED);
+    r |= (unsigned)c << 24;
+    amC((c = am_getchar(ctx)) != AM_FAILED);
+    r |= (unsigned)c << 16;
+    amE(am_readraw_slow16(ctx, pv));
+    return (*pv |= r), AM_OK;
 }
 
 static int am_readraw32(am_LoadCtx *ctx, unsigned *pv) {
@@ -1475,7 +1487,7 @@ static int am_readraw32(am_LoadCtx *ctx, unsigned *pv) {
         n <<= 8; n |= *ctx->p++ & 0xFF;
         return *pv = n, ctx->n -= 4, AM_OK;
     }
-    return am_readraw_slow(ctx, pv, 32);
+    return am_readraw_slow32(ctx, pv);
 }
 
 static int am_readraw16(am_LoadCtx *ctx, unsigned *pv) {
@@ -1484,7 +1496,7 @@ static int am_readraw16(am_LoadCtx *ctx, unsigned *pv) {
         n <<= 8; n |= *ctx->p++ & 0xFF;
         return *pv = n, ctx->n -= 2, AM_OK;
     }
-    return am_readraw_slow(ctx, pv, 16);
+    return am_readraw_slow16(ctx, pv);
 }
 
 static int am_readuint32(am_LoadCtx *ctx, am_Size *pv) {

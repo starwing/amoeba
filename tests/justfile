@@ -1,0 +1,259 @@
+# amoeba test suite (C89, no external test framework).
+#
+# Normally driven from the repo root: `just check`, `just test dump`, `just cov`.
+# This file can also be used directly:
+#
+#   just --justfile tests/justfile test dump          # one suite
+#   just --justfile tests/justfile check              # everything, ASan
+#
+# Test sources live in tests/<suite>.c; misc/gen_entries.lua turns the
+# TEST(name) functions into the entries table + main() (tests/<suite>.gen.inc,
+# a build artifact: never edit or commit it).
+#
+# Every test runs in its own process, so an assert, a crash or a sanitizer hit
+# fails only that one test and the rest still run.
+
+set windows-shell := ["cmd.exe", "/C"]
+
+ROOT  := source_directory() / ".."
+SRC   := source_directory()
+BUILD := source_directory() / "build"
+GEN   := ROOT / "misc" / "gen_entries.lua"
+
+CC  := env("CC", "cc")
+CXX := env("CXX", "c++")
+LUA := env("LUA", "lua")
+
+WARN := "-Wall -Wextra -Werror -pedantic -Wno-variadic-macros"
+INC  := "-I" + ROOT + " -I" + SRC
+BASE := "-std=c89 " + WARN + " " + INC
+SAN  := "-g -O0 -fsanitize=address,undefined -fno-sanitize-recover=undefined"
+
+SUITES := "solver_test dump_test api_test"
+
+default: check
+
+# ---------------------------------------------------------------------------
+# builds
+
+# gen + compile every suite into build/<tag>/
+[unix]
+[private]
+build tag flags suites=SUITES:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out='{{BUILD}}/{{tag}}'
+    mkdir -p "$out"
+    for s in {{suites}}; do
+        {{LUA}} '{{GEN}}' "{{SRC}}/$s.c" "{{SRC}}/$s.gen.inc" {{flags}}
+        {{CC}} {{BASE}} {{SAN}} {{flags}} -o "$out/$s" "{{SRC}}/$s.c"
+    done
+
+# run every test of every suite, one process per test
+[unix]
+[private]
+run tag flags="" suites=SUITES:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    failfile='{{BUILD}}/{{tag}}.failures'
+    : > "$failfile"
+    for s in {{suites}}; do
+        bin='{{BUILD}}/{{tag}}/'"$s"
+        echo "=== {{tag}}/$s ==="
+        for t in $("$bin" --list); do
+            if ! "$bin" "@$t"; then
+                echo "*** FAILED: $s::$t" >&2
+                echo "$s::$t" >> "$failfile"
+            fi
+        done
+    done
+    exit 0
+
+# fail if any recorded test failed; `tags` is a space separated list
+[unix]
+[private]
+verify tags:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    nfail=0
+    for tag in {{tags}}; do
+        f='{{BUILD}}/'"$tag"'.failures'
+        [ -f "$f" ] || continue
+        while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            echo "FAILED: $tag/$line" >&2
+            nfail=$((nfail + 1))
+        done < "$f"
+    done
+    if [ "$nfail" -ne 0 ]; then
+        echo "" >&2
+        echo "$nfail test(s) failed (see the FAIL lines above)" >&2
+        exit 1
+    fi
+    echo "all suites passed"
+
+# ---------------------------------------------------------------------------
+# checks
+
+# build + run every suite under ASan/UBSan
+[unix]
+check: (build "debug" "") (run "debug") (verify "debug")
+
+# alias kept for muscle memory: sanitizers are the default
+[unix]
+check-asan: check
+
+# -O2, no sanitizers: catches tests that only pass in a debug build
+[unix]
+check-release: (build "release" "-O2") (run "release") (verify "release")
+
+# poison every automatic variable with 0xAA: a test (or library helper) that
+# reads uninitialised memory behaves deterministically and fails here
+[unix]
+check-uninit: (build "uninit" "-O1 -ftrivial-auto-var-init=pattern") \
+    (run "uninit") (verify "uninit")
+
+# am_Num = double
+[unix]
+check-double: (build "double" "-DAM_USE_DOUBLE") (run "double") \
+    (verify "double")
+
+# one suite, one process per test: just test dump, just test dump roundtrip
+[unix]
+test name *args='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    suite='{{name}}'
+    case "$suite" in
+        *_test) ;;
+        *) suite="${suite}_test" ;;
+    esac
+    out='{{BUILD}}/debug'
+    mkdir -p "$out"
+    {{LUA}} '{{GEN}}' "{{SRC}}/$suite.c" "{{SRC}}/$suite.gen.inc"
+    {{CC}} {{BASE}} {{SAN}} -o "$out/$suite" "{{SRC}}/$suite.c"
+    exec "$out/$suite" {{args}}
+
+# ---------------------------------------------------------------------------
+# strict compile checks (no run)
+
+# Clean C: the common subset of C89 and C++.  Compiles the suites and the
+# header itself; -pedantic-errors makes any extension a failure.
+[unix]
+check-c89:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    fail=0
+    for s in {{SUITES}}; do
+        echo "--- c89 $s ---"
+        {{LUA}} '{{GEN}}' "{{SRC}}/$s.c" "{{SRC}}/$s.gen.inc"
+        {{CC}} -std=c89 -pedantic-errors {{WARN}} {{INC}} \
+            -c -o /dev/null "{{SRC}}/$s.c" || fail=1
+    done
+    echo "--- c89 amoeba.h ---"
+    mkdir -p '{{BUILD}}'
+    printf '#define AM_IMPLEMENTATION\n#include "amoeba.h"\n' \
+        > '{{BUILD}}/check_amoeba.c'
+    {{CC}} -std=c89 -pedantic-errors {{WARN}} {{INC}} \
+        -c -o /dev/null '{{BUILD}}/check_amoeba.c' || fail=1
+    exit $fail
+
+# C++03: amoeba.h is usable from C++, so the suites must build there too.
+[unix]
+check-cpp03:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    fail=0
+    mkdir -p '{{BUILD}}'
+    for s in {{SUITES}}; do
+        echo "--- c++03 $s ---"
+        {{LUA}} '{{GEN}}' "{{SRC}}/$s.c" "{{SRC}}/$s.gen.inc"
+        {{CXX}} -x c++ -std=c++03 -pedantic-errors {{WARN}} {{INC}} \
+            -c -o /dev/null "{{SRC}}/$s.c" || fail=1
+    done
+    exit $fail
+
+# ---------------------------------------------------------------------------
+# Lua binding: built from lua_amoeba.c, then test.lua drives it
+
+[unix]
+[private]
+lua-run script=(ROOT / "test.lua"):
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out='{{BUILD}}/lua'
+    mkdir -p "$out"
+    inc="${LUA_INC:-$(pkg-config --cflags lua5.4 lua5.3 lua 2>/dev/null || true)}"
+    case "$(uname -s)" in
+        Darwin) shlib='-bundle -undefined dynamic_lookup' ;;
+        *)      shlib='-shared -fPIC' ;;
+    esac
+    {{CC}} -std=c99 -O2 $shlib $inc -I'{{ROOT}}' \
+        -o "$out/amoeba.so" '{{ROOT}}/lua_amoeba.c'
+    # a versioned LUA_CPATH_5_x wins over the plain one, so set them all
+    LUA_CPATH="$out/?.so" \
+        LUA_CPATH_5_5="$out/?.so" LUA_CPATH_5_4="$out/?.so" \
+        LUA_CPATH_5_3="$out/?.so" LUA_CPATH_5_2="$out/?.so" \
+        LUA_CPATH_5_1="$out/?.so" \
+        {{LUA}} '{{script}}'
+
+[unix]
+test-lua: (lua-run)
+
+# ---------------------------------------------------------------------------
+# coverage (lcov)
+
+[unix]
+cov:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out='{{BUILD}}/cov'
+    rm -rf "$out"
+    mkdir -p "$out"
+    for s in {{SUITES}}; do
+        {{LUA}} '{{GEN}}' "{{SRC}}/$s.c" "{{SRC}}/$s.gen.inc"
+        {{CC}} {{BASE}} -g -O0 --coverage -o "$out/$s" "{{SRC}}/$s.c"
+        for t in $("$out/$s" --list); do
+            ( cd "$out" && ./"$s" "@$t" >/dev/null 2>&1 ) || \
+                echo "COV: $s::$t FAILED (coverage still collected)" >&2
+        done
+    done
+    ( cd "$out" && lcov --capture --directory . --rc branch_coverage=1 \
+        --ignore-errors inconsistent,unsupported,empty,corrupt \
+        --output-file amoeba.info )
+    lcov --extract '{{BUILD}}/cov/amoeba.info' '*/amoeba.h' \
+        --rc branch_coverage=1 --ignore-errors inconsistent,unused,corrupt \
+        --output-file '{{BUILD}}/amoeba.info'
+    lcov --list '{{BUILD}}/amoeba.info' --rc branch_coverage=1 \
+        --ignore-errors inconsistent,corrupt
+
+# lines with zero coverage in amoeba.h, skipping assert-only lines
+[unix]
+uncovered:
+    @awk '/^SF:/{z=($0 ~ /\/amoeba\.h$/)} z && /^DA:/ && /,0$/ {gsub(/DA:|,0/,""); print}' \
+        '{{BUILD}}/amoeba.info' 2>/dev/null | sort -n | while read -r ln; do \
+        src=$(sed -n "${ln}p" '{{ROOT}}/amoeba.h' 2>/dev/null); \
+        case "$src" in *assert*) ;; *) echo "L$ln: $src";; esac; \
+    done
+
+[unix]
+clean-cov:
+    rm -rf '{{BUILD}}/cov'
+    rm -f '{{BUILD}}'/*.info
+
+# ---------------------------------------------------------------------------
+# cleanup
+
+[unix]
+clean:
+    rm -rf '{{BUILD}}'
+    rm -f '{{SRC}}'/*.gen.inc
+
+[windows]
+check:
+    @echo "the test recipes need a POSIX shell; see TODO.md (MSVC port)" && exit /b 2
+
+[windows]
+clean:
+    @if exist "{{BUILD}}" rmdir /s /q "{{BUILD}}"
+    @if exist "{{SRC}}\*.gen.inc" del /q "{{SRC}}\*.gen.inc"

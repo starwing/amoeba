@@ -1,8 +1,44 @@
+# --- 本地 AI/agent 文档（不入库） ---
+AGENTS.md
+# notes/ 整体不入库。用 notes/* 而不是 notes/，否则 git 根本不会进入这个目录。
+notes/*
+archive/*
+
+# --- 历史遗留：库文件/Windows 产物 ---
 *.dll
 *.exp
 *.ilk
 *.lib
 *.pdb
 *.exe
-
 *.so
+*.dylib
+*.o
+*.obj
+
+# --- 根目录的可执行产物（只锚定根目录，避免误伤 test/ 之类的源码目录）---
+/test
+/demo
+/example
+/bench_*
+/bench_*.neon
+/enaml_like_benchmark
+/yoga_benchmark
+/yogaone
+
+# --- 测试/覆盖率产物 ---
+tests/build/
+tests/*.gen.inc
+dump.data
+*.gcda
+*.gcno
+*.gcov
+coverage/
+
+# --- 性能分析/日志产物 ---
+prof.out
+profile*.json
+*.dSYM/
+
+# --- 系统垃圾文件 ---
+.DS_Store

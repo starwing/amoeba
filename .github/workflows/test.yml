@@ -1,54 +1,98 @@
-# This is a basic workflow to help you get started with Actions
+# CI for amoeba.
+#
+# The suites are driven by just (`just check`, `just check-release`, ...); see
+# justfile and tests/justfile.  Every check builds the generated entry tables
+# with misc/gen_entries.lua, so Lua is a build dependency of the tests.
 
 name: CI
 
-# Controls when the action will run. 
 on:
-  # Triggers the workflow on push or pull request events but only for the master branch
   push:
-    branches: [ master ]
+    branches: [master]
   pull_request:
-    branches: [ master ]
-
-  # Allows you to run this workflow manually from the Actions tab
+    branches: [master]
   workflow_dispatch:
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  test_ubuntu:
+  checks:
     if: "! contains(toJSON(github.event.commits.*.message), '[skip ci]')"
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: ["ubuntu-latest"]
+    runs-on: ubuntu-latest
+    env:
+      LUA: lua5.4
+      CC: gcc
+      CXX: g++
     steps:
-      - name: Install LCov
+      - uses: actions/checkout@v4
+
+      - name: Install tools
         run: |
-          sudo apt install libperlio-gzip-perl libjson-perl libcapture-tiny-perl libdatetime-perl
-          wget "https://github.com/linux-test-project/lcov/releases/download/v1.16/lcov-1.16.tar.gz"
-          tar zxf "lcov-1.16.tar.gz"
-          cd "lcov-1.16"
-          sudo make install
-      - uses: actions/checkout@master
-      - name: Run Tests
+          sudo apt-get update
+          sudo apt-get install -y lua5.4 liblua5.4-dev lcov clang-format
+          lua5.4 -v
+          clang-format --version
+
+      - uses: extractions/setup-just@v2
+
+      - name: Build + run every suite (ASan/UBSan)
+        run: just check
+
+      - name: Optimised build (-O2, no sanitizers)
+        run: just check-release
+
+      - name: Double precision
+        run: just check-double
+
+      - name: Clean C (C89) compile check
+        run: just check-c89
+
+      - name: C++03 compile check
+        run: just check-cpp03
+
+      - name: Lua binding
+        run: just test-lua
+
+      # Advisory for now: the formatting baseline is clang-format >= 19 (the
+      # config uses newer keys) and the distro package may be older than the
+      # one used locally.  Flip continue-on-error once the version is pinned
+      # in both places (see TODO.md).
+      - name: clang-format check (advisory)
+        continue-on-error: true
+        run: just format-check
+
+  coverage:
+    if: "! contains(toJSON(github.event.commits.*.message), '[skip ci]')"
+    runs-on: ubuntu-latest
+    env:
+      LUA: lua5.4
+      CC: gcc
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
         run: |
-          gcc -o test -O test.c --coverage && ./test
-      - name: Run LCov
-        run: |
-          mkdir -p coverage
-          lcov -c -d . -o coverage/lcov.info.all
-          lcov -r coverage/lcov.info.all '/usr/*' -o coverage/lcov.info
+          sudo apt-get update
+          sudo apt-get install -y lua5.4 lcov
+          sudo apt-get install -y libperlio-gzip-perl libjson-perl \
+            libcapture-tiny-perl libdatetime-perl
+
+      - uses: extractions/setup-just@v2
+
+      - name: Collect coverage
+        run: just cov
+
       - name: Coveralls
         uses: coverallsapp/github-action@master
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          path-to-lcov: tests/build/amoeba.info
           parallel: true
+
   finish:
-    needs: test_ubuntu
+    needs: coverage
     runs-on: ubuntu-latest
     steps:
-    - name: Coveralls Finished
-      uses: coverallsapp/github-action@master
-      with:
-        github-token: ${{ secrets.github_token }}
-        parallel-finished: true
+      - name: Coveralls Finished
+        uses: coverallsapp/github-action@master
+        with:
+          github-token: ${{ secrets.github_token }}
+          parallel-finished: true
