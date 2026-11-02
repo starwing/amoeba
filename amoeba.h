@@ -408,21 +408,24 @@ static const void *am_gettable(const am_Table *t, unsigned key) {
     return amH_val(t, cur);
 }
 
-static int amH_alloc(am_Table *t, const am_Solver *S, size_t request, size_t vsize, void **arena) {
-    size_t size, hsize;
-    am_Key *keys;
-    amC(request <= (~(am_Size)0 >> 1));
-    size = am_calcsize((am_Size)request);
-    hsize = size * (sizeof(am_Key) + vsize);
-    if (arena) keys = (am_Key*)*arena, *arena = (char*)*arena + hsize;
-    else keys = (am_Key*)S->allocf((void**)S, NULL, hsize, 0, am_AllocHash);
-    amC(keys != NULL);
+static void amH_init(am_Table *t, am_Key *keys, size_t size, size_t vsize) {
     t->size = (am_Size)size;
     t->value_size = vsize;
-    t->arena = (arena != NULL);
+    t->arena = 0;
     t->keys = keys;
-    t->vals = keys + t->size;
-    return am_resettable(t), AM_OK;
+    t->vals = keys + size;
+    am_resettable(t);
+}
+
+static int amH_alloc(am_Table *t, const am_Solver *S, size_t req, size_t vsz) {
+    size_t size;
+    am_Key *keys;
+    amC(req <= (~(am_Size)0 >> 1));
+    size = am_calcsize((am_Size)req);
+    keys = (am_Key*)S->allocf((void**)S, NULL,
+            size * (sizeof(am_Key) + vsz), 0, am_AllocHash);
+    amC(keys != NULL);
+    return amH_init(t, keys, size, vsz), AM_OK;
 }
 
 static void *amH_rawset(am_Table *t, am_Symbol key) {
@@ -449,10 +452,10 @@ static void *amH_rawset(am_Table *t, am_Symbol key) {
     return ks[mp].sym = key, amH_val(t, mp);
 }
 
-static int amH_resize(const am_Solver *S, am_Table *t, size_t request, void **arena) {
+static int amH_resize(const am_Solver *S, am_Table *t, size_t request) {
     am_Table nt;
     am_Size i;
-    amE(amH_alloc(&nt, S, request, t->value_size, arena));
+    amE(amH_alloc(&nt, S, request, t->value_size));
     for (i = 0; i < t->size; ++i) {
         void *value;
         if (!t->keys[i].sym.id) continue;
@@ -464,15 +467,15 @@ static int amH_resize(const am_Solver *S, am_Table *t, size_t request, void **ar
     return (*t = nt), AM_OK;
 }
 
-static int am_growtable(const am_Solver *S, am_Table *t, size_t grow, void **a)
-{ return (grow += t->count)*2 < t->size ? AM_OK : amH_resize(S, t, grow, a); }
+static int am_growtable(const am_Solver *S, am_Table *t, size_t grow)
+{ return (grow += t->count)*2 < t->size ? AM_OK : amH_resize(S, t, grow); }
 
 static void *am_settable(const am_Solver *S, am_Table *t, am_Symbol key) {
     void *value;
     assert(key.id != 0 && am_gettable(t, key.id) == NULL);
-    if (!t->size && amH_resize(S, t, 0, NULL) != AM_OK) return NULL;
+    if (!t->size && amH_resize(S, t, 0) != AM_OK) return NULL;
     if ((value = amH_rawset(t, key)) == NULL) {
-        if (amH_resize(S, t, t->count*2, NULL) != AM_OK) return NULL;
+        if (amH_resize(S, t, t->count*2) != AM_OK) return NULL;
         value = amH_rawset(t, key); /* retry and must success */
     }
     return t->count += 1, assert(value != NULL), value;
@@ -1395,7 +1398,7 @@ static int am_collect(am_DumpCtx *ctx) {
     qsort(ctx->syms, vc, sizeof(unsigned), am_intcmp);
     qsort(ctx->syms + vc, count - vc, sizeof(unsigned), am_intcmp);
     am_inittable(&ctx->symmap, sizeof(unsigned));
-    amE(am_growtable(S, &ctx->symmap, count, NULL));
+    amE(am_growtable(S, &ctx->symmap, count));
     for (i = 0; i < count; ++i) {
         unsigned *val = (unsigned*)am_settable(S, &ctx->symmap,
                 (sym.id = ctx->syms[i], sym));
@@ -1448,6 +1451,8 @@ typedef struct am_LoadCtx {
     size_t      n;
     const char *p, *s;
     am_Size     offset;
+    char       *arena_p;    /* row-table arena cursor, NULL outside rows */
+    size_t      arena_left; /* bytes left in that arena */
     char        buf[AM_NAME_LEN];
 } am_LoadCtx;
 
@@ -1550,11 +1555,28 @@ static int am_readcount(am_LoadCtx *ctx, am_Size *pcount) {
     return AM_OK;
 }
 
-static int am_readrow(am_LoadCtx *ctx, am_Row *row, void **arena) {
+static char *am_takemem(am_LoadCtx *ctx, am_Size size, size_t unit) {
+    size_t bytes = size * unit;
+    char *p;
+    if (bytes / unit != size || bytes > ctx->arena_left) return NULL;
+    ctx->arena_left -= bytes;
+    return (p = ctx->arena_p, ctx->arena_p += bytes), p;
+}
+
+static int am_readrow(am_LoadCtx *ctx, am_Row *row) {
     am_Size i, count, value;
     amE(am_readcount(ctx, &count));
     amC(count >= 1 && (count & 1) == 1);
-    amE(am_growtable(ctx->S, &row->terms, count/2, arena));
+    if (!ctx->arena_p)
+        amE(am_growtable(ctx->S, &row->terms, count/2));
+    else {
+        am_Size size = am_calcsize(count/2);
+        size_t unit = sizeof(am_Key) + sizeof(am_Num);
+        am_Key *keys = (am_Key*)am_takemem(ctx, size, unit);
+        amC(keys != NULL);
+        amH_init(&row->terms, keys, size, sizeof(am_Num));
+        row->terms.arena = 1;
+    }
     amE(am_readfloat(ctx, &row->constant));
     for (i = 1; i < count; i += 2) {
         am_Symbol sym = {0, 0};
@@ -1572,7 +1594,7 @@ static int am_readvars(am_LoadCtx *ctx) {
     am_Size i, count;
     am_Symbol sym = {0, AM_EXTERNAL};
     amE(am_readcount(ctx, &count));
-    amE(am_growtable(S, &S->vars, count, NULL));
+    amE(am_growtable(S, &S->vars, count));
     for (i = 0; i < count; ++i) {
         am_Var *ve;
         am_Num *pvalue;
@@ -1601,7 +1623,7 @@ static int am_readconstraints(am_LoadCtx *ctx) {
     am_Size i, count, value;
     am_Solver *S = ctx->S;
     amE(am_readcount(ctx, &count));
-    amE(am_growtable(S, &S->constraints, count, NULL));
+    amE(am_growtable(S, &S->constraints, count));
     for (i = 0; i < count; ++i) {
         am_Constraint *cons;
         am_Num strength;
@@ -1618,23 +1640,25 @@ static int am_readconstraints(am_LoadCtx *ctx) {
         amE(am_readuint32(ctx, &value));
         amC(value >= AM_LESSEQUAL && value <= AM_GREATEQUAL);
         cons->relation = value;
-        amE(am_readrow(ctx, &cons->expression, NULL));
+        amE(am_readrow(ctx, &cons->expression));
     }
     return AM_OK;
 }
 
 static int am_readrows(am_LoadCtx *ctx) {
     am_Solver *S = ctx->S;
-    am_Size i, count, value, arena;
-    void **arena_buf = NULL, *ptr = NULL;
+    am_Size i, count, value, slots;
     amE(am_readcount(ctx, &count));
     amC((count & 1) == 1);
-    amE(am_readuint32(ctx, &arena));
-    if (arena) {
-        am_allocarena(S, &S->arena, arena * (sizeof(am_Key)+sizeof(am_Num)));
-        ptr = S->arena.buf, arena_buf = &ptr;
+    amE(am_readuint32(ctx, &slots));
+    ctx->arena_p = NULL, ctx->arena_left = 0;
+    if (slots) {
+        am_allocarena(S, &S->arena, slots * (sizeof(am_Key)+sizeof(am_Num)));
+        amC(S->arena.buf != NULL);
+        ctx->arena_p = (char*)S->arena.buf;
+        ctx->arena_left = S->arena.size;
     }
-    amE(am_growtable(S, &S->rows, count/2, NULL));
+    amE(am_growtable(S, &S->rows, count/2));
     for (i = 1; i < count; i += 2) {
         am_Symbol sym;
         am_Row *row;
@@ -1642,9 +1666,10 @@ static int am_readrows(am_LoadCtx *ctx) {
         sym.id = ctx->offset + (value >> 2), sym.type = value & 3;
         amC(row = (am_Row*)am_settable(S, &S->rows, sym));
         am_initrow(row);
-        amE(am_readrow(ctx, row, arena_buf));
+        amE(am_readrow(ctx, row));
     }
-    assert(!ptr || (am_Size)((char*)ptr-(char*)S->arena.buf) == S->arena.size);
+    amC(ctx->arena_left == 0);
+    ctx->arena_p = NULL;
     return AM_OK;
 }
 
@@ -1664,7 +1689,7 @@ AM_API int am_load(am_Solver *S, am_Loader *loader) {
     amE(am_readvars(&ctx));
     amE(am_readconstraints(&ctx));
     amE(am_readrows(&ctx));
-    amE(am_readrow(&ctx, &S->objective, NULL));
+    amE(am_readrow(&ctx, &S->objective));
     return S->current_id = ctx.offset + total, AM_OK;
 }
 

@@ -108,22 +108,124 @@ TEST(setstrength_tighten_failure_restores) {
 /* ---------------------------------------------------------------------- */
 /* am_load() must bound the arena it reads rows into.
  *
- * The stream declares the number of arena slots it needs.  A stream that
- * understates it made amH_alloc() walk past the buffer it had just allocated
- * (heap-buffer-overflow under ASan).  Both streams below are byte-identical
- * except for that number, so "reject the short one" cannot be achieved by
- * rejecting malformed input in general. */
+ * The stream declares how many arena slots the row tables need.  A stream
+ * that understates it made amH_alloc() walk past the buffer it had just
+ * allocated (heap-buffer-overflow under ASan).  Both tests below run on a
+ * real am_dump() stream and only change that one number, so the short one
+ * cannot be rejected by rejecting malformed input in general. */
 
-#define ROWS_AT(arena_slots)                                                 \
-    0x93, arena_slots, 0x01, 0x95, 0xCA, 0x00, 0x00, 0x00, 0x00, 0x05, 0xCA, \
-            0x3F, 0x80, 0x00, 0x00, 0x09, 0xCA, 0x3F, 0x80, 0x00, 0x00,
+typedef struct dump_buf {
+    am_Dumper      base;
+    unsigned char *p;
+    size_t         len;
+} dump_buf;
 
-/* [5, total, vars, constraints, rows, objective] -- one variable, no
- * constraints, one row with two terms, empty objective. */
-static const unsigned char stream_ok_arena[] = {
-        0x95, 0x04, 0x91, 0xA1, 'x',  0x90, ROWS_AT(0x08) 0x91,
-        0xCA, 0x00, 0x00, 0x00, 0x00,
-};
+static const char *dump_buf_varname(am_Dumper *d, unsigned idx, am_Id var,
+                                    am_Num *value) {
+    (void)d, (void)idx, (void)var, (void)value;
+    return "x";
+}
+
+static int dump_buf_writer(am_Dumper *d, const void *buf, size_t len) {
+    dump_buf *db = (dump_buf *)d;
+    memcpy(db->p + db->len, buf, len);
+    return db->len += len, AM_OK;
+}
+
+/* Walk a dump stream (notes/dump-format.md) up to the rows section and return
+ * the offset of its arena slot count.  The tests only need to patch that
+ * number, so this skips every other payload instead of decoding it. */
+typedef struct dump_reader { const unsigned char *p; } dump_reader;
+
+static unsigned dump_readraw(dump_reader *r, int width);
+
+static unsigned dump_readu32(dump_reader *r) {
+    int ty = *r->p++;
+    if (ty <= 0x7F) return (unsigned)ty;
+    if (ty == 0xCC) return dump_readraw(r, 1);
+    if (ty == 0xCD) return dump_readraw(r, 2);
+    assert(ty == 0xCE);
+    return dump_readraw(r, 4);
+}
+
+static unsigned dump_readraw(dump_reader *r, int width) {
+    unsigned n = 0;
+    while (width--) n = (n << 8) | (unsigned)*r->p++;
+    return n;
+}
+
+static unsigned dump_readcount(dump_reader *r) {
+    int ty = *r->p++;
+    if (ty >= 0x90 && ty <= 0x9F) return (unsigned)(ty - 0x90);
+    if (ty == 0xDC) return dump_readraw(r, 2);
+    assert(ty == 0xDD);
+    return dump_readraw(r, 4);
+}
+
+static void dump_skipstring(dump_reader *r) {
+    unsigned size;
+    int ty = *r->p++;
+    if (ty >= 0xA0 && ty <= 0xBF)
+        size = (unsigned)(ty - 0xA0);
+    else
+        assert(ty == 0xD9), size = (unsigned)*r->p++;
+    r->p += size;
+}
+
+static void dump_skipfloat(dump_reader *r) {
+    assert(*r->p++ == 0xCA);
+    r->p += 4;
+}
+
+static void dump_skiprow(dump_reader *r) {
+    unsigned i, count = dump_readcount(r);
+    dump_skipfloat(r);
+    for (i = 1; i < count; i += 2)
+        dump_readu32(r), dump_skipfloat(r);
+}
+
+static size_t dump_arena_offset(const unsigned char *buf) {
+    dump_reader r;
+    unsigned i, count;
+    r.p = buf;
+    assert(dump_readcount(&r) == 5); /* five top-level fields */
+    dump_readu32(&r);                /* total */
+    count = dump_readcount(&r);
+    for (i = 0; i < count; ++i) dump_skipstring(&r);
+    count = dump_readcount(&r);
+    for (i = 0; i < count; ++i) {
+        assert(dump_readcount(&r) == 6);
+        dump_skipstring(&r), dump_skipfloat(&r);
+        dump_readu32(&r), dump_readu32(&r), dump_readu32(&r);
+        dump_skiprow(&r);
+    }
+    count = dump_readcount(&r); /* 1 + 2*rows (arena + sym/row pairs) */
+    assert(count & 1);
+    return (size_t)(r.p - buf);
+}
+
+/* top level: [total, vars, constraints, rows, objective] (5 elements).
+ * One variable, one soft constraint -> one row with two terms. */
+static size_t dump_one_row(unsigned char *buf) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         x = 0;
+    am_Id          vx = am_newvariable(S, &x);
+    am_Constraint *c = am_newconstraint(S, AM_MEDIUM);
+    dump_buf       db;
+
+    am_addterm(c, vx, 1.f);
+    am_setrelation(c, AM_EQUAL);
+    am_addconstant(c, 10.f);
+    asserteq(am_add(c), AM_OK);
+    am_updatevars(S);
+    memset(&db, 0, sizeof(db));
+    db.base.var_name = dump_buf_varname;
+    db.base.writer = dump_buf_writer;
+    db.p = buf;
+    asserteq(am_dump(S, &db.base), AM_OK);
+    am_delsolver(S);
+    return db.len;
+}
 
 typedef struct stream_loader {
     am_Loader   base;
@@ -157,13 +259,29 @@ static void stream_init(stream_loader *sl, const unsigned char *bytes,
 }
 
 TEST(load_accepts_correct_arena) {
-    am_Solver    *S = am_test_new_solver();
-    stream_loader sl;
+    static unsigned char stream[1024];
+    size_t         len = dump_one_row(stream);
+    am_Solver     *S = am_test_new_solver();
+    stream_loader  sl;
 
-    stream_init(&sl, stream_ok_arena, sizeof stream_ok_arena);
+    stream_init(&sl, stream, len);
     asserteq(am_load(S, &sl.base), AM_OK);
     asserteq(S->rows.count, 1);
     asserteq(S->vars.count, 1);
+    am_delsolver(S);
+}
+
+TEST(load_rejects_short_arena) {
+    static unsigned char stream[1024];
+    size_t         len = dump_one_row(stream), at = dump_arena_offset(stream);
+    am_Solver     *S = am_test_new_solver();
+    stream_loader  sl;
+
+    assertok(at < len);
+    asserteq(stream[at], 8); /* one row, two terms: am_calcsize(2) slots */
+    stream[at] = 1;          /* the stream is otherwise byte-identical */
+    stream_init(&sl, stream, len);
+    asserteq(am_load(S, &sl.base), AM_FAILED);
     am_delsolver(S);
 }
 

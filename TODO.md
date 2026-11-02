@@ -50,20 +50,20 @@
 
 | # | 改动 | 严重度 | 依赖 | 现成用例 | 风险面 |
 |---|---|---|---|---|---|
-| 2 | 1 函数 2 行 | 中：静默改变 solver 成员 | 无 | pending 1 条 | 极低：纯前置条件 |
-| 7 | 同一段 +5 行 | 高：约束被丢掉 | #2 的 `added` | pending 1 条 | 中：失败路径的返回值策略要定 |
-| 5 | `amH_alloc` + arena 游标 | **最高**：堆越界（ASan 实测） | 与 A2 同区 | pending 2 条 | 中高：动的是所有表共用的分配器 |
-| A2 | `am_readrow`/`am_readmarker` | 高：畸形文件 → abort / NULL 解引用 | 与 #5 同区 | 需新写 | 中 |
+| 2 | 1 函数 2 行 | 中：静默改变 solver 成员 | 无 | live 1 条 | 极低：纯前置条件 |
+| 7 | 同一段 +5 行 | 高：约束被丢掉 | #2 的 `added` | live 1 条 | 中：失败路径的返回值策略要定 |
+| 5 | `amH_init` + loader 预算 | **最高**：堆越界（ASan 实测） | 与 A2 同区 | live 2 条（真 dump） | 中高：动的是 load 的 arena 路径 |
+| A2 | `am_readrow`/`am_readmarker`/row key + 数量 | 高：畸形文件 → abort / NULL 解引用 | 与 #5 同区 | 需新写（真 dump patch） | 中 |
 | 6 | `am_addterm`/`am_mergeconstraint` | 中：`am_Var` 泄漏 | 无 | pending 2 条 | **高**：refcount 与脏链共用 |
 | 3 | `am_load` 尾部刷新 | 中：绑定停留在旧值 | 独立 | pending 值断言 | 中：非基本变量取 0 的语义 |
 | 4 | `am_readconstraints` | 高：会回收仍被引用的变量 | 建议 #6 先 | 需新建 | 中 |
 | A3 | 流头 | 中：静默版本错读 | 放最后 | — | 中 |
 
-**建议顺序**：`#2`、`#7`（已完成）`→ #5 → A2 → #6 → #4 → #3 → A3`。
+**建议顺序**：`#2`、`#7`、`#5`（已完成）`→ A2 → #6 → #4 → #3 → A3`。
 理由：#2/#7 共用一段代码；#5/A2 都是「畸形输入」，同一个读路径一起收口；#6 先落地 #4 才能
 干净复用；A3 改格式头必须最后。若以安全优先，把 #5 提到最前也成立，只是不再是「最小步长」。
 
-## 修复队列：还剩 4 个（#3～#6），另加 A2、A3
+## 修复队列：还剩 3 个（#3、#4、#6），另加 A2、A3
 
 顺序 = 上面的建议顺序，**一次只改一个**。每个提交必须自带用例并且 `just check` 全绿；
 同一处被审后返工用 `git commit --amend`，不追加「修修补补」提交。
@@ -74,14 +74,14 @@
 | 2 | `am_setstrength()` 对**未加入**的约束会 `am_remove`（空操作）+ `am_add`，把约束偷偷加进 solver | 3 行 | **已完成**（并入 baseline 提交）：只改 strength，不碰 solver（`amoeba.h:1041`） | `setstrength_unadded_does_not_register`（已搬回 live） |
 | 3 | `am_load()` 之后绑定值不刷新（脏链表为空，`am_updatevars()` 空转） | ~6 行 | 待做 | `dump_test::dumpload` 的值断言 |
 | 4 | `am_load()` 不恢复每项引用计数：load 后删一条约束会把别的约束还在用的变量回收 | ~8 行 | 待做（建议先做 #6） | 新建 `load_then_remove_keeps_vars` |
-| 5 | `am_load()` 信任流里声明的 arena 槽数，`amH_alloc()` 越界写（ASan 复现堆溢出） | ~10 行 | 待做（用例按上面的建议重写） | `load_rejects_short_arena` + `load_accepts_correct_arena` |
+| 5 | `am_load()` 信任流里声明的 arena 槽数，`amH_alloc()` 越界写（ASan 复现堆溢出） | ~55 行（含移动） | **已完成**（提交 `fix: bound the dump arena in the loader`）：预算归 loader（`am_LoadCtx.arena_p`/`arena_left`，字节），`amH_alloc`/`amH_resize`/`am_growtable` 退回纯 heap，`amH_init` 在调用方内存上建表、`am_takemem` 从 arena 预算取字节；末尾 assert 换成 `amC(arena_left == 0)`（`amoeba.h:411`、`1558`、`1648`） | `load_rejects_short_arena` + `load_accepts_correct_arena`（已改成真 dump + 只改 arena 字段，已搬回 live） |
 | 6 | `am_addterm()`/`am_mergeconstraint()` 无条件 `refcount += 1`，合并/抵消时计数漂移（`am_Var` 泄漏） | ~10 行 | 待做 | `addterm_refcount_balances` + `mergeconstraint_refcount_balances` |
 | 7 | `am_setstrength()` 收紧到 REQUIRED 失败时，约束既没恢复强度也不在 solver 里 | ~8 行 | **已完成**：失败时回滚到旧强度并重新加入（`amoeba.h:1041`） | `setstrength_tighten_failure_restores`（已搬回 live） |
-| A2 | `am_load()` 不校验符号索引上界（见 §A2） | ~2 行 | 待做 | 需新写 |
+| A2 | `am_load()` 不校验符号索引/数量（见 §A2、notes/plan-a2.md） | ~10 行（范围待定） | 待做 | 需新写（真 dump + patch） |
 | A3 | dump/load 没有 magic + 版本号（见 §A3） | ~8 行 | 待做（最后） | 改 `load_rejects_short_arena` 用带 magic 的流 |
 
-**#3～#6 的用例现在放在 `tests/pending/`**（`api_test.c` 快照 + `dump_test.c` 快照里的 #3
-值断言；#2、#7 的用例已随修复搬回 live），不参与构建，见 [tests/pending/README.md](tests/pending/README.md)。每修完一个
+**#3、#4、#6 的用例现在放在 `tests/pending/`**（`api_test.c` 快照 + `dump_test.c` 快照里的 #3
+值断言；#2、#5、#7 的用例已随修复搬回 live），不参与构建，见 [tests/pending/README.md](tests/pending/README.md)。每修完一个
 就按 B9 把对应用例搬回 live，不要直接覆盖。
 
 ## 提交计划
@@ -100,8 +100,9 @@
 
 ### 顺序
 
-1. `fix: ...` × 6（#3～#6、A2、A3），顺序见上（`#5 → A2 → #6 → #4 → #3 → A3`），
-   每笔只修一个问题。**#2** 已并入 baseline 提交、**#7** 已提交，用例都已搬回 live。
+1. `fix: ...` × 5（#3、#4、#6、A2、A3），顺序见上（`A2 → #6 → #4 → #3 → A3`），
+   每笔只修一个问题。**#2** 已并入 baseline 提交、**#7** 已提交、**#5** 已提交，
+   用例都已搬回 live。
 2. 白盒清理（B8、B9 的剩余部分），单独一个 `tests:` 提交。
 3. 单独一个 `style: apply .clang-format`
    （`amoeba.h`、`lua_amoeba.c`、两个 benchmark；约 1800 行机械改动）。它必须是**唯一一次
@@ -125,18 +126,24 @@
 
 ### A2. `am_load()` 的符号索引仍然没有上界
 
-- 现状：arena 大小和符号索引**都**没校验（arena 那条是 #5）。row 里的 `value >> 2`
+- 现状：arena 那条已由 #5 收掉（已提交）；符号索引仍未校验。row 里的 `value >> 2`
   索引不校验上界，伪造的行会指向不存在的变量；实测：一条行键是未声明的 external id 的流，
   `am_load()` 返回 `AM_OK`，之后任意 `am_add()` 在 `am_markdirty()` 的 `assert(ve != NULL)`
   处 abort（release 下是 NULL 解引用）。
-- 做法：`am_readrow`/`am_readmarker` 检查 `(value >> 2) < total`；与 #5 一起定「合法流」。
+- 做法：`am_readrow`/`am_readmarker`/`am_readrows` 的 row key 检查 `(value >> 2) < total`；
+  **不止这些**：`vars.count > total` 会让 id 越过保留区间，重复 row key / term 会触发
+  `am_settable` 的 assert（release 下损坏表）。范围与开放问题见
+  [notes/plan-a2.md](notes/plan-a2.md)（先拍板再动手）。
 - 验收：伪造 id 超界的 stream 返回 `AM_FAILED`。
 
 ### A3. dump/load 加 magic + 版本号
 
 - 现状：没有任何版本信息，换个版本读写就是静默错误。
-- 做法：头部加 4 字节 magic + 1 字节版本；只在版本匹配时接受。
-- 验收：旧格式/错误 magic 明确 `AM_FAILED`；`load_rejects_short_arena` 改成用带 magic 的流。
+- 做法：**不要**在流前面加裸 magic（会破坏 msgpack；实测 `msgpack.unpackb` 报
+  `ExtraData`）。用顶层数组的 meta 元素：`[["amoeba", 1], total, vars, constraints, rows,
+  objective]`；仍是合法 msgpack，旧 reader 因长度不是 5 拒绝，新 reader 先校验 meta。
+- 验收：旧格式/错误 magic 明确 `AM_FAILED`；`load_rejects_short_arena` 的定位器跟着挪
+  （见 notes/dump-format.md §8）。
 
 ### A4. 工作区清理（需要你确认后再删）
 

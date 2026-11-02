@@ -1,109 +1,13 @@
-/* tests/api_test.c -- API contract regressions
+/* tests/pending/api_test.c -- 排期快照（不参与构建）
  *
- * Each test here pins down a behaviour that the public API documents (or
- * clearly implies) but that the implementation got wrong at some point.  They
- * are deliberately small: a bug that needs 100 lines of setup is usually a
- * missing unit test, not a missing feature.
+ * 这里只剩 TODO #6 的两条用例；#5 的 arena 用例已随修复搬回 live
+ * （tests/api_test.c 的 load_accepts_correct_arena / load_rejects_short_arena，
+ * 改成真 dump + 只改 arena 字段）。#2、#7 更早已经搬回。
+ *
+ * 这个文件不在 tests/justfile 的 SUITES 里，也不要直接覆盖 live 测试。
  */
 
 #include "amoeba_test.h"
-
-TEST(setstrength_added_reoptimizes) {
-    am_Solver     *S = am_test_new_solver();
-    am_Num         x = 0;
-    am_Id          vx = am_newvariable(S, &x);
-    am_Constraint *soft;
-
-    soft = am_newconstraint(S, AM_WEAK);
-    am_addterm(soft, vx, 1.f);
-    am_setrelation(soft, AM_EQUAL);
-    am_addconstant(soft, 10.f);
-    asserteq(am_add(soft), AM_OK);
-    am_updatevars(S);
-    assertnear(x, 10, 1e-4);
-
-    asserteq(am_setstrength(soft, AM_STRONG), AM_OK);
-    am_updatevars(S);
-    assertnear(x, 10, 1e-4); /* still the only constraint */
-
-    am_delsolver(S);
-}
-
-/* ---------------------------------------------------------------------- */
-/* am_load() must bound the arena it reads rows into.
- *
- * The stream declares the number of arena slots it needs.  A stream that
- * understates it made amH_alloc() walk past the buffer it had just allocated
- * (heap-buffer-overflow under ASan).  Both streams below are byte-identical
- * except for that number, so "reject the short one" cannot be achieved by
- * rejecting malformed input in general. */
-
-#define ROWS_AT(arena_slots)                                                 \
-    0x93, arena_slots, 0x01, 0x95, 0xCA, 0x00, 0x00, 0x00, 0x00, 0x05, 0xCA, \
-            0x3F, 0x80, 0x00, 0x00, 0x09, 0xCA, 0x3F, 0x80, 0x00, 0x00,
-
-/* [5, total, vars, constraints, rows, objective] -- one variable, no
- * constraints, one row with two terms, empty objective. */
-static const unsigned char stream_short_arena[] = {
-        0x95, 0x04, 0x91, 0xA1, 'x',  0x90, ROWS_AT(0x01) 0x91,
-        0xCA, 0x00, 0x00, 0x00, 0x00,
-};
-
-static const unsigned char stream_ok_arena[] = {
-        0x95, 0x04, 0x91, 0xA1, 'x',  0x90, ROWS_AT(0x08) 0x91,
-        0xCA, 0x00, 0x00, 0x00, 0x00,
-};
-
-typedef struct stream_loader {
-    am_Loader   base;
-    const char *p;
-    size_t      len;
-} stream_loader;
-
-static am_Num  stream_value;
-static am_Num *stream_load_var(am_Loader *L, const char *name, unsigned idx,
-                               am_Id var) {
-    (void)L, (void)name, (void)idx, (void)var;
-    stream_value = 0;
-    return &stream_value;
-}
-
-static const char *stream_read(am_Loader *L, size_t *plen) {
-    stream_loader *sl = (stream_loader *)L;
-    const char    *p = sl->p;
-    *plen = sl->len;
-    sl->p = NULL, sl->len = 0;
-    return p;
-}
-
-static void stream_init(stream_loader *sl, const unsigned char *bytes,
-                        size_t len) {
-    memset(sl, 0, sizeof(*sl));
-    sl->base.load_var = stream_load_var;
-    sl->base.reader = stream_read;
-    sl->p = (const char *)bytes;
-    sl->len = len;
-}
-
-TEST(load_accepts_correct_arena) {
-    am_Solver    *S = am_test_new_solver();
-    stream_loader sl;
-
-    stream_init(&sl, stream_ok_arena, sizeof stream_ok_arena);
-    asserteq(am_load(S, &sl.base), AM_OK);
-    asserteq(S->rows.count, 1);
-    asserteq(S->vars.count, 1);
-    am_delsolver(S);
-}
-
-TEST(load_rejects_short_arena) {
-    am_Solver    *S = am_test_new_solver();
-    stream_loader sl;
-
-    stream_init(&sl, stream_short_arena, sizeof stream_short_arena);
-    asserteq(am_load(S, &sl.base), AM_FAILED);
-    am_delsolver(S);
-}
 
 /* am_addterm() and am_mergeconstraint() must keep the variable reference
  * count in step with the terms that actually end up in the expression: the
@@ -130,14 +34,6 @@ TEST(addterm_refcount_balances) {
 
     am_delconstraint(c);
     am_delsolver(S);
-}
-
-/* The symbol packs a 30-bit id and a 2-bit type into one unsigned; the whole
- * implementation and the dump format assume that.  (The old test.c only
- * printed these sizes; assert the one that is actually a contract.) */
-TEST(symbol_fits_one_unsigned) {
-    asserteq(sizeof(am_Symbol), sizeof(unsigned));
-    assertok(am_null().id == 0 && am_null().type == 0);
 }
 
 /* am_mergeconstraint() uses the same bookkeeping as am_addterm(): merging a
