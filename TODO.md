@@ -1,167 +1,114 @@
-# TODO
+# TODO — amoeba 待做清单
 
-> 基于 2026-11-02 的工作。优先级：**P0** 影响正确性/可信度；**P1** 工程化与健壮性；
-> **P2** 能力增强；**D** 是「可视化约束排版 Demo」的项目提案。
+> 本文件只放**未做**的事。已提交 / 已否决 / 已决定不做见 [notes/changes.md](notes/changes.md)；
+> 条目 ID 共用命名空间，已关闭的 ID 不再分配新含义。
 >
-> 每条都写了「现状 → 做法 → 验收」。细节见 [notes/](notes/)。
+> 当前状态以 `git status` / `git log` 为准；本文件不记录状态，也不规定顺序。优先级是价值判断，
+> 依赖是技术事实；先做哪个由用户当次决定。
+>
+> 基线：2026-11-03，HEAD `cdf6143`（仅用于定位，不是承诺）。行号会漂移，按函数名定位；新写的
+> 内容不引用行号。
 
----
+## 0. 优先级总览
 
-## 复核结论（2026-11-02，HEAD `2337a3a`）
+- **P0（正确性）**：#6。
+- **P1（恢复与健壮性）**：#3、#4、#8、A3、B1–B10。
+- **P2（能力与质量）**：C1–C6。
+- **P3（清理）**：A4。
+- **提案（未批准）**：D 节的可视化 Demo。
 
-用一个 `AM_IMPLEMENTATION` 的最小程序 + ASan/UBSan 逐条复现（实验都在仓库副本里做），结论：
+## 1. 核心待做表（正确性与 load）
 
-1. **复核时 #2～#7 在 HEAD 全部复现**，没有一个是「已经悄悄修好」的（#2、#7 已修复并提交，见下面的修复队列）。
-2. **A1 已不成立**：HEAD 上 `am_add()` 失败会走 `am_remove_errors()` 清 marker
-   （`amoeba.h:985-986`），重试返回 `AM_UNSATISFIED` 而不是 `AM_FAILED`。这一条可以从
-   P0 队列里删掉（详见 §A1）。
-3. 六个问题不是六件独立的事，按根因分三组 + 一个格式问题，彼此有依赖。
-
-### 根因分组
-
-| 组 | 成员 | 共同根因 |
-|---|---|---|
-| S：状态机 | #2、#7 | `am_setstrength()` 的 REQUIRED 分支被写成一条逗号表达式：既不分「在不在 solver 里」，也不管 re-add 失败 |
-| R：记账 | #6（原语）、#4（load 绕过记账） | refcount 按「调用次数」增加，而不是按「表达式里真正活着的项」 |
-| L：恢复与校验 | #3、#4、#5、A2 | `am_load()` 只恢复 tableau，不恢复周边不变量（绑定、refcount），也不校验输入 |
-| 格式 | A3 | 流里没有 magic / 版本号 |
-
-### 依赖与冲突
-
-```
-#2 ──> #7        同一段两行；#2 引入的 added 标志正是 #7 回滚要用的判据
-                 （实测：#2 修好后 #7 的用例仍然是红的）
-#6 ──> #4        若 #4 想复用「加项」helper；#4 也可以自己在 am_readconstraints 补计数而解耦
-#4 ──> #3        仅当 #3 借脏链刷新；用全表刷新则不依赖
-#5、A2 ──> A3    A3 改流头，会让 #5/A2 手搓的字节流全部重写
-#5 <──> A2      两者在同一段校验里，且必须对「什么算合法流」给出一致答案
-```
-
-两个必须留意的点（都已核对）：
-
-- **#5 与 A2 对「合法流」的定义冲突**：`load_accepts_correct_arena` 那条「正确」流里，行项
-  引用了 `offset+1/+2`，但整个流只声明 1 个符号（`total=4` 只是留位）。按 A2 设计的
-  `(value>>2) < total`，这条流会通过；按「符号必须真实存在」检查，则 #5 的用例反而变红。
-  建议做 #5 时把用例改成「`am_dump()` 生成真流 + 只改 arena 字段」。
-- **L 组五项挤在 `am_load` 的约 120 行**（`amoeba.h:1549-1665`），一次只能改一个，
-  后一个必然在前一个的 diff 上 rebase。
-
-### 改动量 vs 严重度（不同向，排期要看两列）
-
-| # | 改动 | 严重度 | 依赖 | 现成用例 | 风险面 |
-|---|---|---|---|---|---|
-| 2 | 1 函数 2 行 | 中：静默改变 solver 成员 | 无 | live 1 条 | 极低：纯前置条件 |
-| 7 | 同一段 +5 行 | 高：约束被丢掉 | #2 的 `added` | live 1 条 | 中：失败路径的返回值策略要定 |
-| 5 | `amH_init` + loader 预算 | **最高**：堆越界（ASan 实测） | 与 A2 同区 | live 2 条（真 dump） | 中高：动的是 load 的 arena 路径 |
-| A2 | `am_readrow`/`am_readmarker`/row key + 数量 | 高：畸形文件 → abort / NULL 解引用 | 与 #5 同区 | 需新写（真 dump patch） | 中 |
-| 6 | `am_addterm`/`am_mergeconstraint` | 中：`am_Var` 泄漏 | 无 | pending 2 条 | **高**：refcount 与脏链共用 |
-| 3 | `am_load` 尾部刷新 | 中：绑定停留在旧值 | 独立 | pending 值断言 | 中：非基本变量取 0 的语义 |
-| 4 | `am_readconstraints` | 高：会回收仍被引用的变量 | 建议 #6 先 | 需新建 | 中 |
-| A3 | 流头 | 中：静默版本错读 | 放最后 | — | 中 |
-
-**建议顺序**：`#2`、`#7`、`#5`（已完成）`→ A2 → #6 → #4 → #3 → A3`。
-理由：#2/#7 共用一段代码；#5/A2 都是「畸形输入」，同一个读路径一起收口；#6 先落地 #4 才能
-干净复用；A3 改格式头必须最后。若以安全优先，把 #5 提到最前也成立，只是不再是「最小步长」。
-
-## 修复队列：还剩 3 个（#3、#4、#6），另加 A2、A3
-
-顺序 = 上面的建议顺序，**一次只改一个**。每个提交必须自带用例并且 `just check` 全绿；
-同一处被审后返工用 `git commit --amend`，不追加「修修补补」提交。
-完成一项就把它从这里移到 [notes/changes.md](notes/changes.md)。
-
-| # | 问题 | 改动量 | 状态 | 用例 |
+| ID | P | 问题 | 依赖 | 用例 |
 |---|---|---|---|---|
-| 2 | `am_setstrength()` 对**未加入**的约束会 `am_remove`（空操作）+ `am_add`，把约束偷偷加进 solver | 3 行 | **已完成**（并入 baseline 提交）：只改 strength，不碰 solver（`amoeba.h:1041`） | `setstrength_unadded_does_not_register`（已搬回 live） |
-| 3 | `am_load()` 之后绑定值不刷新（脏链表为空，`am_updatevars()` 空转） | ~6 行 | 待做 | `dump_test::dumpload` 的值断言 |
-| 4 | `am_load()` 不恢复每项引用计数：load 后删一条约束会把别的约束还在用的变量回收 | ~8 行 | 待做（建议先做 #6） | 新建 `load_then_remove_keeps_vars` |
-| 5 | `am_load()` 信任流里声明的 arena 槽数，`amH_alloc()` 越界写（ASan 复现堆溢出） | ~55 行（含移动） | **已完成**（提交 `fix: bound the dump arena in the loader`）：预算归 loader（`am_LoadCtx.arena_p`/`arena_left`，字节），`amH_alloc`/`amH_resize`/`am_growtable` 退回纯 heap，`amH_init` 在调用方内存上建表、`am_takemem` 从 arena 预算取字节；末尾 assert 换成 `amC(arena_left == 0)`（`amoeba.h:411`、`1558`、`1648`） | `load_rejects_short_arena` + `load_accepts_correct_arena`（已改成真 dump + 只改 arena 字段，已搬回 live） |
-| 6 | `am_addterm()`/`am_mergeconstraint()` 无条件 `refcount += 1`，合并/抵消时计数漂移（`am_Var` 泄漏） | ~10 行 | 待做 | `addterm_refcount_balances` + `mergeconstraint_refcount_balances` |
-| 7 | `am_setstrength()` 收紧到 REQUIRED 失败时，约束既没恢复强度也不在 solver 里 | ~8 行 | **已完成**：失败时回滚到旧强度并重新加入（`amoeba.h:1041`） | `setstrength_tighten_failure_restores`（已搬回 live） |
-| A2 | `am_load()` 不校验符号索引/数量（见 §A2、notes/plan-a2.md） | ~10 行（范围待定） | 待做 | 需新写（真 dump + patch） |
-| A3 | dump/load 没有 magic + 版本号（见 §A3） | ~8 行 | 待做（最后） | 改 `load_rejects_short_arena` 用带 magic 的流 |
+| #6 | P0 | `am_addterm()` / `am_mergeconstraint()` 无条件 `refcount += 1`，合并/抵消时计数漂移（`am_Var` 泄漏） | 无 | `addterm_refcount_balances` + `mergeconstraint_refcount_balances`（在 `tests/pending/`） |
+| #8 | P1 | `am_dump()` 在 `S->constraints.count == 0` 时返回 `AM_OK` 但写 0 字节（`ctx.ret` 被 `memset` 清零，`ctx.cons == NULL` 跳过 `am_dumpall()`） | 无 | 新建 `dump_empty` / `load_empty` |
+| #4 | P1 | `am_load()` 不恢复每项引用计数：load 后删一条约束会把别的约束还在用的变量回收 | 复用加项 helper 时需要 #6 | 新建 `load_then_remove_keeps_vars` |
+| #3 | P1 | `am_load()` 之后绑定值不刷新（`S->dirty_vars` 为空，`am_updatevars()` 空转） | 独立 | `dump_test::dumpload` 的值断言（在 `tests/pending/`） |
+| A3 | P1 | dump/load 没有 magic + 版本号 | 无 | 需新建（真 dump） |
 
-**#3、#4、#6 的用例现在放在 `tests/pending/`**（`api_test.c` 快照 + `dump_test.c` 快照里的 #3
-值断言；#2、#5、#7 的用例已随修复搬回 live），不参与构建，见 [tests/pending/README.md](tests/pending/README.md)。每修完一个
-就按 B9 把对应用例搬回 live，不要直接覆盖。
+`#3` / `#4` / `#6` 的用例当前在 `tests/pending/`（`api_test.c` 快照 + `dump_test.c` 快照里的
+#3 值断言），不参与构建，见 [tests/pending/README.md](tests/pending/README.md)。每修完一个就按
+B9 把对应用例搬回 live，不要直接覆盖。
 
-## 提交计划
+## 2. 背景与依赖（事实，不是顺序）
 
-### 粒度（2026-11-02 定）
+- **根因分组**：`#6` 是记账原语（refcount 按调用次数而不是按活着的项）；`#4` 是 load 绕过记账；
+  `#3` 是 load 尾部不刷新；`A3` 是流没有版本头。
+- **依赖**：
+  - `#6 → #4`：`#4` 想复用「加项」helper 的话，先有 `#6` 才干净；也可以自己在
+    `am_readconstraints()` 补计数而解耦。
+  - `#4 → #3`：仅当 `#3` 借脏链刷新时；用全表刷新则不依赖。
+  - `A3`：无前置；继续用「真 dump + 只改目标字段」的策略。
+- **A3 的用例策略**：继续用 `am_dump()` 生成真流、只改目标字段；手搓流会和真实 writer 不一致。
+- **`#4` / `#3` 都叠在当前 `am_load()` 读路径上**：修的时候直接在当前实现上改。
 
-所有 bug 修在**唯一的 format 提交之前**；修复按「一个 fix 一个提交」拆。
-
-- **在所有当前问题修完之前，不要 format**：不跑 `just format`、不手工重排格式，新改动按
-  现有风格写。提前格式化会让「唯一一次机械重排」这个前提失效。
-- 每个 `fix:` 提交**只修一个问题**（用户指定的那个），不要把几个 bug 连着修——那样用户
-  没法逐个审。提交里可以带为这一个问题服务的东西（用例、文档、记账），不是「除了代码
-  什么都不许有」。
-- 不推荐把这一串 fix squash 成一笔「pre-format 大提交」：`changes.md` 能补文档，补不回
-  `git bisect` 和单点 revert 的能力。（#2 是唯一例外：当时按 amend 并进了 baseline 提交。）
-
-### 顺序
-
-1. `fix: ...` × 5（#3、#4、#6、A2、A3），顺序见上（`A2 → #6 → #4 → #3 → A3`），
-   每笔只修一个问题。**#2** 已并入 baseline 提交、**#7** 已提交、**#5** 已提交，
-   用例都已搬回 live。
-2. 白盒清理（B8、B9 的剩余部分），单独一个 `tests:` 提交。
-3. 单独一个 `style: apply .clang-format`
-   （`amoeba.h`、`lua_amoeba.c`、两个 benchmark；约 1800 行机械改动）。它必须是**唯一一次
-   机械重排**：`git diff -w` 为空，且之后不再有语义改动混进来。
-4. 格式提交落地后：把它的 sha 写进 `.git-blame-ignore-revs`，再把 CI 的 `format-check`
-   从 advisory 改成 blocking（见下面 B1）。
-
----
-
-## A. P0：正确性
-
-### A1. ~~失败的约束仍然不能直接重试~~（已满足，不是待办；2026-11-02 复核）
-
-- 结论：HEAD 上 `am_add()` 失败会走 `am_remove_errors()` 清掉 `marker`/`other`
-  （`amoeba.h:985-986`），再调 `am_add()` 返回 `AM_UNSATISFIED` 而不是 `AM_FAILED`，
-  此时 `am_hasconstraint()` 为 0。本条的「现状」和 `notes/api-contract.md §6` 都是旧描述。
-- 别和 #2 混淆：只有被 `am_setstrength()` 偷偷加入之后，`am_add()` 才返回 `AM_FAILED`
-  （约束已在 solver 里）。那是 #2，不是本条。
-- 可选（P1，防回归，不是修 bug）：补一条 `failed_add_can_be_retried`，钉住
-  「失败 → 重试 → 仍 `AM_UNSATISFIED`」。
-
-### A2. `am_load()` 的符号索引仍然没有上界
-
-- 现状：arena 那条已由 #5 收掉（已提交）；符号索引仍未校验。row 里的 `value >> 2`
-  索引不校验上界，伪造的行会指向不存在的变量；实测：一条行键是未声明的 external id 的流，
-  `am_load()` 返回 `AM_OK`，之后任意 `am_add()` 在 `am_markdirty()` 的 `assert(ve != NULL)`
-  处 abort（release 下是 NULL 解引用）。
-- 做法：`am_readrow`/`am_readmarker`/`am_readrows` 的 row key 检查 `(value >> 2) < total`；
-  **不止这些**：`vars.count > total` 会让 id 越过保留区间，重复 row key / term 会触发
-  `am_settable` 的 assert（release 下损坏表）。范围与开放问题见
-  [notes/plan-a2.md](notes/plan-a2.md)（先拍板再动手）。
-- 验收：伪造 id 超界的 stream 返回 `AM_FAILED`。
+## 3. 重点条目（A3 / A4）
 
 ### A3. dump/load 加 magic + 版本号
 
-- 现状：没有任何版本信息，换个版本读写就是静默错误。
-- 做法：**不要**在流前面加裸 magic（会破坏 msgpack；实测 `msgpack.unpackb` 报
-  `ExtraData`）。用顶层数组的 meta 元素：`[["amoeba", 1], total, vars, constraints, rows,
-  objective]`；仍是合法 msgpack，旧 reader 因长度不是 5 拒绝，新 reader 先校验 meta。
-- 验收：旧格式/错误 magic 明确 `AM_FAILED`；`load_rejects_short_arena` 的定位器跟着挪
-  （见 notes/dump-format.md §8）。
+- 现状：顶层是 5 元数组，没有版本信息；换布局会静默误读。
+- 候选设计（未落地；msgpack 合法性已验证）：顶层 6 元数组
+  `[["amoeba", 1], total, vars, constraints, rows, objective]`。分析见
+  [notes/dump-format.md](notes/dump-format.md) §8；上一版里实现过，后随旧提案一起 reset。
+- 前置：无；继续用真 dump + 只改目标字段的用例策略。
 
-### A4. 工作区清理（需要你确认后再删）
+### A4. 工作区清理（需要用户确认后再删）
 
-- [x] `.gitignore` 补 `AGENTS.md`、`notes/`、`tests/build/`、`tests/*.gen.inc`、产物
-- [ ] 根目录的 `amoeba.old.h` / `amoeba.v3.h` / `amoeba.v4.h` / `amoeba.work*.h` /
-      `amoeba.split.h` / `amoeba.h.new`：留档还是删除，你定。
+- [ ] `archive/` 里的旧头文件 / 草稿（`amoeba.*.h`、`demo.c`、`example.c`、`test_*.c`）：
+      留档还是删除，你定。
 - [ ] `.travis.yml` 删除（内容已被新 CI 覆盖）。
 
----
+## 4. 正确性细节（#6 / #8 / #4 / #3）
 
-## B. P1：健壮性与工程化
+### #6. `refcount` 按调用次数增加
+
+- 现状：`am_addterm()` / `am_mergeconstraint()` 无条件 `refcount += 1`；合并或系数抵消时，
+  表达式里已经没有该项，计数却还在 → `am_Var` 泄漏。
+- 做法：只在「表达式里真的新增了一项」时 +1，消失时 -1；入口是 `am_exprterm()`。
+- 验收：`addterm_refcount_balances`、`mergeconstraint_refcount_balances` 从 pending 搬回
+  live 并变绿。
+- 风险：`refcount` 同时承担「引用计数」和「脏链标记」两种语义（见
+  [notes/algorithm.md](notes/algorithm.md) §7），改动要成对。
+
+### #8. `am_dump()` 空约束时静默成功
+
+- 现状：`am_dump()` 先把 `ctx.ret` 设成 `AM_FAILED`，随后 `memset(&ctx, 0, ...)` 又把 ret
+  清成 0。`S->constraints.count == 0` 时 `cons_alloc == 0`，`ctx.cons` 为 `NULL`，于是
+  `if (ctx.syms && ctx.cons && ...)` 整段跳过，函数返回 `ctx.ret == 0`，一个字节也没写。
+  自定义 allocator 对 `ctx.syms` 返回 NULL 时也一样。
+- 做法：把 `ctx.ret` 的初始化放到 `memset` 之后；零长度的段允许指针为 NULL（用长度判断），
+  并避开 `qsort(NULL, 0, ...)` / `ctx.syms + vc` 这类空指针算术。
+- 验收：新建 `dump_empty`——一个变量、零约束的 solver 应 dump 出合法 5 元流，且能
+  `am_load()` 回来；同时覆盖真正空的 solver（如果支持）。
+- 备注：HEAD 就有；`tests/api_test.c` 现在的 dump 都至少带一条约束。
+
+### #4. `am_load()` 不恢复 refcount
+
+- 现状：`am_readvars()` 给每个变量 `refcount = 1`；`am_readconstraints()` 把项直接塞进
+  `expression` 表，没走 `am_exprterm()`。load 后删一条约束，会把别的约束还在用的变量当成
+  「没人引用」回收。
+- 做法：读完每条约束后，按恢复出来的表达式补 refcount（或让读路径走同一个加项 helper）。
+- 验收：`load_then_remove_keeps_vars`；load → 删一条 → 另一条约束仍能解。
+- 依赖：若复用「加项」helper，需要 #6 先落地；也可以自己补计数而解耦。
+
+### #3. `am_load()` 后绑定值不刷新
+
+- 现状：`am_load()` 只把 `load_var()` 返回的地址装进 `am_Var`；`S->dirty_vars` 是空的，
+  `am_updatevars()` 空转。`*pvalue` 仍是调用方原来的值。
+- 做法：load 结束时按 tableau 刷新所有变量的绑定值（全表刷新，或把变量挂脏链）。
+- 验收：`dump_test::dumpload` 里 `am_updatevars()` 后的值断言从 pending 启回 live。
+- 语义要定：非基本变量（只出现在行里、没有自己的行）取什么值。
+
+## 5. 健壮性与工程化（B1–B10）
 
 ### B1. CI 的格式门禁
 
-- 现状：`just format-check` 在 CI 里是 `continue-on-error: true`，因为工作流的
-  clang-format（发行版）和本地 23.1.4 可能不一致（配置用了 19+ 的 key）。
+- 现状：`just format-check` 在 CI 里是 `continue-on-error: true`，因为工作流的 clang-format
+  （发行版）和本地 23.1.4 可能不一致（配置用了 19+ 的 key）。
 - 做法：锁定版本（CI 装固定版本，或改用 `pip install clang-format==<ver>`），然后改成 blocking。
 - 验收：故意打乱一个空格，CI 变红。
+- 前置：唯一的 `style:` 提交落地。
 
 ### B2. Windows / MSVC 的测试路径
 
@@ -171,27 +118,29 @@
 
 ### B3. dump 的双精度保真
 
-- 现状：`am_writefloat()` 永远写 float32，`AM_USE_DOUBLE` 下 dump/load 有精度损失
-  （`check-double` 能过是因为断言用相对误差）。
+- 现状：`am_writefloat()` 永远写 float32，`AM_USE_DOUBLE` 下 dump/load 有精度损失。
 - 做法：编码上区分 f32/f64（新增 `0xCB`），或者 `am_Num` 宽度写进版本头。
 - 验收：double 模式下 dump→load 的变量值与原始值逐位相等。
 
 ### B4. Lua 绑定
 
 - 现状：`just test-lua` 只跑 `test.lua` 这条 smoke（无断言），也没有 rockspec。
-- 做法：把 `test.lua` 里的检查改成断言（或引入 `luaunit.lua` 那种自带断言），加 rockspec。
+- 做法：把 `test.lua` 里的检查改成断言（或引入 `luaunit.lua`），加 rockspec。
 - 验收：绑定层回归能被 CI 抓到。
 
 ### B5. `am_flexbox.h` 决策
 
-- 现状：未跟踪的草稿，`struct am_Node {}` 空，约 25 个声明无实现，没有被任何构建引用。
+- 现状：`archive/am_flexbox.h` 是未实现的草稿，`struct am_Node {}` 空，约 25 个声明无实现，
+  没有被任何构建引用。
 - 做法：删掉，或按 D 节的需求重新设计（不要从这个空壳继续）。
 - 建议：先删。
 
 ### B6. `assert` 承担安全职责的地方
 
 - 现状：`am_mapid()`（dump 侧）只有 `assert(id != NULL)`，release 构建里是 NULL 解引用。
-- 做法：改成返回错误，让 `am_dump()` 返回 `AM_FAILED`；顺手扫一遍「`assert` 里做参数校验」的位置。
+- 做法：改成返回错误，让 `am_dump()` 返回 `AM_FAILED`；顺手扫一遍「`assert` 里做参数校验」
+  的位置。
+- 验收：NULL 名字的 dump 不崩溃，返回错误码。
 
 ### B7. `tests/*.gen.inc` 的生成依赖
 
@@ -203,7 +152,7 @@
 
 - 现状：`tests/solver_test.c` 的调试打印机 `am_dumpsolver()` 直调 `am_itertable()` /
   `am_nextentry()` / `am_approx()`；`tests/api_test.c` 的 `symbol_fits_one_unsigned` 直调
-  `am_null()`。按 AGENTS.md §8，这些都属于「测试里调用 static 函数」，锁不住任何契约。
+  `am_null()`。按 AGENTS.md §9，这些都属于「测试里调用 static 函数」，锁不住任何契约。
 - 做法：打印机改成直接读 `row->terms.keys/vals`、`S->rows.keys/vals`（读结构体是允许的）；
   `am_null()` 换成 `am_Symbol s = {0, 0};`。
 - 验收：`grep -rn 'am_itertable\|am_nextentry\|am_approx\|am_null' tests/*.c`
@@ -212,38 +161,28 @@
 ### B9. `tests/pending/` 快照的回收
 
 - 现状：`tests/pending/{dump_test,api_test}.c` 是从 live 摘出来的快照，不参与构建：
-  `dump_test.c` 里有两块被移出的白盒 coverage 和 #3 的值断言；`api_test.c` 里有
-  #5/#6 的回归用例（#2、#7 已搬回 live）。
+  `dump_test.c` 里有两块被移出的白盒 coverage 和 #3 的值断言；`api_test.c` 里有 #6 的两条
+  回归用例（#2、#5、#7 的用例都在 live）。
 - 做法：每修完一个 #N，只把**那一个**用例按当时的实现搬回 live；coverage 块改写成
   `am_dump()` 的 writer 回调 + `am_load()` 的 arena 之后再考虑回收。
 - 验收：pending 目录最终清空（或只剩明确标注的历史档）；每次搬回都跑 `just check`。
 
 ### B10. 覆盖率口径：`-DNDEBUG`
 
-- 现状一：`just cov`（`tests/justfile`）的编译行是 `{{CC}} {{BASE}} -g -O0 --coverage`，
-  **没有** `-DNDEBUG`，所以 assert 的行/分支会进统计。例如 `am_setstrength()` 里只在
-  「回滚失败」时才触发的那句 `assert(ra == AM_OK)`，永远会被报成「分支未覆盖」——但按仓库
-  口径，**单测覆盖率应在 `-DNDEBUG` 下测**，assert 本来就不该被要求覆盖（当前实测
-  `DA:1050,3` / `BRDA:1050,0,1,0`，是带 assert 编译出来的数据）。
+- 现状一：`just cov` 的编译行是 `{{CC}} {{BASE}} -g -O0 --coverage`，**没有** `-DNDEBUG`，
+  所以 assert 的行/分支会进统计。
 - 现状二：直接加 `-DNDEBUG` 现在**编不过**：`tests/solver_test.c` 有 8 处
-  `-Werror,-Wunused-but-set-variable`（变量只被 `assert(...)` 用，例如 `:59 result`、
-  `:87 ret`、`:322 nResult`、`:686 ret`）。`dump_test.c` / `api_test.c` 能编过。
-- 现状三：tests 里共 **91 个裸 `assert(`**（`solver_test.c` 80、`dump_test.c` 11），NDEBUG
-  下会静默消失：覆盖率照样收集，但那次运行不再校验结果。harness 自己的
-  `asserteq` / `assertok` / `assertstreq` 不依赖 `assert`，NDEBUG 下仍然生效。
+  `-Werror,-Wunused-but-set-variable`（变量只被 `assert(...)` 用）。
+- 现状三：tests 里共 91 个裸 `assert(`（`solver_test.c` 80、`dump_test.c` 11），NDEBUG 下会
+  静默消失。harness 自己的 `asserteq` / `assertok` / `assertstreq` 不依赖 `assert`。
 - 做法：
   1. 把 tests 里承载检查的裸 assert 换成 harness 宏（顺带消掉那 8 个 unused 变量）；
   2. 给 `cov` 的编译行加 `-DNDEBUG`；
-  3. 把「覆盖率用 NDEBUG 口径、assert 不要求覆盖」写进 [notes/testing.md](notes/testing.md)。
+  3. 把「覆盖率用 NDEBUG 口径、assert 不要求覆盖」写进 notes/testing.md。
 - 验收：`just cov` 在 `-DNDEBUG` 下编过并收集；`tests/build/amoeba.info` 里不再出现 assert
-  行的统计；覆盖率运行仍能靠 harness 宏发现失败（故意改坏一个断言，cov 运行要打印 FAILED）。
-- 备注：`just uncovered`（`tests/justfile:236`）现在靠「跳过含 assert 的行」兜底；做完这条
-  之后这个启发式可以保留，但不再必需。
-- 规模：`tests:` 类改动，涉及 `tests/justfile` + 两个 suite 的断言写法；建议单独一笔。
+  行的统计；故意改坏一个断言，cov 运行要打印 FAILED。
 
----
-
-## C. P2：能力与质量
+## 6. 能力与质量（C1–C6）
 
 ### C1. 内省 API（对 GUI 极其重要）
 
@@ -286,9 +225,9 @@
 - [ ] README 补一节「`AM_USE_DOUBLE` 与精度」；
 - [ ] 补一页「从 kiwi/enaml 迁移」的对照表（用户最容易问的）。
 
----
+## 7. 可视化约束排版 Demo（提案，未批准）
 
-## D. 可视化约束排版 Demo（大方向，待开工）
+> 这一节是**提案**，不是已批准的计划。开工前先按 AGENTS.md §1 让用户确认范围。
 
 ### D0. 目标
 
@@ -309,7 +248,8 @@
 - [ ] `View { id, name, 变量: left/top/width/height, (可选) parent, style }`
 - [ ] `Constraint { id, group, enabled, strength, relation, terms[], constant, 人类可读文本 }`
 - [ ] `Group { id, name, collapsed, visible }`
-- [ ] 序列化：JSON（人可读、可 diff、可手写）；`am_dump` 只当缓存，见 notes/dump-format.md §8
+- [ ] 序列化：JSON（人可读、可 diff、可手写）；`am_dump` 只当缓存，见
+      notes/dump-format.md §9
 
 **画布**
 
@@ -391,13 +331,12 @@ amoeba 的卖点，不必是 demo 的枷锁**——demo 放独立目录、独立
    强度用 `AM_STRONG`（拖动变量）或 `AM_MEDIUM`（普通 nudge），别用 `AM_REQUIRED`——
    `am_addedit` 会把 REQUIRED 夹到 STRONG，而且 REQUIRED 的 suggest 会让布局无法回弹。
 3. **松手之后怎么办？三种语义，选一种并写进文档：**
-   - (a) 松手即 `am_deledit()`，view 弹回约束决定的位置（最"约束派"，但手感像拉橡皮筋）；
-   - (b) 松手保留 suggest（位置被"手动覆盖"，直到重建 solver）——最像 Figma；
+   - (a) 松手即 `am_deledit()`，view 弹回约束决定的位置（最「约束派」，但手感像拉橡皮筋）；
+   - (b) 松手保留 suggest（位置被「手动覆盖」，直到重建 solver）——最像 Figma；
    - (c) 松手把偏移量写成一个 `AM_WEAK` 的 nudge 约束存进 doc（可持久化、可撤销）。
      **建议 (c)**：所见即所得 + 可保存 + 不破坏约束体系（弱约束让真正的强约束依然生效）。
 4. **求解失败怎么办？**
-   `am_add` 失败后约束处于「不能直接重试」的状态（notes/algorithm.md §3）。
-   策略：任何一次 doc 变更都在「临时 solver」上试算；失败则丢弃、回滚 doc、弹出原因。
+   任何一次 doc 变更都在「临时 solver」上试算；失败则丢弃、回滚 doc、弹出原因。
    禁止把「半失败」的 solver 留在界面后面。
 
 还有一个容易被忽略的点：**内建约束**。父容器的边、view 的 `right = left + width`、
@@ -421,10 +360,10 @@ M0-M1 建议先在 Lua 原型里验证（一天内就能看到拖动重算），
 | 风险 | 对策 |
 |---|---|
 | amoeba 无内省，UI 无法反查约束 | doc 层自己存一份（D3 决策 1） |
-| 求解失败后约束不可重试 | 编辑走「临时 solver 试算 + 回滚」（D3 决策 4） |
+| 求解失败后约束不可重试 | 编辑走「临时 solver 试算 + 回滚」（D3 决策 4）；失败后先 `am_remove()`/调整再重加 |
 | 拖动时抖动/震荡 | 强度分级：拖动变量 STRONG、nudge WEAK、真正布局约束 REQUIRED；必要时加「拖动期间锁定结构约束」 |
 | 坐标精度（像素 + float32） | 用**相对坐标/归一化坐标**存储，渲染时再乘缩放的画布尺寸；或直接开 `AM_USE_DOUBLE` |
-| `am_load` 读不可信文件不安全 | 文档用 JSON，二进制 dump 只作本地缓存 |
+| `am_load` 读不可信文件不安全 | loader 只保证 load 期结构校验、`am_load()` 本身不 crash；非 dump 数据 load 后的正确性/后续 crash 不保证，A3 也没有 magic/version。**不要** load 不可信文件；文档用 JSON，二进制 dump 只作本地缓存 |
 | 约束越多越慢 | 先全量重建（< 200 条约束时够快，需用 M1 实测确认），再考虑增量 |
 
 ### D6. 开工前需要你拍板的三件事
@@ -434,12 +373,7 @@ M0-M1 建议先在 Lua 原型里验证（一天内就能看到拖动重算），
 3. **交付形态**：先出 native 桌面 demo，还是一开始就 `emscripten` 出 web/wasm？
    （建议：native 优先，wasm 是 M4 的打包问题，不影响架构。）
 
----
+## 8. 相关
 
-## E. 明确不做 / 已决定
-
-- **不**把 `amoeba.h` 拆成多文件，**不**去掉 Clean C 约束（这是项目的身份）。
-- **不**为 demo 引入的依赖放进库本体（demo 独立目录、独立构建）。
-- **不**尝试让 `am_dump` 变成通用文档格式（它是 tableau 快照，见 notes/dump-format.md §8）。
-- **暂不**支持非线性约束（`max`/`min`、比例宽高在 Cassowary 里需要辅助变量或不等式近似）；
-  Demo 里用「等宽/等高/固定比例」这类可线性化的模板代替。
+- 已提交 / 已否决 / 已决定不做：见 [notes/changes.md](notes/changes.md)。
+- 当前状态：`git status` / `git log`；本文件不记录状态。

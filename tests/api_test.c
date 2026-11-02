@@ -106,13 +106,7 @@ TEST(setstrength_tighten_failure_restores) {
 }
 
 /* ---------------------------------------------------------------------- */
-/* am_load() must bound the arena it reads rows into.
- *
- * The stream declares how many arena slots the row tables need.  A stream
- * that understates it made amH_alloc() walk past the buffer it had just
- * allocated (heap-buffer-overflow under ASan).  Both tests below run on a
- * real am_dump() stream and only change that one number, so the short one
- * cannot be rejected by rejecting malformed input in general. */
+/* load: fresh solver, byte budget, malformed frames */
 
 typedef struct dump_buf {
     am_Dumper      base;
@@ -132,12 +126,14 @@ static int dump_buf_writer(am_Dumper *d, const void *buf, size_t len) {
     return db->len += len, AM_OK;
 }
 
-/* Walk a dump stream (notes/dump-format.md) up to the rows section and return
- * the offset of its arena slot count.  The tests only need to patch that
- * number, so this skips every other payload instead of decoding it. */
+/* byte cursor; locators return one field's offset */
 typedef struct dump_reader { const unsigned char *p; } dump_reader;
 
-static unsigned dump_readraw(dump_reader *r, int width);
+static unsigned dump_readraw(dump_reader *r, int width) {
+    unsigned n = 0;
+    while (width--) n = (n << 8) | (unsigned)*r->p++;
+    return n;
+}
 
 static unsigned dump_readu32(dump_reader *r) {
     int ty = *r->p++;
@@ -148,10 +144,12 @@ static unsigned dump_readu32(dump_reader *r) {
     return dump_readraw(r, 4);
 }
 
-static unsigned dump_readraw(dump_reader *r, int width) {
-    unsigned n = 0;
-    while (width--) n = (n << 8) | (unsigned)*r->p++;
-    return n;
+static size_t dump_u32len(const unsigned char *p) {
+    if (*p <= 0x7F) return 1;
+    if (*p == 0xCC) return 2;
+    if (*p == 0xCD) return 3;
+    assert(*p == 0xCE);
+    return 5;
 }
 
 static unsigned dump_readcount(dump_reader *r) {
@@ -177,35 +175,105 @@ static void dump_skipfloat(dump_reader *r) {
     r->p += 4;
 }
 
-static void dump_skiprow(dump_reader *r) {
-    unsigned i, count = dump_readcount(r);
+static void dump_skiprowbody(dump_reader *r, unsigned count) {
+    unsigned i;
     dump_skipfloat(r);
     for (i = 1; i < count; i += 2)
         dump_readu32(r), dump_skipfloat(r);
 }
 
+static void dump_skiprow(dump_reader *r) {
+    dump_skiprowbody(r, dump_readcount(r));
+}
+
+static void dump_skipheader(dump_reader *r) {
+    unsigned i, count;
+    assert(dump_readcount(r) == 5); /* [total, vars, constraints, rows, obj] */
+    dump_readu32(r);
+    count = dump_readcount(r);
+    for (i = 0; i < count; ++i) dump_skipstring(r);
+    count = dump_readcount(r);
+    for (i = 0; i < count; ++i) {
+        assert(dump_readcount(r) == 6);
+        dump_skipstring(r), dump_skipfloat(r);
+        dump_readu32(r), dump_readu32(r), dump_readu32(r);
+        dump_skiprow(r);
+    }
+}
+
+static size_t dump_total_offset(const unsigned char *buf, size_t *plen) {
+    dump_reader r;
+    r.p = buf;
+    assert(dump_readcount(&r) == 5);
+    *plen = dump_u32len(r.p);
+    return (size_t)(r.p - buf);
+}
+
 static size_t dump_arena_offset(const unsigned char *buf) {
     dump_reader r;
-    unsigned i, count;
+    unsigned count;
     r.p = buf;
-    assert(dump_readcount(&r) == 5); /* five top-level fields */
-    dump_readu32(&r);                /* total */
+    dump_skipheader(&r);
     count = dump_readcount(&r);
-    for (i = 0; i < count; ++i) dump_skipstring(&r);
-    count = dump_readcount(&r);
-    for (i = 0; i < count; ++i) {
-        assert(dump_readcount(&r) == 6);
-        dump_skipstring(&r), dump_skipfloat(&r);
-        dump_readu32(&r), dump_readu32(&r), dump_readu32(&r);
-        dump_skiprow(&r);
-    }
-    count = dump_readcount(&r); /* 1 + 2*rows (arena + sym/row pairs) */
     assert(count & 1);
     return (size_t)(r.p - buf);
 }
 
-/* top level: [total, vars, constraints, rows, objective] (5 elements).
- * One variable, one soft constraint -> one row with two terms. */
+static size_t dump_row_key_offset(const unsigned char *buf, int which) {
+    dump_reader r;
+    unsigned i, count;
+    r.p = buf;
+    dump_skipheader(&r);
+    count = dump_readcount(&r);
+    assert(count & 1);
+    dump_readu32(&r);
+    for (i = 1; i < count; i += 2) {
+        if ((int)(i / 2) == which) return (size_t)(r.p - buf);
+        dump_readu32(&r);
+        dump_skiprow(&r);
+    }
+    assert(0);
+    return 0;
+}
+
+static size_t dump_row_term_offset(const unsigned char *buf, int which) {
+    dump_reader r;
+    unsigned i, count, rowcount;
+    r.p = buf;
+    dump_skipheader(&r);
+    count = dump_readcount(&r);
+    assert(count & 1);
+    dump_readu32(&r);
+    for (i = 1; i < count; i += 2) {
+        dump_readu32(&r);
+        rowcount = dump_readcount(&r);
+        if (rowcount >= 3) {
+            unsigned t;
+            dump_skipfloat(&r);
+            for (t = 0; t < (unsigned)which; ++t)
+                dump_readu32(&r), dump_skipfloat(&r);
+            return (size_t)(r.p - buf);
+        }
+        dump_skiprowbody(&r, rowcount);
+    }
+    assert(0);
+    return 0;
+}
+
+static size_t dump_first_marker_offset(const unsigned char *buf) {
+    dump_reader r;
+    unsigned count;
+    r.p = buf;
+    assert(dump_readcount(&r) == 5);
+    dump_readu32(&r);
+    count = dump_readcount(&r);
+    while (count--) dump_skipstring(&r);
+    assert(dump_readcount(&r) >= 1);
+    assert(dump_readcount(&r) == 6);
+    dump_skipstring(&r), dump_skipfloat(&r);
+    return (size_t)(r.p - buf);
+}
+
 static size_t dump_one_row(unsigned char *buf) {
     am_Solver     *S = am_test_new_solver();
     am_Num         x = 0;
@@ -227,10 +295,83 @@ static size_t dump_one_row(unsigned char *buf) {
     return db.len;
 }
 
+static size_t dump_two_soft(unsigned char *buf) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         x = 0, y = 0;
+    am_Id          vx = am_newvariable(S, &x), vy = am_newvariable(S, &y);
+    am_Constraint *c = am_newconstraint(S, AM_MEDIUM);
+    dump_buf       db;
+
+    am_addterm(c, vx, 1.f);
+    am_setrelation(c, AM_EQUAL);
+    am_addconstant(c, 10.f);
+    asserteq(am_add(c), AM_OK);
+    c = am_newconstraint(S, AM_MEDIUM);
+    am_addterm(c, vy, 1.f);
+    am_setrelation(c, AM_EQUAL);
+    am_addconstant(c, 20.f);
+    asserteq(am_add(c), AM_OK);
+    memset(&db, 0, sizeof(db));
+    db.base.var_name = dump_buf_varname;
+    db.base.writer = dump_buf_writer;
+    db.p = buf;
+    asserteq(am_dump(S, &db.base), AM_OK);
+    am_delsolver(S);
+    return db.len;
+}
+
+static size_t dump_unconfigured(unsigned char *buf, int relation) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         x = 0;
+    am_Id          vx = am_newvariable(S, &x);
+    am_Constraint *c = am_newconstraint(S, AM_MEDIUM);
+    dump_buf       db;
+
+    am_addterm(c, vx, 1.f);
+    if (relation) am_setrelation(c, AM_EQUAL);
+    am_addconstant(c, 10.f);
+    memset(&db, 0, sizeof(db));
+    db.base.var_name = dump_buf_varname;
+    db.base.writer = dump_buf_writer;
+    db.p = buf;
+    asserteq(am_dump(S, &db.base), AM_OK);
+    am_delsolver(S);
+    return db.len;
+}
+
+static size_t dump_encode_u32(unsigned char *p, unsigned v) {
+    if (v <= 0x7F) { p[0] = (unsigned char)v; return 1; }
+    if (v <= 0xFF) { p[0] = 0xCC; p[1] = (unsigned char)v; return 2; }
+    if (v <= 0xFFFF) {
+        p[0] = 0xCD; p[1] = (unsigned char)(v >> 8); p[2] = (unsigned char)v;
+        return 3;
+    }
+    p[0] = 0xCE;
+    p[1] = (unsigned char)(v >> 24);
+    p[2] = (unsigned char)(v >> 16);
+    p[3] = (unsigned char)(v >> 8);
+    p[4] = (unsigned char)v;
+    return 5;
+}
+
+static size_t dump_patch_total(unsigned char *buf, size_t len, unsigned value) {
+    unsigned char out[2048];
+    size_t at, oldlen, n;
+    assert(len < sizeof(out));
+    at = dump_total_offset(buf, &oldlen);
+    memcpy(out, buf, at);
+    n = at + dump_encode_u32(out + at, value);
+    memcpy(out + n, buf + at + oldlen, len - at - oldlen);
+    n += len - at - oldlen;
+    memcpy(buf, out, n);
+    return n;
+}
+
 typedef struct stream_loader {
-    am_Loader   base;
-    const char *p;
-    size_t      len;
+    am_Loader      base;
+    const char    *p;
+    size_t         len;
+    am_Constraint *cons; /* set by load_cons, if the stream has one */
 } stream_loader;
 
 static am_Num  stream_value;
@@ -239,6 +380,13 @@ static am_Num *stream_load_var(am_Loader *L, const char *name, unsigned idx,
     (void)L, (void)name, (void)idx, (void)var;
     stream_value = 0;
     return &stream_value;
+}
+
+static void stream_load_cons(am_Loader *L, const char *name, unsigned idx,
+                             am_Constraint *cons) {
+    stream_loader *sl = (stream_loader *)L;
+    (void)name, (void)idx;
+    sl->cons = cons;
 }
 
 static const char *stream_read(am_Loader *L, size_t *plen) {
@@ -253,36 +401,237 @@ static void stream_init(stream_loader *sl, const unsigned char *bytes,
                         size_t len) {
     memset(sl, 0, sizeof(*sl));
     sl->base.load_var = stream_load_var;
+    sl->base.load_cons = stream_load_cons;
     sl->base.reader = stream_read;
     sl->p = (const char *)bytes;
     sl->len = len;
 }
 
-TEST(load_accepts_correct_arena) {
-    static unsigned char stream[1024];
+static am_Solver *load_stream(stream_loader *sl, size_t budget) {
+    return am_load(am_test_allocf, NULL, &sl->base, budget);
+}
+
+TEST(load_accepts_real_dump) {
+    static unsigned char stream[2048];
     size_t         len = dump_one_row(stream);
-    am_Solver     *S = am_test_new_solver();
     stream_loader  sl;
+    am_Solver     *S;
 
     stream_init(&sl, stream, len);
-    asserteq(am_load(S, &sl.base), AM_OK);
+    assertok((S = load_stream(&sl, 0)) != NULL);
     asserteq(S->rows.count, 1);
     asserteq(S->vars.count, 1);
+    asserteq(S->constraints.count, 1);
     am_delsolver(S);
 }
 
 TEST(load_rejects_short_arena) {
-    static unsigned char stream[1024];
+    static unsigned char stream[2048];
     size_t         len = dump_one_row(stream), at = dump_arena_offset(stream);
-    am_Solver     *S = am_test_new_solver();
     stream_loader  sl;
 
     assertok(at < len);
     asserteq(stream[at], 8); /* one row, two terms: am_calcsize(2) slots */
-    stream[at] = 1;          /* the stream is otherwise byte-identical */
+    stream[at] = 1;
     stream_init(&sl, stream, len);
-    asserteq(am_load(S, &sl.base), AM_FAILED);
+    assertok(load_stream(&sl, 0) == NULL);
+}
+
+TEST(load_budget_rejects_tiny) {
+    static unsigned char stream[2048];
+    size_t         len = dump_one_row(stream);
+    stream_loader  sl;
+
+    stream_init(&sl, stream, len);
+    assertok(load_stream(&sl, 1) == NULL);
+}
+
+TEST(load_budget_matches_allocator_peak) {
+    static unsigned char stream[4096];
+    size_t         len = dump_two_soft(stream), budget, peak;
+    stream_loader  sl;
+    am_Solver     *S;
+
+    maxmem = 0; /* measure the load only */
+    stream_init(&sl, stream, len);
+    assertok((S = load_stream(&sl, 0)) != NULL);
+    peak = maxmem;
     am_delsolver(S);
+    assertok(peak > sizeof(am_Solver));
+    budget = peak - sizeof(am_Solver);
+
+    stream_init(&sl, stream, len);
+    assertok((S = load_stream(&sl, budget + 1)) != NULL);
+    am_delsolver(S);
+
+    stream_init(&sl, stream, len);
+    assertok(load_stream(&sl, budget) == NULL);
+}
+
+TEST(load_budget_released_after_load) {
+    static unsigned char stream[4096];
+    size_t         len = dump_two_soft(stream), budget, peak;
+    stream_loader  sl;
+    am_Solver     *S;
+    unsigned       i;
+
+    maxmem = 0;
+    stream_init(&sl, stream, len);
+    assertok((S = load_stream(&sl, 0)) != NULL);
+    peak = maxmem;
+    am_delsolver(S);
+    budget = peak - sizeof(am_Solver);
+
+    stream_init(&sl, stream, len);
+    assertok((S = load_stream(&sl, budget + 1)) != NULL);
+    /* force table growths: they would fail if maxmem were still armed */
+    for (i = 0; i < 64; ++i) {
+        am_Num v = 0;
+        assertok(am_newvariable(S, &v) != 0);
+    }
+    am_delsolver(S);
+}
+
+TEST(load_budget_covers_pool) {
+    static unsigned char stream[1024];
+    size_t         len = dump_one_row(stream);
+    stream_loader  sl;
+    am_Solver     *S;
+
+    stream_init(&sl, stream, len);
+    assertok(am_load(NULL, NULL, &sl.base, 4096) == NULL);
+    stream_init(&sl, stream, len);
+    assertok((S = am_load(NULL, NULL, &sl.base, 64 * 1024)) != NULL);
+    am_delsolver(S);
+}
+
+TEST(load_rejects_bad_row_key) {
+    static unsigned char stream[4096];
+    size_t         len = dump_two_soft(stream), at = dump_row_key_offset(stream, 0);
+    stream_loader  sl;
+
+    assertok(at < len);
+    stream[at] = 0x7F; /* index 31 >= total (6) */
+    stream_init(&sl, stream, len);
+    assertok(load_stream(&sl, 0) == NULL);
+}
+
+TEST(load_rejects_bad_term) {
+    static unsigned char stream[4096];
+    size_t         len = dump_two_soft(stream), at = dump_row_term_offset(stream, 0);
+    stream_loader  sl;
+
+    assertok(at < len);
+    stream[at] = 0x7F;
+    stream_init(&sl, stream, len);
+    assertok(load_stream(&sl, 0) == NULL);
+}
+
+TEST(load_rejects_bad_marker) {
+    static unsigned char stream[4096];
+    size_t         len = dump_two_soft(stream), at = dump_first_marker_offset(stream);
+    stream_loader  sl;
+
+    assertok(at < len);
+    stream[at] = 0x7F;
+    stream_init(&sl, stream, len);
+    assertok(load_stream(&sl, 0) == NULL);
+}
+
+TEST(load_rejects_duplicate_term) {
+    static unsigned char stream[4096];
+    size_t         len = dump_two_soft(stream);
+    size_t         t0 = dump_row_term_offset(stream, 0);
+    size_t         t1 = dump_row_term_offset(stream, 1);
+    stream_loader  sl;
+
+    assertok(t1 < len);
+    stream[t1] = stream[t0];
+    stream_init(&sl, stream, len);
+    assertok(load_stream(&sl, 0) == NULL);
+}
+
+TEST(load_rejects_duplicate_row_key) {
+    static unsigned char stream[4096];
+    size_t         len = dump_two_soft(stream);
+    size_t         k0 = dump_row_key_offset(stream, 0);
+    size_t         k1 = dump_row_key_offset(stream, 1);
+    stream_loader  sl;
+
+    assertok(k1 < len);
+    stream[k1] = stream[k0];
+    stream_init(&sl, stream, len);
+    assertok(load_stream(&sl, 0) == NULL);
+}
+
+TEST(load_rejects_oversized_vars) {
+    static unsigned char stream[4096];
+    size_t         len = dump_two_soft(stream);
+    size_t         at, enclen;
+    stream_loader  sl;
+
+    at = dump_total_offset(stream, &enclen);
+    asserteq(enclen, 1); /* total = 6 */
+    stream[at] = 1;      /* vars count is 2 */
+    stream_init(&sl, stream, len);
+    assertok(load_stream(&sl, 0) == NULL);
+}
+
+TEST(load_rejects_wrapping_total) {
+    static unsigned char stream[8192];
+    size_t         len = dump_two_soft(stream);
+    stream_loader  sl;
+
+    len = dump_patch_total(stream, len, 0xFFFFFFFFu);
+    stream_init(&sl, stream, len);
+    assertok(load_stream(&sl, 0) == NULL);
+}
+
+TEST(load_accepts_zero_marker) {
+    static unsigned char stream[2048];
+    size_t         len = dump_unconfigured(stream, 1);
+    stream_loader  sl;
+    am_Solver     *S;
+
+    stream_init(&sl, stream, len);
+    assertok((S = load_stream(&sl, 0)) != NULL);
+    assertok(sl.cons != NULL);
+    asserteq(sl.cons->marker_id, 0); /* 0 = absent, not offset + 0 */
+    asserteq(sl.cons->other_id, 0);
+    asserteq(am_add(sl.cons), AM_OK);
+    am_delsolver(S);
+}
+
+TEST(load_accepts_unconfigured_constraint) {
+    static unsigned char stream[2048];
+    size_t         len = dump_unconfigured(stream, 0);
+    stream_loader  sl;
+    am_Solver     *S;
+
+    stream_init(&sl, stream, len);
+    assertok((S = load_stream(&sl, 0)) != NULL);
+    assertok(sl.cons != NULL);
+    asserteq(sl.cons->relation, 0);
+    am_delsolver(S);
+}
+
+TEST(load_rejects_garbage) {
+    static const unsigned char junk[] = { 'h', 'e', 'l', 'l', 'o' };
+    stream_loader sl;
+
+    stream_init(&sl, junk, sizeof(junk));
+    assertok(load_stream(&sl, 0) == NULL);
+}
+
+TEST(load_rejects_every_truncation) {
+    static unsigned char stream[4096];
+    size_t         len = dump_two_soft(stream), i;
+    stream_loader  sl;
+
+    for (i = 0; i < len; ++i) {
+        stream_init(&sl, stream, i);
+        assertok(load_stream(&sl, 0) == NULL);
+    }
 }
 
 /* The symbol packs a 30-bit id and a 2-bit type into one unsigned; the whole

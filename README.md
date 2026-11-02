@@ -138,13 +138,26 @@ All functions below that returns `int` are returning error codes:
 
 ### Dump & Load
 
-Amoeba supports to store whole state of solver into bianry data and to load
-back in new solver. Notice that the state of loaded solver will be erased.
+Amoeba can store the whole state of a solver in binary data and load it back
+into a new solver (`am_load()`).
 
 `am_dump()` drops every suggest/edit (`am_clearedits()`): what gets dumped is the
-state after re-solving without them.  `am_load()` refreshes all variable bindings
-from the restored tableau, so no manual `am_updatevars()` is needed.  A load that
-fails leaves the solver half-filled: discard it.
+state after re-solving without them.  `am_load()` creates a clean solver and
+returns it, or `NULL` when the stream cannot be loaded.  It does not refresh the
+variable bindings yet (variable values are whatever `load_var()` supplied).
+
+Only streams produced by `am_dump()` are supported.  Loading any other data is
+unsupported: the loader only promises that `am_load()` itself does not crash.
+What a solver does after a successful load of a non-dump stream (including
+asserts or crashes in later calls) is outside the contract.  The loader performs
+structural checks, not tableau-semantic validation.
+
+`am_load()` spends less than `maxmem` bytes while loading (`0` selects
+`AM_MAX_LOADMEM`, 16 MiB by default; define `AM_MAX_LOADMEM` before including
+`amoeba.h` to change it).  The budget is strict: a single allocation whose
+growth equals the remaining budget fails.  It bounds the bytes requested from
+the allocator, not the process's actual memory use.  The budget is released
+when loading succeeds.
 
 To perform a dump or load operations, you should prepare `am_Dumper` or
 `am_Loader` to control the behavior in operations.
@@ -217,8 +230,8 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
   } MyLoader;
 
   static am_Num *load_var(am_Loader *l, const char *name, unsigned idx, am_Id var) {
-      /* you should returns a binding for variable named `name`, or `AM_FAILED`
-       * will be returned by `am_load()`.
+      /* you should returns a binding for variable named `name`, or the load
+       * fails and `am_load()` returns `NULL`.
        * A common implement creates variable context into some map, returns it.
        * Notice that `name` can be `NULL` if no name avaialable.  */
       MyLoader *myl = (MyLoader*)l;
@@ -255,9 +268,8 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
   l.base.reader    = load_reader;
   d.buf = get_some_data(&d.len);
 
-  am_Solver *solver = am_newsolver(NULL, NULL);
-  int ret = am_load(solver, &d.base);
-  assert(ret == AM_OK);
+  am_Solver *solver = am_load(NULL, NULL, &d.base, 0);
+  assert(solver != NULL);
   /* now uses the solver */
   ```
 
@@ -289,11 +301,14 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
 
   Dump whole solver state (without edits) into binary data.
 
-- `int am_load(am_Solver *solver, am_Loader *l);`
+- `am_Solver *am_load(am_Allocf *allocf, void *ud, am_Loader *l, size_t maxmem);`
 
-  Loads binary data back into solver. Note that all previous states are
-  discarded, but previous vars & constraints are keeped. i.e. the
-  `am_resetsolver()` called before loaded.
+  Creates a new solver, loads a dump stream into it and returns it, or `NULL`
+  when the stream cannot be loaded.  `allocf`/`ud` are passed to
+  `am_newsolver()`.  `maxmem` is the strict byte budget of the load (`0` =
+  `AM_MAX_LOADMEM`); a single allocation may not consume the whole remaining
+  budget.  Only streams produced by `am_dump()` are supported, and variable
+  bindings are not refreshed yet (see "Dump & Load").
 
 - `am_Id am_newvariable(am_Solver *solver, am_Num *pvalue);`
 

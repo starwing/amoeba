@@ -12,15 +12,17 @@ print(S:constraint()
       :add(xl):add(10)
       :relation "le" -- or "<="
       :add(xr))
-S:addconstraint((xm*2) :eq (xl + xr))
-S:addconstraint(
+-- The binding owns constraints through their userdata; keep them alive.
+local constraints = {
+   (xm*2) :eq (xl + xr),
    S:constraint()
       :add(xl):add(10)
       :relation "le" -- or "<="
-      :add(xr)) -- (xl + 10) :le (xr)
-S:addconstraint(
-   S:constraint()(xr) "<=" (100)) -- (xr) :le (100)
-S:addconstraint((xl) :ge (0))
+      :add(xr), -- (xl + 10) :le (xr)
+   S:constraint()(xr) "<=" (100), -- (xr) :le (100)
+   (xl) :ge (0)
+}
+for i = 1, #constraints do S:addconstraint(constraints[i]) end
 print(S)
 print(xl)
 print(xm)
@@ -46,4 +48,22 @@ print(S)
 print(xl)
 print(xm)
 print(xr)
+
+print('dump/load into a new solver')
+local data = S:dump()
+local cons = {}
+local S2 = amoeba.load(data, cons)
+print(S2)
+print(S2:var("xm"))
+print(cons[1])
+
+print('dump/load with a reader function')
+local pos = 1
+local S3 = amoeba.load(function()
+   if pos > #data then return nil end
+   local chunk = data:sub(pos, pos + 15)
+   pos = pos + 16
+   return chunk
+end)
+print(S3:var("xr"))
 

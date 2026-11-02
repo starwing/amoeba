@@ -51,8 +51,8 @@ typedef struct MyLoader {
 
 static am_Num *load_var(am_Loader *l, const char *name, unsigned i, am_Id var) {
     MyLoader *ml = (MyLoader *)l;
-    /* am_load() refreshes every binding it installs; start from a known state
-     * so a missing refresh cannot masquerade as a bogus solution */
+    /* am_load() installs the binding it gets from load_var() without refreshing
+     * it; start from a known state so a missing refresh (TODO #3) is visible. */
     return (void)name, (void)var, ml->values[i] = 0, &ml->values[i];
 }
 
@@ -400,7 +400,7 @@ TEST(dumpload) {
         /* The dumped state is the reference: am_dump() clears the edits and
          * settles the bindings, so compare against the values right now. */
         MyLoader   myl;
-        am_Solver *S2 = am_test_new_solver();
+        am_Solver *S2;
 
         myl.base.load_var = load_var;
         myl.base.load_cons = load_cons;
@@ -408,8 +408,7 @@ TEST(dumpload) {
         myl.p = buf, myl.len = len;
 
         printf("before load\n");
-        ret = am_load(S2, &myl.base);
-        asserteq(ret, AM_OK);
+        assertok((S2 = am_load(am_test_allocf, NULL, &myl.base, 0)) != NULL);
 
         /* same shape ... */
         asserteq(S2->vars.count, S->vars.count);

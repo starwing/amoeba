@@ -76,7 +76,8 @@ typedef enum am_AllocType {
     am_AllocConstraint,
     am_AllocSuggest,
     am_AllocHash,
-    am_AllocDump
+    am_AllocDump,
+    am_AllocPool
 } am_AllocType;
 
 typedef void *am_Allocf (void **pud, void *ptr,
@@ -125,7 +126,8 @@ typedef struct am_Dumper am_Dumper;
 typedef struct am_Loader am_Loader;
 
 AM_API int am_dump (am_Solver *S, am_Dumper *dumper);
-AM_API int am_load (am_Solver *S, am_Loader *loader);
+AM_API am_Solver *am_load (am_Allocf *allocf, void *ud,
+        am_Loader *loader, size_t maxmem);
 
 struct am_Dumper {
     const char *(*var_name)  (am_Dumper *D, unsigned idx, am_Id var, am_Num *value);
@@ -166,8 +168,8 @@ AM_NS_END
 #define am_isdummy(key)      ((key).type == AM_DUMMY)
 #define am_ispivotable(key)  (am_isslack(key) || am_iserror(key))
 
-#define am_alloc(T,S,ty) ((T*)(S)->allocf((void**)(S),NULL,sizeof(T),0,(ty)))
-#define am_free(S,p,ty)  ((S)->allocf((void**)(S),(p),0,sizeof(*(p)),(ty)))
+#define am_alloc(T,S,ty) ((T*)amM_realloc((S),NULL,sizeof(T),0,(ty)))
+#define am_free(S,p,ty)  (amM_realloc((S),(p),0,sizeof(*(p)),(ty)), (void)0)
 
 #define AM_MIN_HASHSIZE  8
 #define AM_POOL_SIZE     4096
@@ -268,7 +270,7 @@ typedef struct am_Suggest {
 } am_Suggest;
 
 struct am_Solver {
-    void      *ud; /* must be the first for `am_default_allocf` */
+    void      *ud;
     am_Allocf *allocf;
     am_Row     objective;
     am_Table   vars;            /* symbol -> am_Var */
@@ -283,7 +285,25 @@ struct am_Solver {
     am_Symbol  infeasible_rows;
     am_Symbol  dirty_vars;
     am_MemPool conspool;
+    size_t     maxmem; /* remaining load budget, 0 = unlimited */
 };
+
+static void *amM_realloc(am_Solver *S, void *ptr,
+        size_t nsize, size_t osize, am_AllocType ty) {
+    size_t grow = nsize > osize ? nsize - osize : 0;
+    void *ret;
+    if (ty == am_AllocSolver) /* allocated before the budget */
+        return S->allocf(&S->ud, ptr, nsize, osize, ty);
+    /* equality fails so 0 can keep meaning "unlimited" */
+    if (S->maxmem != 0 && grow >= S->maxmem) return NULL;
+    ret = S->allocf(&S->ud, ptr, nsize, osize, ty);
+    if (nsize != 0 && ret == NULL) return NULL;
+    if (S->maxmem != 0) {
+        if (nsize > osize)      S->maxmem -= nsize - osize;
+        else if (osize > nsize) S->maxmem += osize - nsize;
+    }
+    return ret;
+}
 
 /* utils */
 
@@ -299,13 +319,13 @@ static void am_poolfree(am_MemPool *pool, void *obj)
 
 static void am_freearena(am_Solver *S, am_Arena *a) {
     if (!a->buf) return;
-    S->allocf(&S->ud, a->buf, 0, a->size, am_AllocDump);
+    amM_realloc(S, a->buf, 0, a->size, am_AllocDump);
     a->buf = NULL, a->size = 0;
 }
 
 static void am_allocarena(am_Solver *S, am_Arena *a, size_t size) {
     assert(a->buf == NULL);
-    a->buf = S->allocf(&S->ud, NULL, size, 0, am_AllocDump);
+    a->buf = amM_realloc(S, NULL, size, 0, am_AllocDump);
     if (a->buf) a->size = size;
 }
 
@@ -315,21 +335,22 @@ static void am_initpool(am_MemPool *pool, size_t size) {
     assert(size > sizeof(void*) && size < AM_POOL_SIZE/4);
 }
 
-static void am_freepool(am_MemPool *pool) {
+static void am_freepool(am_Solver *S) {
     const size_t offset = AM_POOL_SIZE - sizeof(void*);
-    while (pool->pages != NULL) {
-        void *next = *(void**)((char*)pool->pages + offset);
-        free(pool->pages);
-        pool->pages = next;
+    while (S->conspool.pages != NULL) {
+        void *next = *(void**)((char*)S->conspool.pages + offset);
+        amM_realloc(S, S->conspool.pages, 0, AM_POOL_SIZE, am_AllocPool);
+        S->conspool.pages = next;
     }
 }
 
-static void *am_poolalloc(am_MemPool *pool) {
+static void *am_poolalloc(am_Solver *S) {
+    am_MemPool *pool = &S->conspool;
     void *obj = pool->freed;
     if (obj == NULL) {
         const size_t offset = AM_POOL_SIZE - sizeof(void*);
-        void *end, *ptr = malloc(AM_POOL_SIZE);
-        if (ptr == NULL) abort();
+        void *end, *ptr = amM_realloc(S, NULL, AM_POOL_SIZE, 0, am_AllocPool);
+        if (ptr == NULL) return NULL;
         *(void**)((char*)ptr + offset) = pool->pages;
         pool->pages = ptr;
         end = (char*)ptr + (offset/pool->size-1)*pool->size;
@@ -346,15 +367,23 @@ static void *am_poolalloc(am_MemPool *pool) {
 
 static void *am_default_allocf(void **pud, void *ptr, size_t nsize, size_t osize, am_AllocType ty) {
     void *newptr;
-    (void)osize;
-    if (ty == am_AllocConstraint) {
-        am_Solver *S = (am_Solver*)pud;
-        if (nsize) return am_poolalloc(&S->conspool);
-        return am_poolfree(&S->conspool, ptr), (void*)NULL;
-    }
+    (void)pud, (void)osize, (void)ty;
     if (nsize == 0) return free(ptr), (void*)NULL;
     if ((newptr = realloc(ptr, nsize)) == NULL) abort();
     return newptr;
+}
+
+static void *am_alloccons(am_Solver *S) {
+    if (S->allocf == am_default_allocf) /* pooled; its page paid the budget */
+        return am_poolalloc(S);
+    return amM_realloc(S, NULL, sizeof(am_Constraint), 0, am_AllocConstraint);
+}
+
+static void am_freecons(am_Solver *S, am_Constraint *cons) {
+    if (S->allocf == am_default_allocf) /* back to the pool, nothing to refund */
+        am_poolfree(&S->conspool, cons);
+    else
+        amM_realloc(S, cons, 0, sizeof(*cons), am_AllocConstraint);
 }
 
 static am_Symbol am_newsymbol(am_Solver *S, int type) {
@@ -392,10 +421,10 @@ static int am_nextentry(am_Iterator *it) {
     return it->key = key, it->offset = cur + 1;
 }
 
-static void am_freetable(const am_Solver *S, am_Table *t) {
+static void am_freetable(am_Solver *S, am_Table *t) {
     size_t hsize = t->size * (sizeof(am_Key) + t->value_size);
     if (hsize == 0) return;
-    if (!t->arena) S->allocf((void**)S, t->keys, 0, hsize, am_AllocHash);
+    if (!t->arena) amM_realloc(S, t->keys, 0, hsize, am_AllocHash);
     am_inittable(t, t->value_size);
 }
 
@@ -417,12 +446,12 @@ static void amH_init(am_Table *t, am_Key *keys, size_t size, size_t vsize) {
     am_resettable(t);
 }
 
-static int amH_alloc(am_Table *t, const am_Solver *S, size_t req, size_t vsz) {
+static int amH_alloc(am_Table *t, am_Solver *S, size_t req, size_t vsz) {
     size_t size;
     am_Key *keys;
     amC(req <= (~(am_Size)0 >> 1));
     size = am_calcsize((am_Size)req);
-    keys = (am_Key*)S->allocf((void**)S, NULL,
+    keys = (am_Key*)amM_realloc(S, NULL,
             size * (sizeof(am_Key) + vsz), 0, am_AllocHash);
     amC(keys != NULL);
     return amH_init(t, keys, size, vsz), AM_OK;
@@ -452,7 +481,7 @@ static void *amH_rawset(am_Table *t, am_Symbol key) {
     return ks[mp].sym = key, amH_val(t, mp);
 }
 
-static int amH_resize(const am_Solver *S, am_Table *t, size_t request) {
+static int amH_resize(am_Solver *S, am_Table *t, size_t request) {
     am_Table nt;
     am_Size i;
     amE(amH_alloc(&nt, S, request, t->value_size));
@@ -467,10 +496,10 @@ static int amH_resize(const am_Solver *S, am_Table *t, size_t request) {
     return (*t = nt), AM_OK;
 }
 
-static int am_growtable(const am_Solver *S, am_Table *t, size_t grow)
+static int am_growtable(am_Solver *S, am_Table *t, size_t grow)
 { return (grow += t->count)*2 < t->size ? AM_OK : amH_resize(S, t, grow); }
 
-static void *am_settable(const am_Solver *S, am_Table *t, am_Symbol key) {
+static void *am_settable(am_Solver *S, am_Table *t, am_Symbol key) {
     void *value;
     assert(key.id != 0 && am_gettable(t, key.id) == NULL);
     if (!t->size && amH_resize(S, t, 0) != AM_OK) return NULL;
@@ -605,11 +634,11 @@ AM_API am_Constraint *am_newconstraint(am_Solver *S, am_Num strength) {
     am_Constraint *cons;
     int ret;
     if (S == NULL || am_negative(strength)) return NULL;
-    cons = am_alloc(am_Constraint, S, am_AllocConstraint);
+    cons = (am_Constraint*)am_alloccons(S);
     if (cons == NULL) return NULL;
     sym.id = ++S->current_cons;
     ret = am_initconstraint(S, sym, strength, cons);
-    if (ret != AM_OK) am_free(S, cons, am_AllocConstraint), cons = NULL;
+    if (ret != AM_OK) am_freecons(S, cons), cons = NULL;
     return cons;
 }
 
@@ -626,7 +655,7 @@ AM_API void am_delconstraint(am_Constraint *cons) {
     while (am_nextentry(&it))
         am_delvariable(cons->S, it.key.id);
     am_freerow(S, &cons->expression);
-    if (am_isexternal(cons->sym)) am_free(S, cons, am_AllocConstraint);
+    if (am_isexternal(cons->sym)) am_freecons(S, cons);
 }
 
 AM_API am_Constraint *am_cloneconstraint(am_Constraint *other, am_Num strength) {
@@ -1168,7 +1197,7 @@ AM_API void am_delsolver(am_Solver *S) {
     while (am_nextentry(&it)) {
         am_Constraint *cons = *am_val(am_Constraint*,it);
         am_freerow(S, &cons->expression);
-        if (am_isexternal(cons->sym)) am_free(S, cons, am_AllocConstraint);
+        if (am_isexternal(cons->sym)) am_freecons(S, cons);
     }
     it = am_itertable(&S->suggests);
     while (am_nextentry(&it)) {
@@ -1185,7 +1214,7 @@ AM_API void am_delsolver(am_Solver *S) {
     am_freetable(S, &S->constraints);
     am_freetable(S, &S->suggests);
     am_freetable(S, &S->rows);
-    am_freepool(&S->conspool);
+    am_freepool(S);
     am_freearena(S, &S->arena);
     am_free(S, S, am_AllocSolver);
 }
@@ -1219,7 +1248,7 @@ AM_API void am_resetsolver(am_Solver *S) {
 #endif /* AM_BUF_LEN */
 
 typedef struct am_DumpCtx {
-    const am_Solver *S;
+    am_Solver *S;
     unsigned  *syms; 
     unsigned  *cons;
     am_Table   symmap;
@@ -1382,7 +1411,7 @@ static int am_writerows(am_DumpCtx *ctx) {
 }
 
 static int am_collect(am_DumpCtx *ctx) {
-    const am_Solver *S = ctx->S;
+    am_Solver *S = ctx->S;
     am_Symbol sym = {0, 0};
     size_t i, vc = S->vars.count, cc = 0, count = 0;
     am_Iterator it = am_itertable(&S->vars);
@@ -1432,18 +1461,22 @@ AM_API int am_dump(am_Solver *S, am_Dumper *dumper) {
     cons_alloc = sizeof(unsigned) * S->constraints.count;
     sym_alloc = sizeof(unsigned) * (cons_alloc*2 + S->vars.count);
     memset(&ctx, 0, sizeof(ctx));
-    ctx.syms = (unsigned*)S->allocf(&S->ud, NULL, sym_alloc, 0, am_AllocDump);
-    ctx.cons = (unsigned*)S->allocf(&S->ud, NULL, cons_alloc, 0, am_AllocDump);
+    ctx.syms = (unsigned*)amM_realloc(S, NULL, sym_alloc, 0, am_AllocDump);
+    ctx.cons = (unsigned*)amM_realloc(S, NULL, cons_alloc, 0, am_AllocDump);
     ctx.S = S;
     if (ctx.syms && ctx.cons && (ctx.ret = am_collect(&ctx)) == AM_OK) {
         ctx.dumper = dumper, ctx.p = ctx.buf;
         ctx.ret = am_dumpall(&ctx);
     }
-    if (ctx.syms) S->allocf(&S->ud, ctx.syms, 0, sym_alloc, am_AllocDump);
-    if (ctx.cons) S->allocf(&S->ud, ctx.cons, 0, cons_alloc, am_AllocDump);
+    if (ctx.syms) amM_realloc(S, ctx.syms, 0, sym_alloc, am_AllocDump);
+    if (ctx.cons) amM_realloc(S, ctx.cons, 0, cons_alloc, am_AllocDump);
     am_freetable(S, &ctx.symmap);
     return ctx.ret;
 }
+
+#ifndef AM_MAX_LOADMEM
+# define AM_MAX_LOADMEM (16u*1024u*1024u) /* default load budget */
+#endif /* AM_MAX_LOADMEM */
 
 typedef struct am_LoadCtx {
     am_Solver  *S;
@@ -1451,6 +1484,8 @@ typedef struct am_LoadCtx {
     size_t      n;
     const char *p, *s;
     am_Size     offset;
+    am_Size     total;      /* symbol count declared by the stream */
+    size_t      arena_max;  /* budget when the load started, for the slot guard */
     char       *arena_p;    /* row-table arena cursor, NULL outside rows */
     size_t      arena_left; /* bytes left in that arena */
     char        buf[AM_NAME_LEN];
@@ -1507,7 +1542,7 @@ static int am_readraw16(am_LoadCtx *ctx, unsigned *pv) {
 static int am_readuint32(am_LoadCtx *ctx, am_Size *pv) {
     int ty, c;
     switch (ty = am_getchar(ctx)) {
-    default: amC(ty <= 0x7F); *pv = ty; break;
+    default: amC(ty >= 0 && ty <= 0x7F); *pv = ty; break;
     case 0xCC: amC((c = am_getchar(ctx)) != AM_FAILED); *pv = c; break;
     case 0xCD: amE(am_readraw16(ctx, pv)); break;
     case 0xCE: amE(am_readraw32(ctx, pv)); break;
@@ -1530,6 +1565,7 @@ static int am_readstring(am_LoadCtx *ctx) {
     default:   amC(ty >= 0xA0 && ty <= 0xBF); size = ty - 0xA0;   break;
     case 0xD9: amC((c = am_getchar(ctx)) != AM_FAILED); size = c; break;
     }
+    amC(size < AM_NAME_LEN);
     ctx->s = size ? ctx->buf : NULL;
     if (ctx->n >= size)
         return memcpy(ctx->buf, ctx->p, size), ctx->buf[size] = 0,
@@ -1567,9 +1603,7 @@ static int am_readrow(am_LoadCtx *ctx, am_Row *row) {
     am_Size i, count, value;
     amE(am_readcount(ctx, &count));
     amC(count >= 1 && (count & 1) == 1);
-    if (!ctx->arena_p)
-        amE(am_growtable(ctx->S, &row->terms, count/2));
-    else {
+    if (ctx->arena_p) {
         am_Size size = am_calcsize(count/2);
         size_t unit = sizeof(am_Key) + sizeof(am_Num);
         am_Key *keys = (am_Key*)am_takemem(ctx, size, unit);
@@ -1582,7 +1616,9 @@ static int am_readrow(am_LoadCtx *ctx, am_Row *row) {
         am_Symbol sym = {0, 0};
         am_Num *term;
         amE(am_readuint32(ctx, &value));
-        sym.id = ctx->offset+(value>>2), sym.type = value & 3;
+        amC((value >> 2) < ctx->total); /* 30-bit id, never 0 */
+        sym.id = ctx->offset + (value >> 2), sym.type = value & 3;
+        amC(am_gettable(&row->terms, sym.id) == NULL); /* am_settable's contract */
         amC(term = (am_Num*)am_settable(ctx->S, &row->terms, sym));
         amE(am_readfloat(ctx, term));
     }
@@ -1594,7 +1630,7 @@ static int am_readvars(am_LoadCtx *ctx) {
     am_Size i, count;
     am_Symbol sym = {0, AM_EXTERNAL};
     amE(am_readcount(ctx, &count));
-    amE(am_growtable(S, &S->vars, count));
+    amC(count <= ctx->total); /* ids are offset+i, keep them in total */
     for (i = 0; i < count; ++i) {
         am_Var *ve;
         am_Num *pvalue;
@@ -1613,9 +1649,14 @@ static int am_readvars(am_LoadCtx *ctx) {
 static int am_readmarker(am_LoadCtx *ctx, am_Symbol *sym, unsigned *id) {
     am_Size value;
     amE(am_readuint32(ctx, &value));
-    *id = ctx->offset + (value >> 2);
+    amC(value == 0 || (value >> 2) < ctx->total); /* 0 = absent */
     sym->type = value & 3;
-    if (sym->type) sym->id = *id;
+    if (sym->type == 0) {
+        *id = 0, sym->id = 0;
+        return AM_OK;
+    }
+    *id = ctx->offset + (value >> 2);
+    sym->id = *id;
     return AM_OK;
 }
 
@@ -1623,7 +1664,6 @@ static int am_readconstraints(am_LoadCtx *ctx) {
     am_Size i, count, value;
     am_Solver *S = ctx->S;
     amE(am_readcount(ctx, &count));
-    amE(am_growtable(S, &S->constraints, count));
     for (i = 0; i < count; ++i) {
         am_Constraint *cons;
         am_Num strength;
@@ -1638,7 +1678,7 @@ static int am_readconstraints(am_LoadCtx *ctx) {
         amE(am_readmarker(ctx, &cons->other, &value));
         cons->other_id = value;
         amE(am_readuint32(ctx, &value));
-        amC(value >= AM_LESSEQUAL && value <= AM_GREATEQUAL);
+        amC(value <= AM_GREATEQUAL); /* 0 = never configured */
         cons->relation = value;
         amE(am_readrow(ctx, &cons->expression));
     }
@@ -1653,17 +1693,20 @@ static int am_readrows(am_LoadCtx *ctx) {
     amE(am_readuint32(ctx, &slots));
     ctx->arena_p = NULL, ctx->arena_left = 0;
     if (slots) {
-        am_allocarena(S, &S->arena, slots * (sizeof(am_Key)+sizeof(am_Num)));
+        size_t unit = sizeof(am_Key) + sizeof(am_Num);
+        amC((size_t)slots <= ctx->arena_max / unit); /* cannot overflow */
+        am_allocarena(S, &S->arena, (size_t)slots * unit);
         amC(S->arena.buf != NULL);
         ctx->arena_p = (char*)S->arena.buf;
         ctx->arena_left = S->arena.size;
     }
-    amE(am_growtable(S, &S->rows, count/2));
     for (i = 1; i < count; i += 2) {
         am_Symbol sym;
         am_Row *row;
         amE(am_readuint32(ctx, &value));
+        amC((value >> 2) < ctx->total);
         sym.id = ctx->offset + (value >> 2), sym.type = value & 3;
+        amC(am_gettable(&S->rows, sym.id) == NULL);
         amC(row = (am_Row*)am_settable(S, &S->rows, sym));
         am_initrow(row);
         amE(am_readrow(ctx, row));
@@ -1673,24 +1716,44 @@ static int am_readrows(am_LoadCtx *ctx) {
     return AM_OK;
 }
 
-AM_API int am_load(am_Solver *S, am_Loader *loader) {
+static int am_loadbody(am_LoadCtx *ctx) {
+    am_Solver *S = ctx->S;
+    amE(am_readvars(ctx));
+    amE(am_readconstraints(ctx));
+    amE(am_readrows(ctx));
+    amE(am_readrow(ctx, &S->objective));
+    return S->current_id = ctx->offset + ctx->total, AM_OK;
+}
+
+AM_API am_Solver *am_load(am_Allocf *allocf, void *ud,
+                          am_Loader *loader, size_t maxmem) {
     am_LoadCtx ctx;
+    am_Solver *S;
     am_Size count, total;
-    amC(S && loader && loader->reader && loader->load_var);
+    if (loader == NULL || loader->reader == NULL || loader->load_var == NULL)
+        return NULL;
+    S = am_newsolver(allocf, ud);
+    if (S == NULL) return NULL;
     memset(&ctx, 0, sizeof(ctx));
     ctx.S = S;
-    ctx.offset = S->current_id + 1;
     ctx.loader = loader;
-    amE(am_readcount(&ctx, &count));
-    amC(count == 5); /* [total, vars, constraints, rows, objective] */
-    amE(am_readuint32(&ctx, &total));
-    amC(ctx.offset + total <= 0x3FFFFFFF);
-    am_resetsolver(S);
-    amE(am_readvars(&ctx));
-    amE(am_readconstraints(&ctx));
-    amE(am_readrows(&ctx));
-    amE(am_readrow(&ctx, &S->objective));
-    return S->current_id = ctx.offset + total, AM_OK;
+    ctx.offset = S->current_id + 1;
+    if (am_readcount(&ctx, &count) != AM_OK || count != 5 ||
+            am_readuint32(&ctx, &total) != AM_OK ||
+            ctx.offset > 0x3FFFFFFF ||
+            total > 0x3FFFFFFF - ctx.offset) {
+        am_delsolver(S);
+        return NULL;
+    }
+    ctx.total = total;
+    S->maxmem = maxmem ? maxmem : AM_MAX_LOADMEM;
+    ctx.arena_max = S->maxmem ? S->maxmem : (size_t)-1;
+    if (am_loadbody(&ctx) != AM_OK) {
+        am_delsolver(S);
+        return NULL;
+    }
+    S->maxmem = 0;
+    return S;
 }
 
 

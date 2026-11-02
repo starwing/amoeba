@@ -1,6 +1,7 @@
 #define LUA_LIB
 #include <lua.h>
 #include <lauxlib.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define AM_STATIC_API
@@ -16,6 +17,7 @@ typedef struct aml_Solver {
     am_Solver *solver;
     int        ref_vars;
     int        ref_cons;
+    int        ref_loaded; /* loaded var userdata, kept alive by the solver */
 } aml_Solver;
 
 typedef struct aml_Var {
@@ -23,10 +25,12 @@ typedef struct aml_Var {
     am_Id       var;
     aml_Solver *S;
     const char *name;
+    int         loaded; /* owned by a loaded solver: never removed by __gc */
 } aml_Var;
 
 typedef struct aml_Cons {
     am_Constraint *cons;
+    int            loaded; /* owned by a loaded solver */
 } aml_Cons;
 
 typedef struct aml_Item {
@@ -78,6 +82,7 @@ static aml_Cons *aml_registercons(lua_State *L, am_Constraint *cons) {
     aml_Cons *lcons = (aml_Cons*)lua_newuserdata(L, sizeof(aml_Cons));
     aml_Solver *S = *(aml_Solver**)cons;
     lcons->cons = cons;
+    lcons->loaded = 0;
     luaL_setmetatable(L, AML_CONS_TYPE);
     lua_rawgeti(L, LUA_REGISTRYINDEX, S->ref_cons);
     lua_pushvalue(L, -2);
@@ -339,6 +344,8 @@ static int Lexpr_ge(lua_State *L) { return Lexpr_cmp(L, AM_GREATEQUAL); }
 
 static aml_Var *aml_newvar(lua_State *L, aml_Solver *S, am_Id var, const char *name) {
     aml_Var *lvar = (aml_Var*)lua_newuserdata(L, sizeof(aml_Var));
+    lvar->value  = 0; /* am_newvariable() does not initialise the binding */
+    lvar->loaded = 0;
     if (var == 0) {
         var = am_newvariable(S->solver, &lvar->value);
         if (var == 0) luaL_error(L, "Create variable failed");
@@ -380,6 +387,14 @@ static int Lvar_new(lua_State *L) {
 static int Lvar_delete(lua_State *L) {
     aml_Var *lvar = (aml_Var*)luaL_checkudata(L, 1, AML_VAR_TYPE);
     if (lvar->var == 0) return 0;
+    if (lvar->loaded) { /* solver-owned; removing would break its tableau */
+        lvar->var = 0, lvar->name = NULL;
+        return 0;
+    }
+    if (lvar->S == NULL || lvar->S->solver == NULL) {
+        lvar->var = 0;
+        return 0;
+    }
     am_delvariable(lvar->S->solver, lvar->var);
     lua_rawgeti(L, LUA_REGISTRYINDEX, lvar->S->ref_vars);
     lua_pushnil(L);
@@ -440,11 +455,16 @@ static int Lcons_new(lua_State *L) {
 
 static int Lcons_delete(lua_State *L) {
     aml_Cons *lcons = (aml_Cons*)luaL_checkudata(L, 1, AML_CONS_TYPE);
-    aml_Solver *S = *(aml_Solver**)lcons->cons;
+    aml_Solver *S;
     if (lcons->cons == NULL) return 0;
+    if (lcons->loaded) { /* solver-owned; deleting may outlive its vars */
+        lcons->cons = NULL;
+        return 0;
+    }
+    S = *(aml_Solver**)lcons->cons;
     am_delconstraint(lcons->cons);
     lcons->cons = NULL;
-    lua_rawgeti(L, LUA_REGISTRYINDEX, S->ref_vars);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, S->ref_cons);
     lua_pushnil(L);
     lua_rawsetp(L, -2, lcons);
     return 0;
@@ -587,67 +607,247 @@ static int Ldump(lua_State *L) {
     return aml_pusherror(L, ret);
 }
 
+typedef struct aml_LoadVar {
+    am_Id   var;
+    char   *name; /* owned copy, freed after the userdata is created */
+    am_Num  value;
+} aml_LoadVar;
+
+typedef struct aml_LoadCons {
+    unsigned       idx;
+    am_Constraint *cons;
+} aml_LoadCons;
+
+#define AML_LOADBLK 64
+
+typedef struct aml_VarBlk {
+    struct aml_VarBlk *next;
+    unsigned           n;
+    aml_LoadVar        slot[AML_LOADBLK];
+} aml_VarBlk;
+
+typedef struct aml_ConsBlk {
+    struct aml_ConsBlk *next;
+    unsigned            n;
+    aml_LoadCons        slot[AML_LOADBLK];
+} aml_ConsBlk;
+
 typedef struct aml_Loader {
-    am_Loader  base;
+    am_Loader   base;
     lua_State  *L;
-    aml_Solver *S;
     const char *s;
     size_t      len;
-    int         cons_index;
-    int         loader_index;
+    int         data_index;   /* stack index of the string, 0 for a reader */
+    int         reader_index; /* stack index of the function, 0 for a string */
+    int         reserve_index;/* stack slot holding the last reader chunk */
+    int         cons_index;   /* caller's table, 0 when absent */
+    int         errref;       /* registry ref to a reader error, or LUA_NOREF */
+    int         oom;
+    aml_VarBlk *vblk;
+    aml_ConsBlk *cblk;
 } aml_Loader;
 
-static am_Num *aml_loadvar(am_Loader *l, const char *name, unsigned idx, am_Id var) {
-    aml_Loader *ll = (aml_Loader*)l;
-    aml_Var *lvar = aml_newvar(ll->L, ll->S, var, name);
-    return (void)idx, &lvar->value;
+static char *aml_strdup(const char *s) {
+    size_t n = strlen(s) + 1;
+    char *p = (char*)malloc(n);
+    if (p) memcpy(p, s, n);
+    return p;
 }
 
-static void aml_loadcons(am_Loader *l, const char *name, unsigned idx, am_Constraint *cons) {
+static am_Num *aml_loadvar(am_Loader *l, const char *name, unsigned idx,
+                           am_Id var) {
     aml_Loader *ll = (aml_Loader*)l;
-    if (ll->cons_index == 0) return;
+    aml_VarBlk *b;
+    aml_LoadVar *slot;
+    (void)idx;
+    if (ll->vblk == NULL || ll->vblk->n == AML_LOADBLK) {
+        b = (aml_VarBlk*)calloc(1, sizeof(*b));
+        if (b == NULL) return NULL;
+        b->next = ll->vblk, ll->vblk = b;
+    }
+    b = ll->vblk;
+    slot = &b->slot[b->n];
+    slot->name = aml_strdup(name ? name : "");
+    if (slot->name == NULL) return NULL;
+    slot->var = var;
+    slot->value = 0;
+    b->n += 1;
+    return &slot->value;
+}
+
+static void aml_loadcons(am_Loader *l, const char *name, unsigned idx,
+                         am_Constraint *cons) {
+    aml_Loader *ll = (aml_Loader*)l;
+    aml_ConsBlk *b;
     (void)name;
-    *(aml_Solver**)cons = ll->S;
-    aml_registercons(ll->L, cons);
-    lua_rawseti(ll->L, ll->cons_index, idx);
+    if (ll->cblk == NULL || ll->cblk->n == AML_LOADBLK) {
+        b = (aml_ConsBlk*)calloc(1, sizeof(*b));
+        if (b == NULL) {
+            ll->oom = 1;
+            return;
+        }
+        b->next = ll->cblk, ll->cblk = b;
+    }
+    b = ll->cblk;
+    b->slot[b->n].idx = idx;
+    b->slot[b->n].cons = cons;
+    b->n += 1;
 }
 
 static const char *aml_reader(am_Loader *l, size_t *plen) {
     aml_Loader *ll = (aml_Loader*)l;
     lua_State *L = ll->L;
-    if (ll->loader_index == 0) {
+    int status;
+    if (ll->reader_index == 0) {
         const char *p = ll->s;
         *plen = ll->len;
         ll->s = NULL, ll->len = 0;
         return p;
     }
     luaL_checkstack(L, 2, "too many nested functions");
-    lua_pushvalue(L, 1);
-    lua_call(L, 0, 1);
-    if (lua_isnil(L, -1))
-        return lua_pop(L, 1), *plen = 0, NULL;
-    else if (!lua_isstring(L, -1))
-        luaL_error(L, "reader function must return a string");
-    lua_replace(L, ll->loader_index);  /* save string in reserved slot */
-    return lua_tolstring(L, ll->loader_index, plen);
+    lua_pushvalue(L, ll->reader_index);
+    status = lua_pcall(L, 0, 1, 0);
+    if (status != 0) {
+        if (ll->errref != LUA_NOREF)
+            luaL_unref(L, LUA_REGISTRYINDEX, ll->errref);
+        ll->errref = luaL_ref(L, LUA_REGISTRYINDEX); /* pops the error */
+        return *plen = 0, NULL;
+    }
+    if (lua_isnil(L, -1)) {
+        lua_pop(L, 1);
+        return *plen = 0, NULL;
+    }
+    if (!lua_isstring(L, -1)) {
+        lua_pop(L, 1);
+        lua_pushliteral(L, "reader function must return a string");
+        if (ll->errref != LUA_NOREF)
+            luaL_unref(L, LUA_REGISTRYINDEX, ll->errref);
+        ll->errref = luaL_ref(L, LUA_REGISTRYINDEX);
+        return *plen = 0, NULL;
+    }
+    lua_replace(L, ll->reserve_index); /* keep the chunk on the stack */
+    return lua_tolstring(L, ll->reserve_index, plen);
+}
+
+static void aml_freeload(aml_Loader *ll) {
+    aml_VarBlk *vb = ll->vblk;
+    aml_ConsBlk *cb = ll->cblk;
+    while (vb != NULL) {
+        aml_VarBlk *next = vb->next;
+        unsigned i;
+        for (i = 0; i < vb->n; ++i) free(vb->slot[i].name);
+        free(vb);
+        vb = next;
+    }
+    while (cb != NULL) {
+        aml_ConsBlk *next = cb->next;
+        free(cb);
+        cb = next;
+    }
+    ll->vblk = NULL, ll->cblk = NULL;
+}
+
+static int aml_loadfail(lua_State *L, aml_Loader *ll) {
+    int oom = ll->oom;
+    if (ll->errref != LUA_NOREF) {
+        int err = ll->errref;
+        ll->errref = LUA_NOREF;
+        lua_pushnil(L);
+        lua_rawgeti(L, LUA_REGISTRYINDEX, err);
+        luaL_unref(L, LUA_REGISTRYINDEX, err);
+        lua_pushinteger(L, AM_FAILED);
+        return 3;
+    }
+    lua_pushnil(L);
+    lua_pushstring(L, oom ? "out of memory" : "FAILED");
+    lua_pushinteger(L, AM_FAILED);
+    return 3;
 }
 
 static int Lload(lua_State *L) {
-    aml_Solver *S = (aml_Solver*)luaL_checkudata(L, 1, AML_SOLVER_TYPE);
+    aml_Solver *receiver = (aml_Solver*)luaL_testudata(L, 1, AML_SOLVER_TYPE);
     aml_Loader ll;
+    aml_Solver *S;
+    am_Solver  *newS;
+    aml_VarBlk *vb;
+    aml_ConsBlk *cb;
+    int base = receiver ? 2 : 1;
+    int auto_update = 0;
+
+    if (receiver && receiver->solver)
+        auto_update = (int)receiver->solver->auto_update;
+    if (lua_isnone(L, base) || lua_isnil(L, base))
+        return luaL_error(L, "amoeba.load: data or reader expected");
     memset(&ll, 0, sizeof(ll));
-    ll.s = lua_tolstring(L, 1, &ll.len);
-    ll.L = L, ll.S = S;
-    ll.cons_index = (!lua_isnone(L, 2) ? 2 : 0);
-    ll.base.load_var = aml_loadvar;
-    ll.base.load_cons = aml_loadcons;
-    ll.base.reader = aml_reader;
-    if (ll.s == NULL) {
-        luaL_checktype(L, 1, LUA_TFUNCTION);
-        ll.loader_index = 3;
-        lua_settop(L, 3);  /* create reserved slot */
+    ll.L = L;
+    ll.errref = LUA_NOREF;
+    if (lua_type(L, base) == LUA_TSTRING) {
+        ll.data_index = base;
+        ll.s = lua_tolstring(L, base, &ll.len);
+    } else if (lua_type(L, base) == LUA_TFUNCTION) {
+        ll.reader_index = base;
+        lua_pushnil(L);
+        ll.reserve_index = lua_gettop(L);
+    } else {
+        return luaL_error(L, "amoeba.load: string or function expected");
     }
-    return aml_pusherror(L, am_load(S->solver, &ll.base));
+    if (!lua_isnone(L, base + 1) && !lua_isnil(L, base + 1)) {
+        luaL_checktype(L, base + 1, LUA_TTABLE);
+        ll.cons_index = base + 1;
+    }
+    ll.base.load_var = aml_loadvar;
+    ll.base.load_cons = ll.cons_index ? aml_loadcons : NULL;
+    ll.base.reader = aml_reader;
+
+    newS = am_load(NULL, NULL, &ll.base, 0);
+    if (newS == NULL || ll.oom) {
+        if (newS != NULL) am_delsolver(newS);
+        aml_freeload(&ll);
+        return aml_loadfail(L, &ll);
+    }
+
+    S = (aml_Solver*)lua_newuserdata(L, sizeof(aml_Solver));
+    S->solver = newS;
+    lua_createtable(L, 0, 4); aml_setweak(L, "v");
+    S->ref_vars = luaL_ref(L, LUA_REGISTRYINDEX);
+    lua_createtable(L, 0, 4); aml_setweak(L, "v");
+    S->ref_cons = luaL_ref(L, LUA_REGISTRYINDEX);
+    lua_newtable(L);
+    S->ref_loaded = luaL_ref(L, LUA_REGISTRYINDEX); /* keeps loaded vars alive */
+    luaL_setmetatable(L, AML_SOLVER_TYPE);
+
+    for (vb = ll.vblk; vb != NULL; vb = vb->next) {
+        unsigned i;
+        for (i = 0; i < vb->n; ++i) {
+            aml_LoadVar *slot = &vb->slot[i];
+            aml_Var *lvar;
+            lua_pushstring(L, slot->name);
+            lvar = aml_newvar(L, S, slot->var, lua_tostring(L, -1));
+            lvar->loaded = 1;
+            lua_remove(L, -2);
+            lvar->value = slot->value;
+            am_varvalue(newS, slot->var, &lvar->value);
+            lua_rawgeti(L, LUA_REGISTRYINDEX, S->ref_loaded);
+            lua_pushvalue(L, -2);
+            lua_rawseti(L, -2, (lua_Integer)slot->var);
+            lua_pop(L, 2);
+        }
+    }
+    if (ll.cons_index) {
+        for (cb = ll.cblk; cb != NULL; cb = cb->next) {
+            unsigned i;
+            for (i = 0; i < cb->n; ++i) {
+                aml_Cons *lcons;
+                *(aml_Solver**)cb->slot[i].cons = S;
+                lcons = aml_registercons(L, cb->slot[i].cons);
+                lcons->loaded = 1;
+                lua_rawseti(L, ll.cons_index, (lua_Integer)cb->slot[i].idx + 1);
+            }
+        }
+    }
+    am_autoupdate(newS, auto_update);
+    aml_freeload(&ll);
+    return 1;
 }
 
 /* solver */
@@ -660,6 +860,7 @@ static int Lnew(lua_State *L) {
     S->ref_vars = luaL_ref(L, LUA_REGISTRYINDEX);
     lua_createtable(L, 0, 4); aml_setweak(L, "v");
     S->ref_cons = luaL_ref(L, LUA_REGISTRYINDEX);
+    S->ref_loaded = LUA_NOREF;
     luaL_setmetatable(L, AML_SOLVER_TYPE);
     am_autoupdate(S->solver, lua_toboolean(L, 1));
     return 1;
@@ -670,26 +871,25 @@ static int Ldelete(lua_State *L) {
     if (S->solver == NULL) return 0;
     lua_rawgeti(L, LUA_REGISTRYINDEX, S->ref_vars);
     lua_pushnil(L);
+    /* only invalidate: am_delsolver() frees everything */
     while (lua_next(L, -2)) {
         aml_Var *lvar = (aml_Var*)luaL_testudata(L, -1, AML_VAR_TYPE);
-        if (lvar && lvar->var) {
-            am_delvariable(lvar->S->solver, lvar->var);
-            lvar->var  = 0, lvar->name = NULL;
-        }
+        if (lvar) lvar->var = 0, lvar->name = NULL;
         lua_pop(L, 1);
     }
     lua_rawgeti(L, LUA_REGISTRYINDEX, S->ref_cons);
     lua_pushnil(L);
     while (lua_next(L, -2)) {
         aml_Cons *lcons = (aml_Cons*)luaL_testudata(L, -1, AML_CONS_TYPE);
-        if (lcons && lcons->cons) {
-            am_delconstraint(lcons->cons);
-            lcons->cons = NULL;
-        }
+        if (lcons) lcons->cons = NULL;
         lua_pop(L, 1);
     }
     luaL_unref(L, LUA_REGISTRYINDEX, S->ref_vars);
     luaL_unref(L, LUA_REGISTRYINDEX, S->ref_cons);
+    if (S->ref_loaded != LUA_NOREF) {
+        luaL_unref(L, LUA_REGISTRYINDEX, S->ref_loaded);
+        S->ref_loaded = LUA_NOREF;
+    }
     am_delsolver(S->solver);
     S->solver = NULL;
     return 0;

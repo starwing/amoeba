@@ -214,6 +214,35 @@ static void build_solver(am_Solver* S, am_Id width, am_Id height, am_Num *values
     }
 }
 
+static void *bench_poolalloc(am_MemPool *pool) {
+    void *obj = pool->freed;
+    if (obj == NULL) {
+        const size_t offset = AM_POOL_SIZE - sizeof(void*);
+        void *end, *ptr = malloc(AM_POOL_SIZE);
+        if (ptr == NULL) abort();
+        *(void**)((char*)ptr + offset) = pool->pages;
+        pool->pages = ptr;
+        end = (char*)ptr + (offset/pool->size-1)*pool->size;
+        while (end != ptr) {
+            *(void**)end = pool->freed;
+            pool->freed = (void**)end;
+            end = (char*)end - pool->size;
+        }
+        return end;
+    }
+    pool->freed = *(void**)obj;
+    return obj;
+}
+
+static void bench_poolfree(am_MemPool *pool) {
+    const size_t offset = AM_POOL_SIZE - sizeof(void*);
+    while (pool->pages != NULL) {
+        void *next = *(void**)((char*)pool->pages + offset);
+        free(pool->pages);
+        pool->pages = next;
+    }
+}
+
 int main() {
     am_Num values[35];
     am_Solver *S;
@@ -224,11 +253,11 @@ int main() {
     am_MemPool hashpool; am_initpool(&hashpool, hash_size);
     auto alloc = [&](void *ptr, size_t ns, size_t os, am_AllocType ty) {
         if (ty == am_AllocConstraint) {
-            if (ns) return am_poolalloc(&conspool);
+            if (ns) return bench_poolalloc(&conspool);
             return am_poolfree(&conspool, ptr), (void*)0;
         }
         if (ty == am_AllocHash) {
-            if (ns == hash_size && os == 0) return am_poolalloc(&hashpool);
+            if (ns == hash_size && os == 0) return bench_poolalloc(&hashpool);
             if (os == hash_size && ns == 0) return am_poolfree(&hashpool, ptr), (void*)0;
         }
         if (ns) return realloc(ptr, ns);
@@ -304,9 +333,8 @@ int main() {
             }
             return (const char*)nullptr;
         };
-        am_Solver *S = am_newsolver(alloc_func, &alloc);
-        int ret = am_load(S, &l.base);
-        assert(ret == AM_OK), (void)ret;
+        am_Solver *S = am_load(alloc_func, &alloc, &l.base, 0);
+        assert(S != NULL), (void)S;
         am_delsolver(S);
     });
 #endif /* !DISABLE_LOAD */
@@ -349,8 +377,8 @@ int main() {
     am_delsolver(S);
 #endif /* !DISABLE_SUGGEST */
 
-    am_freepool(&conspool);
-    am_freepool(&hashpool);
+    bench_poolfree(&conspool);
+    bench_poolfree(&hashpool);
     return 0;
 }
 
