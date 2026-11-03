@@ -430,4 +430,46 @@ TEST(dumpload) {
     maxmem = 0;
 }
 
+/* A solver with zero constraints used to dump nothing while returning AM_OK:
+ * the dump context was zeroed after its ret was set to AM_FAILED, so the
+ * zero-length segments left both pointers NULL and skipped the whole body. */
+TEST(dump_empty) {
+    am_Num     x = 7;
+    am_Solver *S, *S2;
+    char       buf[TEST_BUFSIZE];
+    size_t     len = 0;
+    MyDumper   md;
+    MyLoader   ml;
+
+    md.base.var_name = dump_varname;
+    md.base.cons_name = NULL;
+    md.base.writer = dump_writer;
+    md.p = buf, md.len = &len;
+    ml.base.load_var = load_var;
+    ml.base.load_cons = load_cons;
+    ml.base.reader = load_reader;
+
+    S = am_test_new_solver();
+    assertok(am_newvariable(S, &x) != 0);
+    asserteq(am_dump(S, &md.base), AM_OK);
+    assertok(len > 0);
+    ml.p = buf, ml.len = len;
+    assertok((S2 = am_load(am_test_allocf, NULL, &ml.base, 0)) != NULL);
+    asserteq(S2->vars.count, 1);
+    asserteq(S2->constraints.count, 0);
+    am_delsolver(S2);
+    am_delsolver(S);
+
+    len = 0;
+    S = am_test_new_solver();
+    asserteq(am_dump(S, &md.base), AM_OK);
+    assertok(len > 0);
+    ml.p = buf, ml.len = len;
+    assertok((S2 = am_load(am_test_allocf, NULL, &ml.base, 0)) != NULL);
+    asserteq(S2->vars.count, 0);
+    asserteq(S2->constraints.count, 0);
+    am_delsolver(S2);
+    am_delsolver(S);
+}
+
 #include "dump_test.gen.inc"

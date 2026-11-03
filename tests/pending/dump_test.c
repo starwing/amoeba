@@ -390,10 +390,10 @@ TEST(dumpload) {
 
     {
         /* dump converage */
-        MyDumper   d;
-        am_DumpCtx ctx;
-        char       buf[10];
-        size_t     len = 0;
+        MyDumper d;
+        am_Dump  ctx;
+        char     buf[10];
+        size_t   len = 0;
         d.base.writer = dump_writer;
         d.p = buf;
         d.len = &len;
@@ -416,9 +416,9 @@ TEST(dumpload) {
 
     {
         /* load coverage */
-        am_LoadCtx ctx;
-        am_Size    value;
-        am_Num     flt = 0;
+        am_Load ctx;
+        am_Size value;
+        am_Num  flt = 0;
 
         assert(am_readraw_slow(NULL, NULL, 0) == AM_FAILED);
         ctx.p = "\xCE\xFF\xFF\xFF\xFF", ctx.n = 5;

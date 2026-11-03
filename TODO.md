@@ -6,13 +6,13 @@
 > 当前状态以 `git status` / `git log` 为准；本文件不记录状态，也不规定顺序。优先级是价值判断，
 > 依赖是技术事实；先做哪个由用户当次决定。
 >
-> 基线：2026-11-03，HEAD `cdf6143`（仅用于定位，不是承诺）。行号会漂移，按函数名定位；新写的
-> 内容不引用行号。
+> 基线：2026-11-03（仅用于定位，不是承诺）。HEAD 用 `git log -1` 现算；行号会漂移，按函数名
+> 定位；新写的内容不引用行号。
 
 ## 0. 优先级总览
 
 - **P0（正确性）**：#6。
-- **P1（恢复与健壮性）**：#3、#4、#8、A3、B1–B10。
+- **P1（恢复与健壮性）**：#3、#4、A3、B1–B10。
 - **P2（能力与质量）**：C1–C6。
 - **P3（清理）**：A4。
 - **提案（未批准）**：D 节的可视化 Demo。
@@ -22,7 +22,6 @@
 | ID | P | 问题 | 依赖 | 用例 |
 |---|---|---|---|---|
 | #6 | P0 | `am_addterm()` / `am_mergeconstraint()` 无条件 `refcount += 1`，合并/抵消时计数漂移（`am_Var` 泄漏） | 无 | `addterm_refcount_balances` + `mergeconstraint_refcount_balances`（在 `tests/pending/`） |
-| #8 | P1 | `am_dump()` 在 `S->constraints.count == 0` 时返回 `AM_OK` 但写 0 字节（`ctx.ret` 被 `memset` 清零，`ctx.cons == NULL` 跳过 `amD_all()`） | 无 | 新建 `dump_empty` / `load_empty` |
 | #4 | P1 | `am_load()` 不恢复每项引用计数：load 后删一条约束会把别的约束还在用的变量回收 | 复用加项 helper 时需要 #6 | 新建 `load_then_remove_keeps_vars` |
 | #3 | P1 | `am_load()` 之后绑定值不刷新（`S->dirty_vars` 为空，`am_updatevars()` 空转） | 独立 | `dump_test::dumpload` 的值断言（在 `tests/pending/`） |
 | A3 | P1 | dump/load 没有 magic + 版本号 | 无 | 需新建（真 dump） |
@@ -59,7 +58,7 @@ B9 把对应用例搬回 live，不要直接覆盖。
       留档还是删除，你定。
 - [ ] `.travis.yml` 删除（内容已被新 CI 覆盖）。
 
-## 4. 正确性细节（#6 / #8 / #4 / #3）
+## 4. 正确性细节（#6 / #4 / #3）
 
 ### #6. `refcount` 按调用次数增加
 
@@ -70,18 +69,6 @@ B9 把对应用例搬回 live，不要直接覆盖。
   live 并变绿。
 - 风险：`refcount` 同时承担「引用计数」和「脏链标记」两种语义（见
   [notes/algorithm.md](notes/algorithm.md) §7），改动要成对。
-
-### #8. `am_dump()` 空约束时静默成功
-
-- 现状：`am_dump()` 先把 `ctx.ret` 设成 `AM_FAILED`，随后 `memset(&ctx, 0, ...)` 又把 ret
-  清成 0。`S->constraints.count == 0` 时 `cons_alloc == 0`，`ctx.cons` 为 `NULL`，于是
-  `if (ctx.syms && ctx.cons && ...)` 整段跳过，函数返回 `ctx.ret == 0`，一个字节也没写。
-  自定义 allocator 对 `ctx.syms` 返回 NULL 时也一样。
-- 做法：把 `ctx.ret` 的初始化放到 `memset` 之后；零长度的段允许指针为 NULL（用长度判断），
-  并避开 `qsort(NULL, 0, ...)` / `ctx.syms + vc` 这类空指针算术。
-- 验收：新建 `dump_empty`——一个变量、零约束的 solver 应 dump 出合法 5 元流，且能
-  `am_load()` 回来；同时覆盖真正空的 solver（如果支持）。
-- 备注：HEAD 就有；`tests/api_test.c` 现在的 dump 都至少带一条约束。
 
 ### #4. `am_load()` 不恢复 refcount
 

@@ -58,7 +58,7 @@ static size_t allmem = 0;
 static size_t maxmem = 0;
 
 static void *am_test_allocf(void **pud, void *ptr, size_t ns, size_t os,
-                            am_AllocType ty) {
+                            am_Type ty) {
     void *newptr = NULL;
     (void)pud, (void)ty;
     allmem += ns;

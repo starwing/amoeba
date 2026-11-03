@@ -359,7 +359,7 @@ int main() {
     const size_t hash_size = (sizeof(am_Key) + sizeof(am_Num)) * 8;
     bench_pool   hashpool;
     bench_poolinit(&hashpool, hash_size);
-    auto alloc = [&](void *ptr, size_t ns, size_t os, am_AllocType ty) {
+    auto alloc = [&](void *ptr, size_t ns, size_t os, am_Type ty) {
         if (ty == am_AllocConstraint) {
             if (ns) return bench_poolalloc(&conspool);
             return bench_poolput(&conspool, ptr), (void *)0;
@@ -373,7 +373,7 @@ int main() {
         return free(ptr), (void *)0;
     };
     auto alloc_func = [](void **pud, void *ptr, size_t ns, size_t os,
-                         am_AllocType ty) {
+                         am_Type ty) {
         const auto func = &decltype(alloc)::operator();
         auto       alloc_ptr = *(decltype(alloc) **)(pud);
         return (alloc_ptr->*func)(ptr, ns, os, ty);
