@@ -11,7 +11,6 @@
 
 ## 0. 优先级总览
 
-- **P0（正确性）**：#6。
 - **P1（恢复与健壮性）**：#3、#4、A3、B1–B10。
 - **P2（能力与质量）**：C1–C6。
 - **P3（清理）**：A4。
@@ -21,22 +20,19 @@
 
 | ID | P | 问题 | 依赖 | 用例 |
 |---|---|---|---|---|
-| #6 | P0 | `am_addterm()` / `am_merge()` 无条件 `refcount += 1`，合并/抵消时计数漂移（`am_Var` 泄漏） | 无 | `addterm_refcount_balances` + `mergeconstraint_refcount_balances`（在 `tests/pending/`） |
-| #4 | P1 | `am_load()` 不恢复每项引用计数：load 后删一条约束会把别的约束还在用的变量回收 | 复用加项 helper 时需要 #6 | 新建 `load_then_remove_keeps_vars` |
+| #4 | P1 | `am_load()` 不恢复每项引用计数：load 后删一条约束会把别的约束还在用的变量回收 | `amC_addterm()` 可直接复用（#6 的产物） | 新建 `load_then_remove_keeps_vars` |
 | #3 | P1 | `am_load()` 之后绑定值不刷新（`S->dirty_vars` 为空，`am_updatevars()` 空转） | 独立 | `dump_test::dumpload` 的值断言（在 `tests/pending/`） |
 | A3 | P1 | dump/load 没有 magic + 版本号 | 无 | 需新建（真 dump） |
 
-`#3` / `#4` / `#6` 的用例当前在 `tests/pending/`（`api_test.c` 快照 + `dump_test.c` 快照里的
-#3 值断言），不参与构建，见 [tests/pending/README.md](tests/pending/README.md)。每修完一个就按
-B9 把对应用例搬回 live，不要直接覆盖。
+`#3` 的值断言当前在 `tests/pending/dump_test.c` 快照里，不参与构建，见
+[tests/pending/README.md](tests/pending/README.md)。修完按 B9 搬回 live，不要直接覆盖。
 
 ## 2. 背景与依赖（事实，不是顺序）
 
-- **根因分组**：`#6` 是记账原语（refcount 按调用次数而不是按活着的项）；`#4` 是 load 绕过记账；
-  `#3` 是 load 尾部不刷新；`A3` 是流没有版本头。
+- **根因分组**：`#4` 是 load 绕过记账；`#3` 是 load 尾部不刷新；`A3` 是流没有版本头。
 - **依赖**：
-  - `#6 → #4`：`#4` 想复用「加项」helper 的话，先有 `#6` 才干净；也可以自己在
-    `amL_constraints()` 补计数而解耦。
+  - `#4`：`amC_addterm()` 已经是「往表达式加一项 + 记账」的唯一入口（#6 的产物），
+    `amL_constraints()` 复用它即可，不必自己补计数。
   - `#4 → #3`：仅当 `#3` 借脏链刷新时；用全表刷新则不依赖。
   - `A3`：无前置；继续用「真 dump + 只改目标字段」的策略。
 - **A3 的用例策略**：继续用 `am_dump()` 生成真流、只改目标字段；手搓流会和真实 writer 不一致。
@@ -58,26 +54,16 @@ B9 把对应用例搬回 live，不要直接覆盖。
       留档还是删除，你定。
 - [ ] `.travis.yml` 删除（内容已被新 CI 覆盖）。
 
-## 4. 正确性细节（#6 / #4 / #3）
-
-### #6. `refcount` 按调用次数增加
-
-- 现状：`am_addterm()` / `am_merge()` 无条件 `refcount += 1`；合并或系数抵消时，
-  表达式里已经没有该项，计数却还在 → `am_Var` 泄漏。
-- 做法：只在「表达式里真的新增了一项」时 +1，消失时 -1；入口是 `am_exprterm()`。
-- 验收：`addterm_refcount_balances`、`mergeconstraint_refcount_balances` 从 pending 搬回
-  live 并变绿。
-- 风险：`refcount` 同时承担「引用计数」和「脏链标记」两种语义（见
-  [notes/algorithm.md](notes/algorithm.md) §7），改动要成对。
+## 4. 正确性细节（#4 / #3）
 
 ### #4. `am_load()` 不恢复 refcount
 
 - 现状：`amL_vars()` 给每个变量 `refcount = 1`；`amL_constraints()` 把项直接塞进
-  `expression` 表，没走 `am_exprterm()`。load 后删一条约束，会把别的约束还在用的变量当成
+  `expression` 表，没走 `amC_addterm()`。load 后删一条约束，会把别的约束还在用的变量当成
   「没人引用」回收。
 - 做法：读完每条约束后，按恢复出来的表达式补 refcount（或让读路径走同一个加项 helper）。
 - 验收：`load_then_remove_keeps_vars`；load → 删一条 → 另一条约束仍能解。
-- 依赖：若复用「加项」helper，需要 #6 先落地；也可以自己补计数而解耦。
+- 依赖：`amC_addterm()`（#6 的产物）直接复用即可，不必自己补计数。
 
 ### #3. `am_load()` 后绑定值不刷新
 
@@ -95,7 +81,7 @@ B9 把对应用例搬回 live，不要直接覆盖。
   （发行版）和本地 23.1.4 可能不一致（配置用了 19+ 的 key）。
 - 做法：锁定版本（CI 装固定版本，或改用 `pip install clang-format==<ver>`），然后改成 blocking。
 - 验收：故意打乱一个空格，CI 变红。
-- 前置：唯一的 `style:` 提交落地。
+- 前置：唯一的 `style:` 提交落地——已满足（`50ab0a9`），可以直接做版本锁定。
 
 ### B2. Windows / MSVC 的测试路径
 
@@ -124,10 +110,22 @@ B9 把对应用例搬回 live，不要直接覆盖。
 
 ### B6. `assert` 承担安全职责的地方
 
-- 现状：`amD_mapid()`（dump 侧）只有 `assert(id != NULL)`，release 构建里是 NULL 解引用。
-- 做法：改成返回错误，让 `am_dump()` 返回 `AM_FAILED`；顺手扫一遍「`assert` 里做参数校验」
-  的位置。
-- 验收：NULL 名字的 dump 不崩溃，返回错误码。
+- 现状（三处；后两处是审 `f7a0d5e` 时发现的**既有**问题，不是那笔引入的）：
+  1. `amD_mapid()`（dump 侧）只有 `assert(id != NULL)`，release 构建里是 NULL 解引用。
+  2. `am_cloneconstraint()`：`am_newconstraint()` 返回 NULL（分配失败）时，
+     `(c->relation = o->relation)` 直接解引用 NULL。
+  3. `am_delconstraint()`：`ce == NULL`（对同一指针重复删除，本质是 UAF 场景）时，
+     `assert(ce != NULL && *ce == c)` 在 NDEBUG 下消失，随后 `amH_del(&S->constraints, ce)`
+     拿 NULL 去算槽位偏移 → 野写。
+- 做法：
+  1. `amD_mapid()` 改成返回错误，让 `am_dump()` 返回 `AM_FAILED`。
+  2. `am_cloneconstraint()` 加 `if (c == NULL) return NULL;`（或把 `am_newconstraint()` 的
+     失败一路传上去，选哪种要看调用方怎么处理 NULL）。
+  3. `am_delconstraint()` 的重复删除要**先定语义**（早返回？返回错误码？`amC` 之外再挡一层？），
+     再决定是「不写」还是「写 `AM_FAILED`」——不要只把 `assert` 换成 `if`。
+  顺手扫一遍「`assert` 里做参数校验」的其他位置。
+- 验收：NULL 名字的 dump 不崩溃并返回错误码；clone 在分配失败时返回 NULL 而不是崩溃；
+  重复 `am_delconstraint()` 按第 3 条定下的语义行事，且 NDEBUG 构建下无野写（ASan 跑）。
 
 ### B7. `tests/*.gen.inc` 的生成依赖
 
@@ -137,9 +135,8 @@ B9 把对应用例搬回 live，不要直接覆盖。
 
 ### B9. `tests/pending/` 快照的回收
 
-- 现状：`tests/pending/{dump_test,api_test}.c` 是从 live 摘出来的快照，不参与构建：
-  `dump_test.c` 里有两块被移出的白盒 coverage 和 #3 的值断言；`api_test.c` 里有 #6 的两条
-  回归用例（#2、#5、#7 的用例都在 live）。
+- 现状：`tests/pending/dump_test.c` 是从 live 摘出来的快照，不参与构建：里面有两块被移出的
+  白盒 coverage 和 #3 的值断言（#2、#5、#6、#7 的用例都在 live）。
 - 做法：每修完一个 #N，只把**那一个**用例按当时的实现搬回 live；coverage 块改写成
   `am_dump()` 的 writer 回调 + `am_load()` 的 arena 之后再考虑回收。
 - 验收：pending 目录最终清空（或只剩明确标注的历史档）；每次搬回都跑 `just check`。
@@ -150,8 +147,8 @@ B9 把对应用例搬回 live，不要直接覆盖。
   所以 assert 的行/分支会进统计。
 - 现状二：直接加 `-DNDEBUG` 现在**编不过**：`tests/solver_test.c` 有 8 处
   `-Werror,-Wunused-but-set-variable`（变量只被 `assert(...)` 用）。
-- 现状三：tests 里共 91 个裸 `assert(`（`solver_test.c` 80、`dump_test.c` 11），NDEBUG 下会
-  静默消失。harness 自己的 `asserteq` / `assertok` / `assertstreq` 不依赖 `assert`。
+- 现状三：tests 里共 108 个裸 `assert(`（`solver_test.c` 80、`dump_test.c` 11、`api_test.c` 17），
+  NDEBUG 下会静默消失。harness 自己的 `asserteq` / `assertok` / `assertstreq` 不依赖 `assert`。
 - 做法：
   1. 把 tests 里承载检查的裸 assert 换成 harness 宏（顺带消掉那 8 个 unused 变量）；
   2. 给 `cov` 的编译行加 `-DNDEBUG`；

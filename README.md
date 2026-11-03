@@ -330,7 +330,7 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
   MyVarContext *ctx = new_context();
   am_Id var = am_newvariable(solver, &ctx->value);
   /* retrive the context: */
-  MyVarContext *ctx = (MyVarContext*)am_varvalue(var, NULL);
+  MyVarContext *ctx = (MyVarContext*)am_varvalue(solver, var, NULL);
   ```
 
 - `void am_delvariable(am_Solver *solver, am_Id var);`

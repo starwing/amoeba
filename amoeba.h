@@ -511,8 +511,8 @@ static int amR_addvar(am_Solver *S, am_Row *r, am_Symbol sym, am_Num value) {
         term = (am_Num *)amH_set(S, &r->terms, sym);
         return assert(term != NULL), (*term = value), 1;
     }
-    if (amN_nearzero(*term += value)) amH_del(&r->terms, term);
-    return 0;
+    if (!amN_nearzero(*term += value)) return 0;
+    return amH_del(&r->terms, term), -1;
 }
 
 static void amR_addrow(am_Solver *S, am_Row *r, const am_Row *o, am_Num f) {
@@ -533,6 +533,14 @@ static int amC_init(am_Solver *S, am_Symbol sym, am_Constraint *c) {
     amC(ce != NULL);
     *ce = c, memset(c, 0, sizeof(*c)), c->S = S;
     return (c->sym = sym), amR_init(&(*ce)->expression), AM_OK;
+}
+
+static int amC_addterm(am_Constraint *c, am_Id var, am_Num value) {
+    am_Symbol sym = {0, AM_EXTERNAL};
+    am_Var   *ve;
+    amC((ve = (am_Var *)amH_get(&c->S->vars, var)) != NULL);
+    sym.id = var, ve->refcount += amR_addvar(c->S, &c->expression, sym, value);
+    return AM_OK;
 }
 
 static am_Suggest *amC_newedit(am_Solver *S, am_Id var, am_Num strength) {
@@ -1497,10 +1505,9 @@ AM_API am_Id am_newvariable(am_Solver *S, am_Num *pvalue) {
     am_Var   *ve;
     if (S == NULL || pvalue == NULL) return 0;
     sym = amS_new(S, AM_EXTERNAL);
-    ve = (am_Var *)amH_set(S, &S->vars, sym);
-    if (ve == NULL) return 0;
-    memset(ve, 0, sizeof(*ve));
-    return (ve->pvalue = pvalue, ve->refcount = 1), sym.id;
+    if ((ve = (am_Var *)amH_set(S, &S->vars, sym)) == NULL) return 0;
+    memset(ve, 0, sizeof(*ve)), ve->pvalue = pvalue, ve->refcount = 1;
+    return sym.id;
 }
 
 AM_API void am_delvariable(am_Solver *S, am_Id var) {
@@ -1533,8 +1540,7 @@ AM_API am_Constraint *am_cloneconstraint(am_Constraint *o, am_Num strength) {
     if (o == NULL) return NULL;
     if (amN_nearzero(strength)) strength = o->strength;
     c = am_newconstraint(o->S, strength);
-    am_merge(c, o, 1.0f);
-    return (c->relation = o->relation), c;
+    return am_merge(c, o, 1.0f), (c->relation = o->relation), c;
 }
 
 AM_API void am_resetconstraint(am_Constraint *c) {
@@ -1551,10 +1557,8 @@ AM_API void am_delconstraint(am_Constraint *c) {
     am_Iterator     it;
     am_Constraint **ce;
     if (S == NULL) return;
-    am_remove(c);
-    ce = (am_Constraint **)amH_get(&S->constraints, c->sym.id);
-    assert(ce != NULL && *ce == c);
-    amH_del(&S->constraints, ce);
+    am_remove(c), ce = (am_Constraint **)amH_get(&S->constraints, c->sym.id);
+    assert(ce != NULL && *ce == c), amH_del(&S->constraints, ce);
     it = amH_iter(&c->expression.terms);
     while (amH_next(&it)) am_delvariable(c->S, it.key.id);
     amR_free(S, &c->expression);
@@ -1562,14 +1566,9 @@ AM_API void am_delconstraint(am_Constraint *c) {
 }
 
 AM_API int am_addterm(am_Constraint *c, am_Id var, am_Num f) {
-    am_Symbol sym = {0, AM_EXTERNAL};
-    am_Var   *ve;
     if (c == NULL || var == 0) return AM_PARAM;
     amC(c->marker.id == 0);
-    if (c->relation == AM_GREATEQUAL) f = -f;
-    amC(ve = (am_Var *)amH_get(&c->S->vars, var));
-    amR_addvar(c->S, &c->expression, (sym.id = var, sym), f);
-    return ve->refcount += 1, AM_OK;
+    return amC_addterm(c, var, c->relation == AM_GREATEQUAL ? -f : f);
 }
 
 AM_API int am_setrelation(am_Constraint *c, int relation) {
@@ -1615,12 +1614,8 @@ AM_API int am_merge(am_Constraint *c, const am_Constraint *o, am_Num factor) {
     if (c->relation == AM_GREATEQUAL) factor = -factor;
     c->expression.constant += o->expression.constant * factor;
     it = amH_iter(&o->expression.terms);
-    while (amH_next(&it)) {
-        am_Var *ve = (am_Var *)amH_get(&c->S->vars, it.key.id);
-        am_Num  term = *amH_val(am_Num, it);
-        assert(ve != NULL), ve->refcount += 1;
-        amR_addvar(c->S, &c->expression, it.key, term * factor);
-    }
+    while (amH_next(&it))
+        amE(amC_addterm(c, it.key.id, *amH_val(am_Num, it) * factor));
     return AM_OK;
 }
 
@@ -1649,8 +1644,7 @@ AM_API am_Solver *am_load(am_Allocf *a, void *ud, am_Loader *l, size_t maxmem) {
     am_Solver *S;
     am_Size    count, total;
     if (!l || !l->reader || !l->load_var) return NULL;
-    S = am_newsolver(a, ud);
-    if (S == NULL) return NULL;
+    if ((S = am_newsolver(a, ud)) == NULL) return NULL;
     memset(&X, 0, sizeof(X)), X.S = S, X.loader = l, X.offset = S->current + 1;
     if (amL_count(&X, &count) != AM_OK || count != 5) return amL_fail(S);
     if (amL_uint32(&X, &total) != AM_OK) return amL_fail(S);

@@ -105,6 +105,70 @@ TEST(setstrength_tighten_failure_restores) {
     am_delsolver(S);
 }
 
+/* A variable holds one reference for itself plus one per term that really
+ * lives in a constraint expression; am_updatevars() reads that count.
+ *
+ * Regression: am_addterm() and am_merge() added a reference on every call, so
+ * a merged, cancelled or zero term leaked an am_Var entry that no constraint
+ * could ever release again. */
+TEST(addterm_refcount_balances) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         x = 0;
+    am_Id          vx = am_newvariable(S, &x);
+    am_Constraint *c = am_newconstraint(S, AM_REQUIRED);
+    int            base = am_refcount(S, vx);
+
+    asserteq(base, 1); /* the variable itself */
+
+    am_addterm(c, vx, 1.f); /* a new term */
+    asserteq(am_refcount(S, vx), base + 1);
+
+    am_addterm(c, vx, 2.f); /* merged into the term that was already there */
+    asserteq(am_refcount(S, vx), base + 1);
+
+    am_addterm(c, vx, -3.f); /* 1 + 2 - 3 == 0: the term goes away */
+    asserteq(am_refcount(S, vx), base);
+
+    am_addterm(c, vx, 0.f); /* a zero coefficient never becomes a term */
+    asserteq(am_refcount(S, vx), base);
+
+    am_delconstraint(c);
+    asserteq(am_refcount(S, vx), base); /* nothing left to release */
+
+    am_delvariable(S, vx); /* the leaked reference kept this from happening */
+    asserteq(am_refcount(S, vx), 0);
+    am_delsolver(S);
+}
+
+/* am_merge() feeds am_addterm()'s bookkeeping: merging a term the target
+ * already has must not take a second reference, and a merge that cancels the
+ * term out must release one. */
+TEST(mergeconstraint_refcount_balances) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         x = 0;
+    am_Id          vx = am_newvariable(S, &x);
+    am_Constraint *src = am_newconstraint(S, AM_REQUIRED);
+    am_Constraint *dst = am_newconstraint(S, AM_REQUIRED);
+    int            base = am_refcount(S, vx);
+
+    am_addterm(src, vx, 1.f); /* src: x */
+    asserteq(am_refcount(S, vx), base + 1);
+
+    asserteq(am_merge(dst, src, 2.f), AM_OK); /* dst: 2x */
+    asserteq(am_refcount(S, vx), base + 2);
+
+    asserteq(am_merge(dst, src, 3.f), AM_OK); /* dst: 5x, still one term */
+    asserteq(am_refcount(S, vx), base + 2);
+
+    asserteq(am_merge(dst, src, -5.f), AM_OK); /* 5x - 5x: the term goes */
+    asserteq(am_refcount(S, vx), base + 1);
+
+    am_delconstraint(dst);
+    am_delconstraint(src);
+    asserteq(am_refcount(S, vx), base);
+    am_delsolver(S);
+}
+
 /* Parameter checks must report AM_PARAM, so a caller can tell a bad call
  * from a solver that rejected a valid constraint (AM_FAILED). */
 TEST(param_checks_return_am_param) {
