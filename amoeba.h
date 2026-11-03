@@ -1202,20 +1202,18 @@ static char *amL_takemem(am_Load *X, am_Size size, size_t unit) {
 }
 
 static int amL_row(am_Load *X, am_Row *r) {
-    am_Size i, count, value;
+    am_Size i, count, value, unit = sizeof(am_Key) + sizeof(am_Num);
     amE(amL_count(X, &count));
     amC(count >= 1 && (count & 1) == 1);
     if (X->arena_p) {
         am_Size size = amH_calcsize(count / 2);
-        size_t  unit = sizeof(am_Key) + sizeof(am_Num);
         am_Key *keys = (am_Key *)amL_takemem(X, size, unit);
         amC(keys != NULL);
-        amH_attach(&r->terms, keys, size, sizeof(am_Num));
-        r->terms.arena = 1;
+        amH_attach(&r->terms, keys, size, sizeof(am_Num)), r->terms.arena = 1;
     }
     amE(amL_float(X, &r->constant));
     for (i = 1; i < count; i += 2) {
-        am_Symbol sym = {0, 0};
+        am_Symbol sym;
         am_Num   *term;
         amE(amL_uint32(X, &value));
         amC((value >> 2) < X->total); /* 30-bit id, never 0 */
@@ -1227,22 +1225,16 @@ static int amL_row(am_Load *X, am_Row *r) {
     return AM_OK;
 }
 
-static int amL_vars(am_Load *X) {
-    am_Solver *S = X->S;
-    am_Size    i, count;
-    am_Symbol  sym = {0, AM_EXTERNAL};
-    amE(amL_count(X, &count));
-    amC(count <= X->total); /* ids are offset+i, keep them in total */
-    for (i = 0; i < count; ++i) {
-        am_Var *ve;
-        am_Num *pvalue;
-        amE(amL_string(X));
-        pvalue = X->loader->load_var(X->loader, X->s, i, X->offset + i);
-        amC(pvalue != NULL);
-        sym.id = X->offset + i;
-        amC(ve = (am_Var *)amH_set(S, &S->vars, sym));
-        memset(ve, 0, sizeof(*ve)), ve->pvalue = pvalue, ve->refcount = 1;
-    }
+static int amL_var(am_Load *X, am_Size i) {
+    am_Symbol sym = {0, AM_EXTERNAL};
+    am_Var   *ve;
+    am_Num   *pvalue;
+    amE(amL_string(X));
+    pvalue = X->loader->load_var(X->loader, X->s, i, X->offset + i);
+    amC(pvalue != NULL);
+    sym.id = X->offset + i;
+    amC(ve = (am_Var *)amH_set(X->S, &X->S->vars, sym));
+    memset(ve, 0, sizeof(*ve)), ve->pvalue = pvalue, ve->refcount = 1;
     return AM_OK;
 }
 
@@ -1255,43 +1247,43 @@ static int amL_marker(am_Load *X, am_Symbol *sym, unsigned *id) {
     return (*id = X->offset + (value >> 2), sym->id = *id), AM_OK;
 }
 
-static int amL_constraints(am_Load *X) {
-    am_Size    i, count, value;
-    am_Solver *S = X->S;
-    amE(amL_count(X, &count));
-    for (i = 0; i < count; ++i) {
-        am_Constraint *c;
-        am_Num         strength;
-        amE(amL_count(X, &value));
-        amC(value == 6); /* [name, strength, marker, other, relation, row] */
-        amE(amL_string(X));
-        amE(amL_float(X, &strength));
-        amC(c = am_newconstraint(S, strength));
-        if (X->loader->load_cons) X->loader->load_cons(X->loader, X->s, i, c);
-        amE(amL_marker(X, &c->marker, &c->marker_id));
-        amE(amL_marker(X, &c->other, &value));
-        c->other_id = value;
-        amE(amL_uint32(X, &value));
-        amC(value <= AM_GREATEQUAL); /* 0 = never configured */
-        c->relation = value;
-        amE(amL_row(X, &c->expression));
+static int amL_constraint(am_Load *X, am_Size i) {
+    am_Iterator    it;
+    am_Constraint *c;
+    am_Num         strength;
+    am_Size        value;
+    amE(amL_count(X, &value));
+    amC(value == 6); /* [name, strength, marker, other, relation, row] */
+    amE(amL_string(X));
+    amE(amL_float(X, &strength));
+    amC(c = am_newconstraint(X->S, strength));
+    if (X->loader->load_cons) X->loader->load_cons(X->loader, X->s, i, c);
+    amE(amL_marker(X, &c->marker, &c->marker_id));
+    amE(amL_marker(X, &c->other, &value));
+    c->other_id = value;
+    amE(amL_uint32(X, &value));
+    amC(value <= AM_GREATEQUAL); /* 0 = never configured */
+    c->relation = value;
+    amE(amL_row(X, &c->expression));
+    it = amH_iter(&c->expression.terms);
+    while (amH_next(&it)) {
+        am_Var *ve = (am_Var *)amH_get(&X->S->vars, it.key.id);
+        amC(it.key.type == AM_EXTERNAL && ve && (ve->refcount += 1));
     }
     return AM_OK;
 }
 
 static int amL_rows(am_Load *X) {
-    am_Solver *S = X->S;
-    am_Size    i, count, value, slots;
+    am_Size i, count, value, slots, unit = sizeof(am_Key) + sizeof(am_Num);
     amE(amL_count(X, &count));
     amC((count & 1) == 1);
     amE(amL_uint32(X, &slots));
     X->arena_p = NULL, X->arena_left = 0;
     if (slots) {
-        size_t unit = sizeof(am_Key) + sizeof(am_Num);
         amC((size_t)slots <= X->arena_max / unit); /* cannot overflow */
-        amM_allocarena(S, &S->arena, (size_t)slots * unit);
-        amC(S->arena.buf != NULL);
-        X->arena_p = (char *)S->arena.buf, X->arena_left = S->arena.size;
+        amM_allocarena(X->S, &X->S->arena, (size_t)slots * unit);
+        amC(X->S->arena.buf != NULL);
+        X->arena_p = (char *)X->S->arena.buf, X->arena_left = X->S->arena.size;
     }
     for (i = 1; i < count; i += 2) {
         am_Symbol sym;
@@ -1299,22 +1291,24 @@ static int amL_rows(am_Load *X) {
         amE(amL_uint32(X, &value));
         amC((value >> 2) < X->total);
         sym.id = X->offset + (value >> 2), sym.type = value & 3;
-        amC(amH_get(&S->rows, sym.id) == NULL);
-        amC(r = (am_Row *)amH_set(S, &S->rows, sym));
-        amR_init(r);
-        amE(amL_row(X, r));
+        amC(amH_get(&X->S->rows, sym.id) == NULL);
+        amC(r = (am_Row *)amH_set(X->S, &X->S->rows, sym));
+        amE((amR_init(r), amL_row(X, r)));
     }
     amC(X->arena_left == 0);
     return (X->arena_p = NULL), AM_OK;
 }
 
 static int amL_body(am_Load *X) {
-    am_Solver *S = X->S;
-    amE(amL_vars(X));
-    amE(amL_constraints(X));
+    am_Size i, count;
+    amE(amL_count(X, &count)); /* vars */
+    amC(count <= X->total);    /* ids are offset+i, keep them in total */
+    for (i = 0; i < count; ++i) amE(amL_var(X, i));
+    amE(amL_count(X, &count)); /* constraints */
+    for (i = 0; i < count; ++i) amE(amL_constraint(X, i));
     amE(amL_rows(X));
-    amE(amL_row(X, &S->objective));
-    return S->current = X->offset + X->total, AM_OK;
+    amE(amL_row(X, &X->S->objective));
+    return X->S->current = X->offset + X->total, AM_OK;
 }
 
 /* APIs */

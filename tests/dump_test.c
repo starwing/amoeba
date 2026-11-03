@@ -43,22 +43,29 @@ static int dump_writer(am_Dumper *d, const void *buf, size_t len) {
 }
 
 typedef struct MyLoader {
-    am_Loader   base;
-    am_Num      values[37];
-    const char *p;
-    size_t      len;
+    am_Loader      base;
+    am_Num         values[37];
+    am_Id          ids[37]; /* ids this load assigned, in stream order */
+    am_Constraint *cons[8]; /* constraints this load created (first 8) */
+    const char    *p;
+    size_t         len;
 } MyLoader;
 
 static am_Num *load_var(am_Loader *l, const char *name, unsigned i, am_Id var) {
     MyLoader *ml = (MyLoader *)l;
     /* am_load() installs the binding it gets from load_var() without refreshing
-     * it; start from a known state so a missing refresh (TODO #3) is visible. */
-    return (void)name, (void)var, ml->values[i] = 0, &ml->values[i];
+     * it; start from a known state so a missing refresh (TODO #3) is visible.
+     * The id is new after a load, so record it: tests address the stream's
+     * variables by their index, not by the id they had before the dump. */
+    ml->ids[i] = var;
+    return (void)name, ml->values[i] = 0, &ml->values[i];
 }
 
 void load_cons(am_Loader *l, const char *name, unsigned i,
                am_Constraint *cons) {
-    (void)l, (void)name, (void)i, (void)cons;
+    MyLoader *ml = (MyLoader *)l;
+    (void)name;
+    if (i < 8) ml->cons[i] = cons;
 }
 
 const char *load_reader(am_Loader *l, size_t *plen) {
@@ -67,6 +74,17 @@ const char *load_reader(am_Loader *l, size_t *plen) {
     if (ml->len == 0) return NULL;
     ml->len -= 1;
     return *plen = 1, ml->p++;
+}
+
+/* Solutions come back through float32, so compare with a relative tolerance
+ * instead of bit equality. */
+static void assertclose(am_Num got, am_Num want, const char *what) {
+    double tol = 1e-5 * (1.0 + fabs((double)want));
+    if (fabs((double)got - (double)want) > tol) {
+        test_log("FAIL %s: got %g, expected %g (tol %g)\n", what, (double)got,
+                 (double)want, tol);
+        abort();
+    }
 }
 
 /* One constraint of the enaml-like layout below.  These used to be declared
@@ -468,6 +486,86 @@ TEST(dump_empty) {
     assertok((S2 = am_load(am_test_allocf, NULL, &ml.base, 0)) != NULL);
     asserteq(S2->vars.count, 0);
     asserteq(S2->constraints.count, 0);
+    am_delsolver(S2);
+    am_delsolver(S);
+}
+
+/* TODO #4: a loaded solver must carry the same references as the original.
+ * Reading a constraint's expression used to skip the per-term accounting, so
+ * the first am_delconstraint() after a load collected variables that other
+ * constraints still used -- and am_addterm() on them then failed. */
+TEST(load_then_remove_keeps_vars) {
+    am_Num         x = 0, y = 0;
+    am_Solver     *S, *S2;
+    am_Id          xv, yv;
+    am_Constraint *c, *victim = NULL;
+    char           buf[TEST_BUFSIZE];
+    size_t         len = 0;
+    MyDumper       md;
+    MyLoader       ml;
+
+    S = am_test_new_solver();
+    assertok(S != NULL);
+    xv = am_newvariable(S, &x), yv = am_newvariable(S, &y);
+
+    c = am_newconstraint(S, AM_MEDIUM);
+    assertok(am_addterm(c, xv, 2) == AM_OK);
+    assertok(am_addterm(c, yv, 1) == AM_OK);
+    assertok(am_addconstant(c, -10) == AM_OK);
+    assertok(am_setrelation(c, AM_EQUAL) == AM_OK);
+    assertok(am_add(c) == AM_OK);
+
+    c = am_newconstraint(S, AM_MEDIUM);
+    assertok(am_addterm(c, xv, 1) == AM_OK);
+    assertok(am_addconstant(c, -3) == AM_OK);
+    assertok(am_setrelation(c, AM_EQUAL) == AM_OK);
+    assertok(am_add(c) == AM_OK);
+    am_updatevars(S);
+    assertclose(x, 3, "pre-dump x");
+    assertclose(y, 4, "pre-dump y");
+
+    md.base.var_name = dump_varname;
+    md.base.cons_name = NULL;
+    md.base.writer = dump_writer;
+    md.p = buf, md.len = &len;
+    assertok(am_dump(S, &md.base) == AM_OK);
+
+    memset(&ml, 0, sizeof(ml));
+    ml.base.load_var = load_var;
+    ml.base.load_cons = load_cons;
+    ml.base.reader = load_reader;
+    ml.p = buf, ml.len = len;
+    assertok((S2 = am_load(am_test_allocf, NULL, &ml.base, 0)) != NULL);
+
+    /* one own reference + one per live term, exactly as before the dump */
+    asserteq(am_refcount(S2, ml.ids[0]), 3);
+    asserteq(am_refcount(S2, ml.ids[1]), 2);
+
+    /* load_cons() recorded the constraints of this load; the two-term one is
+     * the constraint to drop (ids are new, the order is the stream's) */
+    assertok(ml.cons[0] != NULL && ml.cons[1] != NULL);
+    victim = ml.cons[0]->expression.terms.count == 2 ? ml.cons[0] : ml.cons[1];
+    asserteq(victim->expression.terms.count, 2);
+
+    /* With auto_update on, am_delconstraint() collects unreferenced variables
+     * right away: the remaining constraint still owns x, y keeps its own
+     * reference. */
+    am_autoupdate(S2, 1);
+    am_delconstraint(victim);
+    asserteq(S2->vars.count, 2);
+    asserteq(am_refcount(S2, ml.ids[0]), 2);
+    asserteq(am_refcount(S2, ml.ids[1]), 1);
+
+    /* the solver is still usable: the surviving variable accepts new terms */
+    c = am_newconstraint(S2, AM_REQUIRED);
+    assertok(am_addterm(c, ml.ids[0], 1) == AM_OK);
+    assertok(am_addconstant(c, -7) == AM_OK);
+    assertok(am_setrelation(c, AM_EQUAL) == AM_OK);
+    assertok(am_add(c) == AM_OK);
+    am_updatevars(S2);
+    assertclose(ml.values[0], 7, "post-remove x");
+    assertclose(ml.values[1], 0, "post-remove y");
+
     am_delsolver(S2);
     am_delsolver(S);
 }
