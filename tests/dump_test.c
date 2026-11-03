@@ -53,12 +53,9 @@ typedef struct MyLoader {
 
 static am_Num *load_var(am_Loader *l, const char *name, unsigned i, am_Id var) {
     MyLoader *ml = (MyLoader *)l;
-    /* am_load() installs the binding it gets from load_var() without refreshing
-     * it; start from a known state so a missing refresh (TODO #3) is visible.
-     * The id is new after a load, so record it: tests address the stream's
-     * variables by their index, not by the id they had before the dump. */
-    ml->ids[i] = var;
-    return (void)name, ml->values[i] = 0, &ml->values[i];
+    /* a sentinel makes a missing settle visible even when 0 is expected */
+    ml->ids[i] = var; /* the id is new after a load: address vars by index */
+    return (void)name, ml->values[i] = -12345, &ml->values[i];
 }
 
 void load_cons(am_Loader *l, const char *name, unsigned i,
@@ -419,6 +416,7 @@ TEST(dumpload) {
          * settles the bindings, so compare against the values right now. */
         MyLoader   myl;
         am_Solver *S2;
+        size_t     i;
 
         myl.base.load_var = load_var;
         myl.base.load_cons = load_cons;
@@ -433,10 +431,15 @@ TEST(dumpload) {
         asserteq(S2->constraints.count, S->constraints.count);
         asserteq(S2->rows.count, S->rows.count);
 
-        /* TODO(#3): compare the solved values here; am_load() does not
-         * refresh the bindings yet, so values[] would still hold the zeroes
-         * load_var() wrote. */
+        /* ... and the same solution: a load settles the bindings itself */
+        assertclose(myl.values[0], w, "width");
+        assertclose(myl.values[1], h, "height");
+        for (i = 0; i < 35; ++i) assertclose(myl.values[2 + i], values[i], "v");
+
+        /* a later am_updatevars() must not undo or re-collect anything */
         am_updatevars(S2);
+        assertclose(myl.values[0], w, "width after update");
+        asserteq(S2->vars.count, S->vars.count);
 
         am_delsolver(S2);
     }
@@ -446,6 +449,51 @@ TEST(dumpload) {
     printf("maxmem = %d\n", (int)maxmem);
     assert(allmem == 0);
     maxmem = 0;
+}
+
+/* x + y == 10 leaves one variable without a row: its tableau value is 0, so a
+ * load must overwrite whatever load_var() put in that binding. */
+TEST(load_settles_nonbasic_binding) {
+    am_Num         x = 0, y = 0;
+    am_Solver     *S, *S2;
+    am_Id          xv, yv;
+    am_Constraint *c;
+    char           buf[TEST_BUFSIZE];
+    size_t         len = 0;
+    MyDumper       md;
+    MyLoader       ml;
+
+    S = am_test_new_solver();
+    xv = am_newvariable(S, &x), yv = am_newvariable(S, &y);
+    c = am_newconstraint(S, AM_REQUIRED);
+    assertok(am_addterm(c, xv, 1) == AM_OK);
+    assertok(am_addterm(c, yv, 1) == AM_OK);
+    assertok(am_addconstant(c, -10) == AM_OK);
+    assertok(am_setrelation(c, AM_EQUAL) == AM_OK);
+    assertok(am_add(c) == AM_OK);
+    am_updatevars(S);
+    assertclose(x, 10, "pre-dump x");
+    assertclose(y, 0, "pre-dump y");
+
+    md.base.var_name = dump_varname;
+    md.base.cons_name = NULL;
+    md.base.writer = dump_writer;
+    md.p = buf, md.len = &len;
+    assertok(am_dump(S, &md.base) == AM_OK);
+
+    memset(&ml, 0, sizeof(ml));
+    ml.base.load_var = load_var;
+    ml.base.load_cons = load_cons;
+    ml.base.reader = load_reader;
+    ml.p = buf, ml.len = len;
+    assertok((S2 = am_load(am_test_allocf, NULL, &ml.base, 0)) != NULL);
+
+    /* y has no row: it reads 0, not the sentinel load_var() left there */
+    assertclose(ml.values[0], 10, "loaded x");
+    assertclose(ml.values[1], 0, "loaded y");
+
+    am_delsolver(S2);
+    am_delsolver(S);
 }
 
 /* A solver with zero constraints used to dump nothing while returning AM_OK:

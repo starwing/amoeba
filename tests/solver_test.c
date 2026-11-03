@@ -754,6 +754,45 @@ TEST(dirty) {
     am_delsolver(S);
 }
 
+/* The variable that leaves the basis when a constraint is removed has no row
+ * any more: its value is 0, so the binding must be cleared right away. */
+TEST(leavingrow) {
+    am_Num         x = 0, y = 0;
+    am_Solver     *S;
+    am_Id          xv, yv;
+    am_Constraint *c, *victim;
+
+    S = am_test_new_solver();
+    xv = am_newvariable(S, &x), yv = am_newvariable(S, &y);
+
+    victim = am_newconstraint(S, AM_MEDIUM);
+    assertok(am_addterm(victim, xv, 2) == AM_OK);
+    assertok(am_addterm(victim, yv, 1) == AM_OK);
+    assertok(am_addconstant(victim, -10) == AM_OK);
+    assertok(am_setrelation(victim, AM_EQUAL) == AM_OK);
+    assertok(am_add(victim) == AM_OK);
+
+    c = am_newconstraint(S, AM_MEDIUM);
+    assertok(am_addterm(c, xv, 1) == AM_OK);
+    assertok(am_addconstant(c, -3) == AM_OK);
+    assertok(am_setrelation(c, AM_EQUAL) == AM_OK);
+    assertok(am_add(c) == AM_OK);
+
+    am_updatevars(S);
+    assertnear(x, 3, 1e-4);
+    assertnear(y, 4, 1e-4);
+
+    /* y is non-basic now, and reads 0 without waiting for am_updatevars() */
+    am_delconstraint(victim);
+    assertnear(x, 3, 1e-4);
+    assertnear(y, 0, 1e-4);
+    am_updatevars(S);
+    assertnear(x, 3, 1e-4);
+    assertnear(y, 0, 1e-4);
+
+    am_delsolver(S);
+}
+
 TEST(cycling) {
     am_Solver *S;
     am_Id      va, vb, vc, vd;

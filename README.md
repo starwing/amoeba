@@ -146,8 +146,10 @@ into a new solver (`am_load()`).
 
 `am_dump()` drops every suggest/edit (`am_clearedits()`): what gets dumped is the
 state after re-solving without them.  `am_load()` creates a clean solver and
-returns it, or `NULL` when the stream cannot be loaded.  It does not refresh the
-variable bindings yet (variable values are whatever `load_var()` supplied).
+returns it, or `NULL` when the stream cannot be loaded.  A successful load
+writes every variable binding from the loaded tableau: a basic variable gets its
+row constant, a variable without a row gets 0.  `load_var()` still decides where
+each binding lives.
 
 Only streams produced by `am_dump()` are supported.  Loading any other data is
 unsupported: the loader only promises that `am_load()` itself does not crash.
@@ -271,7 +273,7 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
   l.base.reader    = load_reader;
   d.buf = get_some_data(&d.len);
 
-  am_Solver *solver = am_load(NULL, NULL, &d.base, 0);
+  am_Solver *solver = am_load(NULL, NULL, &l.base, 0);
   assert(solver != NULL);
   /* now uses the solver */
   ```

@@ -319,10 +319,11 @@ static void amM_freearena(am_Solver *S, am_Arena *a) {
     a->buf = NULL, a->size = 0;
 }
 
-static void amM_allocarena(am_Solver *S, am_Arena *a, size_t size) {
+static void *amM_allocarena(am_Solver *S, am_Arena *a, size_t size) {
     assert(a->buf == NULL);
     a->buf = amM_realloc(S, NULL, size, 0, am_AllocDump);
     if (a->buf) a->size = size;
+    return a->buf;
 }
 
 static void amM_init(am_MemPool *pool, size_t size) {
@@ -1235,7 +1236,7 @@ static int amL_var(am_Load *X, am_Size i) {
     sym.id = X->offset + i;
     amC(ve = (am_Var *)amH_set(X->S, &X->S->vars, sym));
     memset(ve, 0, sizeof(*ve)), ve->pvalue = pvalue, ve->refcount = 1;
-    return AM_OK;
+    return (*pvalue = 0.f), AM_OK;
 }
 
 static int amL_marker(am_Load *X, am_Symbol *sym, unsigned *id) {
@@ -1274,29 +1275,29 @@ static int amL_constraint(am_Load *X, am_Size i) {
 }
 
 static int amL_rows(am_Load *X) {
-    am_Size i, count, value, slots, unit = sizeof(am_Key) + sizeof(am_Num);
+    am_Size i, count, value, unit = sizeof(am_Key) + sizeof(am_Num);
     amE(amL_count(X, &count));
     amC((count & 1) == 1);
-    amE(amL_uint32(X, &slots));
-    X->arena_p = NULL, X->arena_left = 0;
-    if (slots) {
-        amC((size_t)slots <= X->arena_max / unit); /* cannot overflow */
-        amM_allocarena(X->S, &X->S->arena, (size_t)slots * unit);
-        amC(X->S->arena.buf != NULL);
+    amE(amL_uint32(X, &value));
+    if (value) {
+        amC((size_t)value <= X->arena_max / unit); /* cannot overflow */
+        amC(amM_allocarena(X->S, &X->S->arena, (size_t)value * unit));
         X->arena_p = (char *)X->S->arena.buf, X->arena_left = X->S->arena.size;
     }
     for (i = 1; i < count; i += 2) {
         am_Symbol sym;
         am_Row   *r;
+        am_Var   *ve;
         amE(amL_uint32(X, &value));
         amC((value >> 2) < X->total);
         sym.id = X->offset + (value >> 2), sym.type = value & 3;
         amC(amH_get(&X->S->rows, sym.id) == NULL);
         amC(r = (am_Row *)amH_set(X->S, &X->S->rows, sym));
         amE((amR_init(r), amL_row(X, r)));
+        if (amV_isexternal(sym) && (ve = amV_get(X->S, sym.id)))
+            *ve->pvalue = r->constant;
     }
-    amC(X->arena_left == 0);
-    return (X->arena_p = NULL), AM_OK;
+    return X->arena_left ? AM_FAILED : (X->arena_p = NULL, AM_OK);
 }
 
 static int amL_body(am_Load *X) {
@@ -1447,10 +1448,13 @@ AM_API void am_remove(am_Constraint *c) {
     amA_removeerrors(S, c);
     if (amA_takerow(S, marker, &tmp) != AM_OK) {
         am_Symbol leave = amA_leavingrow(S, marker);
+        am_Var   *ve;
         assert(leave.id != 0);
         amA_takerow(S, leave, &tmp);
         amA_solvefor(S, &tmp, marker, leave);
         amA_substitute(S, marker, &tmp);
+        if (amV_isexternal(leave) && (ve = amV_get(S, leave.id)))
+            *ve->pvalue = 0.f;
     }
     amR_free(S, &tmp);
     amA_optimize(S, &S->objective), S->age += 1;

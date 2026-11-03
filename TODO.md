@@ -11,7 +11,7 @@
 
 ## 0. 优先级总览
 
-- **P1（恢复与健壮性）**：#3、A3、B1–B10。
+- **P1（恢复与健壮性）**：A3、B1–B7、B10。
 - **P2（能力与质量）**：C1–C6。
 - **P3（清理）**：A4。
 - **提案（未批准）**：D 节的可视化 Demo。
@@ -20,19 +20,14 @@
 
 | ID | P | 问题 | 依赖 | 用例 |
 |---|---|---|---|---|
-| #3 | P1 | `am_load()` 之后绑定值不刷新（`S->dirty_vars` 为空，`am_updatevars()` 空转） | 独立 | `dump_test::dumpload` 的值断言（在 `tests/pending/`） |
 | A3 | P1 | dump/load 没有 magic + 版本号 | 无 | 需新建（真 dump） |
-
-`#3` 的值断言当前在 `tests/pending/dump_test.c` 快照里，不参与构建，见
-[tests/pending/README.md](tests/pending/README.md)。修完按 B9 搬回 live，不要直接覆盖。
 
 ## 2. 背景与依赖（事实，不是顺序）
 
-- **根因分组**：`#3` 是 load 尾部不刷新；`A3` 是流没有版本头。
+- **根因分组**：`A3` 是流没有版本头。
 - **依赖**：
   - `A3`：无前置；继续用「真 dump + 只改目标字段」的策略。
 - **A3 的用例策略**：继续用 `am_dump()` 生成真流、只改目标字段；手搓流会和真实 writer 不一致。
-- **`#3` 叠在当前 `am_load()` 读路径上**：修的时候直接在当前实现上改。
 
 ## 3. 重点条目（A3 / A4）
 
@@ -50,17 +45,7 @@
       留档还是删除，你定。
 - [ ] `.travis.yml` 删除（内容已被新 CI 覆盖）。
 
-## 4. 正确性细节（#3）
-
-### #3. `am_load()` 后绑定值不刷新
-
-- 现状：`am_load()` 只把 `load_var()` 返回的地址装进 `am_Var`；`S->dirty_vars` 是空的，
-  `am_updatevars()` 空转。`*pvalue` 仍是调用方原来的值。
-- 做法：load 结束时按 tableau 刷新所有变量的绑定值（全表刷新，或把变量挂脏链）。
-- 验收：`dump_test::dumpload` 里 `am_updatevars()` 后的值断言从 pending 启回 live。
-- 语义要定：非基本变量（只出现在行里、没有自己的行）取什么值。
-
-## 5. 健壮性与工程化（B1–B10）
+## 4. 健壮性与工程化（B1–B7、B10）
 
 ### B1. CI 的格式门禁
 
@@ -120,14 +105,6 @@
 - 做法：要么接受（现状，和 znet 一致），要么预生成并提交（省一个依赖，但多一步同步）。
 - 验收：随便选一个，并在 notes/testing.md 写清楚。
 
-### B9. `tests/pending/` 快照的回收
-
-- 现状：`tests/pending/dump_test.c` 是从 live 摘出来的快照，不参与构建：里面有两块被移出的
-  白盒 coverage 和 #3 的值断言（#2、#5、#6、#7 的用例都在 live）。
-- 做法：每修完一个 #N，只把**那一个**用例按当时的实现搬回 live；coverage 块改写成
-  `am_dump()` 的 writer 回调 + `am_load()` 的 arena 之后再考虑回收。
-- 验收：pending 目录最终清空（或只剩明确标注的历史档）；每次搬回都跑 `just check`。
-
 ### B10. 覆盖率口径：`-DNDEBUG`
 
 - 现状一：`just cov` 的编译行是 `{{CC}} {{BASE}} -g -O0 --coverage`，**没有** `-DNDEBUG`，
@@ -143,7 +120,7 @@
 - 验收：`just cov` 在 `-DNDEBUG` 下编过并收集；`tests/build/amoeba.info` 里不再出现 assert
   行的统计；故意改坏一个断言，cov 运行要打印 FAILED。
 
-## 6. 能力与质量（C1–C6）
+## 5. 能力与质量（C1–C6）
 
 ### C1. 内省 API（对 GUI 极其重要）
 
@@ -186,7 +163,7 @@
 - [ ] README 补一节「`AM_USE_DOUBLE` 与精度」；
 - [ ] 补一页「从 kiwi/enaml 迁移」的对照表（用户最容易问的）。
 
-## 7. 可视化约束排版 Demo（提案，未批准）
+## 6. 可视化约束排版 Demo（提案，未批准）
 
 > 这一节是**提案**，不是已批准的计划。开工前先按 AGENTS.md §1 让用户确认范围。
 
@@ -334,7 +311,7 @@ M0-M1 建议先在 Lua 原型里验证（一天内就能看到拖动重算），
 3. **交付形态**：先出 native 桌面 demo，还是一开始就 `emscripten` 出 web/wasm？
    （建议：native 优先，wasm 是 M4 的打包问题，不影响架构。）
 
-## 8. 相关
+## 7. 相关
 
 - 已提交 / 已否决 / 已决定不做：见 [notes/changes.md](notes/changes.md)。
 - 当前状态：`git status` / `git log`；本文件不记录状态。
