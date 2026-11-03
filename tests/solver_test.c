@@ -25,18 +25,19 @@ static void am_dumpkey(am_Symbol sym) {
 
 /* Iterating a table reads am_Table fields directly: tests may inspect the
  * library's internals, but must not call its static helpers. */
-static const void *am_test_slot(const am_Table *t, am_Size i)
-{ return (const char*)t->vals + (size_t)i * t->value_size; }
+static const void *am_test_slot(const am_Table *t, am_Size i) {
+    return (const char *)t->vals + (size_t)i * t->value_size;
+}
 
 static void am_dumprow(const am_Row *row) {
     const am_Table *t = &row->terms;
-    am_Size i;
+    am_Size         i;
     printf("%g", row->constant);
     for (i = 0; i < t->size; ++i) {
         am_Symbol key = t->keys[i].sym;
         am_Num    multiplier;
         if (key.id == 0) continue;
-        multiplier = *(const am_Num*)am_test_slot(t, i);
+        multiplier = *(const am_Num *)am_test_slot(t, i);
         printf(" %c ", multiplier > 0.0 ? '+' : '-');
         if (multiplier < 0.0) multiplier = -multiplier;
         if (multiplier != 1.0f) printf("%g*", multiplier);
@@ -47,8 +48,8 @@ static void am_dumprow(const am_Row *row) {
 
 static void am_dumpsolver(am_Solver *S) {
     const am_Table *t = &S->rows;
-    am_Size i;
-    int     idx = 0;
+    am_Size         i;
+    int             idx = 0;
     printf("-------------------------------\n");
     printf("solver: ");
     am_dumprow(&S->objective);
@@ -59,7 +60,7 @@ static void am_dumpsolver(am_Solver *S) {
         printf("%d. ", ++idx);
         am_dumpkey(key);
         printf(" = ");
-        am_dumprow((const am_Row*)am_test_slot(t, i));
+        am_dumprow((const am_Row *)am_test_slot(t, i));
     }
     printf("-------------------------------\n");
 }
