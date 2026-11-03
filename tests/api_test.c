@@ -239,7 +239,7 @@ static unsigned dump_readu32(dump_reader *r) {
     if (ty <= 0x7F) return (unsigned)ty;
     if (ty == 0xCC) return dump_readraw(r, 1);
     if (ty == 0xCD) return dump_readraw(r, 2);
-    assert(ty == 0xCE);
+    assertok(ty == 0xCE);
     return dump_readraw(r, 4);
 }
 
@@ -247,7 +247,7 @@ static size_t dump_u32len(const unsigned char *p) {
     if (*p <= 0x7F) return 1;
     if (*p == 0xCC) return 2;
     if (*p == 0xCD) return 3;
-    assert(*p == 0xCE);
+    assertok(*p == 0xCE);
     return 5;
 }
 
@@ -255,7 +255,7 @@ static unsigned dump_readcount(dump_reader *r) {
     int ty = *r->p++;
     if (ty >= 0x90 && ty <= 0x9F) return (unsigned)(ty - 0x90);
     if (ty == 0xDC) return dump_readraw(r, 2);
-    assert(ty == 0xDD);
+    assertok(ty == 0xDD);
     return dump_readraw(r, 4);
 }
 
@@ -264,13 +264,15 @@ static void dump_skipstring(dump_reader *r) {
     int      ty = *r->p++;
     if (ty >= 0xA0 && ty <= 0xBF)
         size = (unsigned)(ty - 0xA0);
-    else
-        assert(ty == 0xD9), size = (unsigned)*r->p++;
+    else {
+        assertok(ty == 0xD9);
+        size = (unsigned)*r->p++;
+    }
     r->p += size;
 }
 
 static void dump_skipfloat(dump_reader *r) {
-    assert(*r->p++ == 0xCA);
+    assertok(*r->p++ == 0xCA);
     r->p += 4;
 }
 
@@ -286,13 +288,13 @@ static void dump_skiprow(dump_reader *r) {
 
 static void dump_skipheader(dump_reader *r) {
     unsigned i, count;
-    assert(dump_readcount(r) == 5); /* [total, vars, constraints, rows, obj] */
+    asserteq(dump_readcount(r), 5); /* [total, vars, constraints, rows, obj] */
     dump_readu32(r);
     count = dump_readcount(r);
     for (i = 0; i < count; ++i) dump_skipstring(r);
     count = dump_readcount(r);
     for (i = 0; i < count; ++i) {
-        assert(dump_readcount(r) == 6);
+        assertok(dump_readcount(r) == 6);
         dump_skipstring(r), dump_skipfloat(r);
         dump_readu32(r), dump_readu32(r), dump_readu32(r);
         dump_skiprow(r);
@@ -302,7 +304,7 @@ static void dump_skipheader(dump_reader *r) {
 static size_t dump_total_offset(const unsigned char *buf, size_t *plen) {
     dump_reader r;
     r.p = buf;
-    assert(dump_readcount(&r) == 5);
+    assertok(dump_readcount(&r) == 5);
     *plen = dump_u32len(r.p);
     return (size_t)(r.p - buf);
 }
@@ -313,7 +315,7 @@ static size_t dump_arena_offset(const unsigned char *buf) {
     r.p = buf;
     dump_skipheader(&r);
     count = dump_readcount(&r);
-    assert(count & 1);
+    assertok(count & 1);
     return (size_t)(r.p - buf);
 }
 
@@ -323,14 +325,14 @@ static size_t dump_row_key_offset(const unsigned char *buf, int which) {
     r.p = buf;
     dump_skipheader(&r);
     count = dump_readcount(&r);
-    assert(count & 1);
+    assertok(count & 1);
     dump_readu32(&r);
     for (i = 1; i < count; i += 2) {
         if ((int)(i / 2) == which) return (size_t)(r.p - buf);
         dump_readu32(&r);
         dump_skiprow(&r);
     }
-    assert(0);
+    assertok(0);
     return 0;
 }
 
@@ -340,7 +342,7 @@ static size_t dump_row_term_offset(const unsigned char *buf, int which) {
     r.p = buf;
     dump_skipheader(&r);
     count = dump_readcount(&r);
-    assert(count & 1);
+    assertok(count & 1);
     dump_readu32(&r);
     for (i = 1; i < count; i += 2) {
         dump_readu32(&r);
@@ -354,7 +356,7 @@ static size_t dump_row_term_offset(const unsigned char *buf, int which) {
         }
         dump_skiprowbody(&r, rowcount);
     }
-    assert(0);
+    assertok(0);
     return 0;
 }
 
@@ -362,12 +364,12 @@ static size_t dump_first_marker_offset(const unsigned char *buf) {
     dump_reader r;
     unsigned    count;
     r.p = buf;
-    assert(dump_readcount(&r) == 5);
+    assertok(dump_readcount(&r) == 5);
     dump_readu32(&r);
     count = dump_readcount(&r);
     while (count--) dump_skipstring(&r);
-    assert(dump_readcount(&r) >= 1);
-    assert(dump_readcount(&r) == 6);
+    assertok(dump_readcount(&r) >= 1);
+    assertok(dump_readcount(&r) == 6);
     dump_skipstring(&r), dump_skipfloat(&r);
     return (size_t)(r.p - buf);
 }
@@ -464,7 +466,7 @@ static size_t dump_encode_u32(unsigned char *p, unsigned v) {
 static size_t dump_patch_total(unsigned char *buf, size_t len, unsigned value) {
     unsigned char out[2048];
     size_t        at, oldlen, n;
-    assert(len < sizeof(out));
+    assertok(len < sizeof(out));
     at = dump_total_offset(buf, &oldlen);
     memcpy(out, buf, at);
     n = at + dump_encode_u32(out + at, value);
@@ -518,6 +520,20 @@ static am_Solver *load_stream(stream_loader *sl, size_t budget) {
     return am_load(am_test_allocf, NULL, &sl->base, budget);
 }
 
+/* A solver with more than 0xFFFF symbols makes the writer use the 32-bit
+ * count/value encodings; loading the same stream drives the matching reader
+ * paths.  Both sides are exercised through am_dump()/am_load(), not by
+ * hand-writing msgpack. */
+#define BIG_VARS 65536
+static am_Num        big_values[BIG_VARS];
+static unsigned char big_stream[256 * 1024];
+
+static am_Num *big_load_var(am_Loader *L, const char *name, unsigned idx,
+                            am_Id var) {
+    (void)L, (void)name, (void)var;
+    return &big_values[idx];
+}
+
 TEST(load_accepts_real_dump) {
     static unsigned char stream[2048];
     size_t               len = dump_one_row(stream);
@@ -529,6 +545,73 @@ TEST(load_accepts_real_dump) {
     asserteq(S->rows.count, 1);
     asserteq(S->vars.count, 1);
     asserteq(S->constraints.count, 1);
+    am_delsolver(S);
+}
+
+/* A row with eight terms has a count of 17, which the writer encodes as a
+ * msgpack uint16.  When the reader hands the loader the whole stream at once,
+ * the loader's two-byte read path runs without a refill. */
+TEST(load_reads_u16_in_one_chunk) {
+    static unsigned char stream[2048];
+    am_Num               values[8] = {0};
+    am_Solver           *S, *S2;
+    am_Id                vars[8];
+    am_Constraint       *c;
+    dump_buf             db;
+    stream_loader        sl;
+    unsigned             i;
+    size_t               len;
+
+    S = am_test_new_solver();
+    for (i = 0; i < 8; ++i) vars[i] = am_newvariable(S, &values[i]);
+    c = am_newconstraint(S, AM_REQUIRED);
+    for (i = 0; i < 8; ++i) asserteq(am_addterm(c, vars[i], 1), AM_OK);
+    asserteq(am_addconstant(c, -8), AM_OK);
+    asserteq(am_setrelation(c, AM_EQUAL), AM_OK);
+    asserteq(am_add(c), AM_OK);
+    am_updatevars(S);
+
+    memset(&db, 0, sizeof(db));
+    db.base.var_name = dump_buf_varname;
+    db.base.writer = dump_buf_writer;
+    db.p = stream;
+    asserteq(am_dump(S, &db.base), AM_OK);
+    len = db.len;
+
+    stream_init(&sl, stream, len);
+    assertok((S2 = load_stream(&sl, 0)) != NULL);
+    asserteq(S2->vars.count, 8);
+    am_delsolver(S2);
+    am_delsolver(S);
+}
+
+/* A dump with 65536 variables crosses both the 0xDD count and the 0xCE
+ * value encodings; load it back with a reader that returns one big chunk. */
+TEST(dump_load_large_counts) {
+    am_Solver    *S, *S2;
+    dump_buf      db;
+    stream_loader sl;
+    unsigned      i;
+    size_t        len;
+
+    S = am_test_new_solver();
+    for (i = 0; i < BIG_VARS; ++i)
+        assertok(am_newvariable(S, &big_values[i]) != 0);
+
+    memset(&db, 0, sizeof(db));
+    db.base.var_name = dump_buf_varname;
+    db.base.writer = dump_buf_writer;
+    db.p = big_stream;
+    asserteq(am_dump(S, &db.base), AM_OK);
+    len = db.len;
+    assertok(len > 0 && len < sizeof(big_stream));
+
+    stream_init(&sl, big_stream, len);
+    sl.base.load_var = big_load_var;
+    assertok((S2 = load_stream(&sl, 0)) != NULL);
+    asserteq(S2->vars.count, BIG_VARS);
+    asserteq(S2->constraints.count, 0);
+    am_delsolver(S2);
     am_delsolver(S);
 }
 

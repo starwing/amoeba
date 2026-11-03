@@ -23,7 +23,6 @@
 #ifndef TESTS_H
 #define TESTS_H
 
-#include <assert.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,7 +48,6 @@
                      __LINE__, #a, (long)_a, (long)_b);                 \
             abort();                                                    \
         }                                                               \
-        assert(_a == _b);                                               \
     } while (0)
 
 /* assertok -- abort if (e) is false */

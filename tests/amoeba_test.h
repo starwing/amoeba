@@ -7,7 +7,7 @@
  * which brings in amoeba.h with AM_IMPLEMENTATION (so tests can inspect the
  * internals: rows, refcount, symbols) plus the shared test utilities:
  *
- *   am_test_debugf()   AM_DEBUG sink: amC/amE failures land in the log
+ *   am_test_debugf()   AM_DEBUG sink: library error messages land in the log
  *   am_test_allocf()   accounting allocator; aborts on OOM
  *   allmem/maxmem      live and peak bytes, checked after every test
  *   am_test_new_solver() a solver wired to the accounting allocator

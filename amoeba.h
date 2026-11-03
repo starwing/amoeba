@@ -902,14 +902,15 @@ static int amD_char(am_Dump *X, int ch) {
     return (*X->p++ = ch & 0xFF), AM_OK;
 }
 
-static int amD_raw(am_Dump *X, am_Size n, int width) {
-    switch (width) {
-    default: return AM_FAILED;
-    case 32:
-        amE(amD_char(X, n >> 24));
-        amE(amD_char(X, n >> 16)); /* FALLTHROUGH */
-    case 16: amE(amD_char(X, n >> 8)); amE(amD_char(X, n & 0xFF));
-    }
+/* clang-format off */
+static int amD_raw16(am_Dump *X, am_Size n)
+{ amE(amD_char(X, n >> 8)); amE(amD_char(X, n & 0xFF)); return AM_OK; }
+/* clang-format on */
+
+static int amD_raw32(am_Dump *X, am_Size n) {
+    amE(amD_char(X, n >> 24));
+    amE(amD_char(X, n >> 16));
+    amE(amD_raw16(X, n));
     return AM_OK;
 }
 
@@ -921,10 +922,10 @@ static int amD_uint32(am_Dump *X, am_Size n) {
         amE(amD_char(X, n));
     } else if (n <= 0xFFFF) {
         amE(amD_char(X, 0xCD));
-        amE(amD_raw(X, n, 16));
+        amE(amD_raw16(X, n));
     } else {
         amE(amD_char(X, 0xCE));
-        amE(amD_raw(X, n, 32));
+        amE(amD_raw32(X, n));
     }
     return AM_OK;
 }
@@ -933,7 +934,7 @@ static int amD_float(am_Dump *X, am_Num n) {
     am_Bits u;
     u.f32 = (sizeof(am_Num) == sizeof(float)) ? n : (float)(u.f64 = n, u.f64);
     amE(amD_char(X, 0xCA));
-    amE(amD_raw(X, u.u32, 32));
+    amE(amD_raw32(X, u.u32));
     return AM_OK;
 }
 
@@ -960,10 +961,10 @@ static int amD_count(am_Dump *X, am_Size count) {
         amE(amD_char(X, 0x90 + count));
     else if (count <= 0xFFFF) {
         amE(amD_char(X, 0xDC));
-        amE(amD_raw(X, count, 16));
+        amE(amD_raw16(X, count));
     } else {
         amE(amD_char(X, 0xDD));
-        amE(amD_raw(X, count, 32));
+        amE(amD_raw32(X, count));
     }
     return AM_OK;
 }

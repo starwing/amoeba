@@ -1,12 +1,11 @@
 /* tests/dump_test.c -- dump/load suites
  *
- * Ported from the old test.c "test dumpload" section.  Two regressions were
- * added on top of the port:
+ * Ported from the old test.c "test dumpload" section.  The suite pins:
  *
- *   dump_roundtrip_keeps_solution  dump -> load must preserve every variable
- *                                  value, not just the byte count
- *   load_rejects_short_arena       a crafted stream must be refused instead of
- *                                  writing past its arena (see TODO.md)
+ *   dumpload                       dump -> load preserves the shape and every
+ *                                 variable value, not just the byte count
+ *   load_settles_nonbasic_binding  a variable without a row reads 0 after load
+ *   load_then_remove_keeps_vars    load restores the per-term reference counts
  */
 
 #include "amoeba_test.h"
@@ -35,7 +34,7 @@ static const char *dump_consname(am_Dumper *d, unsigned idx,
 
 static int dump_writer(am_Dumper *d, const void *buf, size_t len) {
     MyDumper *md = (MyDumper *)d;
-    assert(*md->len + len <= TEST_BUFSIZE);
+    assertok(*md->len + len <= TEST_BUFSIZE);
     if (*md->len + len > TEST_BUFSIZE) return AM_FAILED;
     memcpy(md->p + *md->len, buf, len);
     *md->len += len;
@@ -356,23 +355,23 @@ static void build_solver(am_Solver *S, am_Id width, am_Id height,
 
     /* Add the edit variables */
     ret = am_addedit(S, width, AM_STRONG);
-    assert(ret == AM_OK), (void)ret;
+    assertok(ret == AM_OK);
     ret = am_addedit(S, height, AM_STRONG);
-    assert(ret == AM_OK), (void)ret;
+    assertok(ret == AM_OK);
 
     for (i = 0; i < sizeof(constraints) / sizeof(constraints[0]); ++i) {
         am_Constraint *c = am_newconstraint(S, constraints[i].strength);
         const struct layout_item *p;
         for (p = constraints[i].term; p->var; ++p) {
             ret = am_addterm(c, p->var, p->mul ? p->mul : 1);
-            assert(ret == AM_OK), (void)ret;
+            assertok(ret == AM_OK);
         }
         ret = am_addconstant(c, constraints[i].constant);
-        assert(ret == AM_OK), (void)ret;
+        assertok(ret == AM_OK);
         ret = am_setrelation(c, constraints[i].relation);
-        assert(ret == AM_OK), (void)ret;
+        assertok(ret == AM_OK);
         ret = am_add(c);
-        assert(ret == AM_OK), (void)ret;
+        assertok(ret == AM_OK);
     }
 }
 
@@ -385,7 +384,7 @@ TEST(dumpload) {
     int        ret;
 
     S = am_test_new_solver();
-    assert(S != NULL);
+    assertok(S != NULL);
 
     width = am_newvariable(S, &w);
     height = am_newvariable(S, &h);
@@ -406,8 +405,8 @@ TEST(dumpload) {
         printf("before dump\n");
         ret = am_dump(S, &myd.base);
         printf("after dump: ret=%d\n", ret);
-        assert(ret == AM_OK);
-        assert(len > 0 && len < TEST_BUFSIZE);
+        assertok(ret == AM_OK);
+        assertok(len > 0 && len < TEST_BUFSIZE);
         printf("dumped len=%d (not asserted)\n", (int)len);
     }
 
@@ -447,7 +446,7 @@ TEST(dumpload) {
     am_delsolver(S);
     printf("allmem = %d\n", (int)allmem);
     printf("maxmem = %d\n", (int)maxmem);
-    assert(allmem == 0);
+    assertok(allmem == 0);
     maxmem = 0;
 }
 
@@ -538,7 +537,7 @@ TEST(dump_empty) {
     am_delsolver(S);
 }
 
-/* TODO #4: a loaded solver must carry the same references as the original.
+/* A loaded solver must carry the same references as the original.
  * Reading a constraint's expression used to skip the per-term accounting, so
  * the first am_delconstraint() after a load collected variables that other
  * constraints still used -- and am_addterm() on them then failed. */

@@ -11,7 +11,7 @@
 
 ## 0. 优先级总览
 
-- **P1（恢复与健壮性）**：A3、B1–B7、B10。
+- **P1（恢复与健壮性）**：A3、B1–B7。
 - **P2（能力与质量）**：C1–C6。
 - **P3（清理）**：A4。
 - **提案（未批准）**：D 节的可视化 Demo。
@@ -45,7 +45,7 @@
       留档还是删除，你定。
 - [ ] `.travis.yml` 删除（内容已被新 CI 覆盖）。
 
-## 4. 健壮性与工程化（B1–B7、B10）
+## 4. 健壮性与工程化（B1–B7）
 
 ### B1. CI 的格式门禁
 
@@ -82,7 +82,7 @@
 
 ### B6. `assert` 承担安全职责的地方
 
-- 现状（三处；后两处是审 `f7a0d5e` 时发现的**既有**问题，不是那笔引入的）：
+- 现状（三处；后两处是审 `419f9c2` 时发现的**既有**问题，不是那笔引入的）：
   1. `amD_mapid()`（dump 侧）只有 `assert(id != NULL)`，release 构建里是 NULL 解引用。
   2. `am_cloneconstraint()`：`am_newconstraint()` 返回 NULL（分配失败）时，
      `(c->relation = o->relation)` 直接解引用 NULL。
@@ -104,21 +104,6 @@
 - 现状：跑测试需要 `lua`（`misc/gen_entries.lua`），CI 里要额外装 lua5.4。
 - 做法：要么接受（现状，和 znet 一致），要么预生成并提交（省一个依赖，但多一步同步）。
 - 验收：随便选一个，并在 notes/testing.md 写清楚。
-
-### B10. 覆盖率口径：`-DNDEBUG`
-
-- 现状一：`just cov` 的编译行是 `{{CC}} {{BASE}} -g -O0 --coverage`，**没有** `-DNDEBUG`，
-  所以 assert 的行/分支会进统计。
-- 现状二：直接加 `-DNDEBUG` 现在**编不过**：`tests/solver_test.c` 有 8 处
-  `-Werror,-Wunused-but-set-variable`（变量只被 `assert(...)` 用）。
-- 现状三：tests 里共 108 个裸 `assert(`（`solver_test.c` 80、`dump_test.c` 11、`api_test.c` 17），
-  NDEBUG 下会静默消失。harness 自己的 `asserteq` / `assertok` / `assertstreq` 不依赖 `assert`。
-- 做法：
-  1. 把 tests 里承载检查的裸 assert 换成 harness 宏（顺带消掉那 8 个 unused 变量）；
-  2. 给 `cov` 的编译行加 `-DNDEBUG`；
-  3. 把「覆盖率用 NDEBUG 口径、assert 不要求覆盖」写进 notes/testing.md。
-- 验收：`just cov` 在 `-DNDEBUG` 下编过并收集；`tests/build/amoeba.info` 里不再出现 assert
-  行的统计；故意改坏一个断言，cov 运行要打印 FAILED。
 
 ## 5. 能力与质量（C1–C6）
 

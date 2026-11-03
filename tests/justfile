@@ -212,7 +212,7 @@ cov:
     mkdir -p "$out"
     for s in {{SUITES}}; do
         {{LUA}} '{{GEN}}' "{{SRC}}/$s.c" "{{SRC}}/$s.gen.inc"
-        {{CC}} {{BASE}} -g -O0 --coverage -o "$out/$s" "{{SRC}}/$s.c"
+        {{CC}} {{BASE}} -DNDEBUG -g -O0 --coverage -o "$out/$s" "{{SRC}}/$s.c"
         for t in $("$out/$s" --list); do
             ( cd "$out" && ./"$s" "@$t" >/dev/null 2>&1 ) || \
                 echo "COV: $s::$t FAILED (coverage still collected)" >&2
@@ -227,13 +227,13 @@ cov:
     lcov --list '{{BUILD}}/amoeba.info' --rc branch_coverage=1 \
         --ignore-errors inconsistent,corrupt
 
-# lines with zero coverage in amoeba.h, skipping assert-only lines
+# lines with zero coverage in amoeba.h
 [unix]
 uncovered:
     @awk '/^SF:/{z=($0 ~ /\/amoeba\.h$/)} z && /^DA:/ && /,0$/ {gsub(/DA:|,0/,""); print}' \
         '{{BUILD}}/amoeba.info' 2>/dev/null | sort -n | while read -r ln; do \
         src=$(sed -n "${ln}p" '{{ROOT}}/amoeba.h' 2>/dev/null); \
-        case "$src" in *assert*) ;; *) echo "L$ln: $src";; esac; \
+        echo "L$ln: $src"; \
     done
 
 [unix]
