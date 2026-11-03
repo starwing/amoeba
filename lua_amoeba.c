@@ -1,6 +1,6 @@
 #define LUA_LIB
-#include <lua.h>
 #include <lauxlib.h>
+#include <lua.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -174,6 +174,7 @@ static int aml_pusherror(lua_State *L, int ret) {
     case AM_FAILED: lua_pushliteral(L, "FAILED"); break;
     case AM_UNSATISFIED: lua_pushliteral(L, "UNSATISFIED"); break;
     case AM_UNBOUND: lua_pushliteral(L, "UNBOUND"); break;
+    case AM_PARAM: lua_pushliteral(L, "PARAM"); break;
     }
     lua_pushinteger(L, ret);
     return 3;
@@ -185,7 +186,7 @@ static void aml_performitem(lua_State *L, am_Constraint *cons, aml_Item *item,
     switch (item->type) {
     case AML_CONSTANT: ret = am_addconstant(cons, item->value * coef); break;
     case AML_VAR: ret = am_addterm(cons, item->var, coef); break;
-    case AML_CONS: ret = am_mergeconstraint(cons, item->cons, coef); break;
+    case AML_CONS: ret = am_merge(cons, item->cons, coef); break;
     }
     if (ret != AM_OK) aml_pusherror(L, ret), lua_pop(L, 1), lua_error(L);
 }
@@ -304,8 +305,7 @@ static int Lexpr_neg(lua_State *L) {
     aml_Cons   *lcons = (aml_Cons *)luaL_checkudata(L, 1, AML_CONS_TYPE);
     aml_Solver *S = *(aml_Solver **)lcons;
     aml_Cons   *newcons = aml_newcons(L, S, AM_REQUIRED);
-    return aml_pusherror(L,
-                         am_mergeconstraint(newcons->cons, lcons->cons, -1.0f));
+    return aml_pusherror(L, am_merge(newcons->cons, lcons->cons, -1.0f));
 }
 
 static int Lexpr_add(lua_State *L) {

@@ -105,6 +105,39 @@ TEST(setstrength_tighten_failure_restores) {
     am_delsolver(S);
 }
 
+/* Parameter checks must report AM_PARAM, so a caller can tell a bad call
+ * from a solver that rejected a valid constraint (AM_FAILED). */
+TEST(param_checks_return_am_param) {
+    am_Solver     *S = am_test_new_solver();
+    am_Solver     *S2 = am_test_new_solver();
+    am_Num         x = 0;
+    am_Id          vx = am_newvariable(S, &x);
+    am_Constraint *c = am_newconstraint(S, AM_REQUIRED);
+    am_Constraint *c2 = am_newconstraint(S2, AM_WEAK);
+
+    asserteq(am_add(NULL), AM_PARAM);
+    asserteq(am_addterm(NULL, vx, 1.f), AM_PARAM);
+    asserteq(am_addterm(c, 0, 1.f), AM_PARAM);
+    asserteq(am_addconstant(NULL, 1.f), AM_PARAM);
+    asserteq(am_setrelation(NULL, AM_EQUAL), AM_PARAM);
+    asserteq(am_setrelation(c, 0), AM_PARAM);
+    asserteq(am_setstrength(NULL, AM_WEAK), AM_PARAM);
+    asserteq(am_addedit(S, 0, AM_MEDIUM), AM_PARAM);
+    asserteq(am_merge(NULL, c, 1.f), AM_PARAM);
+    asserteq(am_merge(c, c2, 1.f), AM_PARAM);
+    asserteq(am_dump(NULL, NULL), AM_PARAM);
+
+    /* a rejected operation is not a parameter error */
+    am_addterm(c, vx, 1.f);
+    am_setrelation(c, AM_EQUAL);
+    am_addconstant(c, 1.f);
+    asserteq(am_add(c), AM_OK);
+    asserteq(am_add(c), AM_FAILED);
+
+    am_delsolver(S2);
+    am_delsolver(S);
+}
+
 /* ---------------------------------------------------------------------- */
 /* load: fresh solver, byte budget, malformed frames */
 

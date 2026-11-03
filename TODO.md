@@ -21,7 +21,7 @@
 
 | ID | P | 问题 | 依赖 | 用例 |
 |---|---|---|---|---|
-| #6 | P0 | `am_addterm()` / `am_mergeconstraint()` 无条件 `refcount += 1`，合并/抵消时计数漂移（`am_Var` 泄漏） | 无 | `addterm_refcount_balances` + `mergeconstraint_refcount_balances`（在 `tests/pending/`） |
+| #6 | P0 | `am_addterm()` / `am_merge()` 无条件 `refcount += 1`，合并/抵消时计数漂移（`am_Var` 泄漏） | 无 | `addterm_refcount_balances` + `mergeconstraint_refcount_balances`（在 `tests/pending/`） |
 | #4 | P1 | `am_load()` 不恢复每项引用计数：load 后删一条约束会把别的约束还在用的变量回收 | 复用加项 helper 时需要 #6 | 新建 `load_then_remove_keeps_vars` |
 | #3 | P1 | `am_load()` 之后绑定值不刷新（`S->dirty_vars` 为空，`am_updatevars()` 空转） | 独立 | `dump_test::dumpload` 的值断言（在 `tests/pending/`） |
 | A3 | P1 | dump/load 没有 magic + 版本号 | 无 | 需新建（真 dump） |
@@ -62,7 +62,7 @@ B9 把对应用例搬回 live，不要直接覆盖。
 
 ### #6. `refcount` 按调用次数增加
 
-- 现状：`am_addterm()` / `am_mergeconstraint()` 无条件 `refcount += 1`；合并或系数抵消时，
+- 现状：`am_addterm()` / `am_merge()` 无条件 `refcount += 1`；合并或系数抵消时，
   表达式里已经没有该项，计数却还在 → `am_Var` 泄漏。
 - 做法：只在「表达式里真的新增了一项」时 +1，消失时 -1；入口是 `am_exprterm()`。
 - 验收：`addterm_refcount_balances`、`mergeconstraint_refcount_balances` 从 pending 搬回

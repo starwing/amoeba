@@ -125,7 +125,7 @@ TEST(all) {
     xd = am_newvariable(S, &vxd);
     am_delvariable(S, xd);
 
-    assert(am_setrelation(NULL, AM_GREATEQUAL) == AM_FAILED);
+    assert(am_setrelation(NULL, AM_GREATEQUAL) == AM_PARAM);
 
     c1 = am_newconstraint(S, AM_REQUIRED);
     am_addterm(c1, xl, 1.0);

@@ -130,7 +130,10 @@ roadmap.
 
 All functions below that returns `int` are returning error codes:
 - `AM_OK`: Operations success.
-- `AM_FAILED`: The operation is failed, most caused by invalid arguments.
+- `AM_FAILED`: The operation is failed: the solver rejected a valid request
+  (for example, adding a constraint that is already in the solver).
+- `AM_PARAM`: A parameter check failed (a null pointer, a zero variable id, an
+  invalid relation, or constraints from different solvers).
 - `AM_UNSATISFIED`: Specific constraints added cannot satisfied.
 - `AM_UNBOUND`: The constraint conflicts with the constraints already in the
   solver (the artificial variable could not be driven to zero). It is the same
@@ -439,7 +442,7 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
 
   Set the strength of a constraint.
 
-- `int am_mergeconstraint(am_Constraint *cons, const am_Constraint *other, am_Num multiplier);`
+- `int am_merge(am_Constraint *cons, const am_Constraint *other, am_Num multiplier);`
 
   Merge other constraints into `cons`, with a multiplier multiples with `other`.
 

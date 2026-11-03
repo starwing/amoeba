@@ -9,7 +9,7 @@
 
 #include "amoeba_test.h"
 
-/* am_addterm() and am_mergeconstraint() must keep the variable reference
+/* am_addterm() and am_merge() must keep the variable reference
  * count in step with the terms that actually end up in the expression: the
  * count is what am_updatevars() uses to decide a variable has no row left.
  * Merging two terms into one, or cancelling a term out, used to leak a
@@ -36,7 +36,7 @@ TEST(addterm_refcount_balances) {
     am_delsolver(S);
 }
 
-/* am_mergeconstraint() uses the same bookkeeping as am_addterm(): merging a
+/* am_merge() uses the same bookkeeping as am_addterm(): merging a
  * term the target already has must not add a second reference, and a merge
  * that cancels the term out must release one. */
 TEST(mergeconstraint_refcount_balances) {
@@ -50,13 +50,13 @@ TEST(mergeconstraint_refcount_balances) {
     am_addterm(src, vx, 1.f); /* src: x */
     asserteq(am_refcount(S, vx), base + 1);
 
-    asserteq(am_mergeconstraint(dst, src, 2.f), AM_OK); /* dst: 2x */
+    asserteq(am_merge(dst, src, 2.f), AM_OK); /* dst: 2x */
     asserteq(am_refcount(S, vx), base + 2);
 
-    asserteq(am_mergeconstraint(dst, src, 3.f), AM_OK); /* dst: 5x */
+    asserteq(am_merge(dst, src, 3.f), AM_OK); /* dst: 5x */
     asserteq(am_refcount(S, vx), base + 2);
 
-    asserteq(am_mergeconstraint(dst, src, -5.f), AM_OK); /* cancels out */
+    asserteq(am_merge(dst, src, -5.f), AM_OK); /* cancels out */
     asserteq(am_refcount(S, vx), base + 1);
 
     am_delconstraint(dst);
