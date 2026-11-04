@@ -11,7 +11,7 @@
 
 ## 0. 优先级总览
 
-- **P1（恢复与健壮性）**：A3、B1–B7。
+- **P1（恢复与健壮性）**：A3、B1–B5、B7。
 - **P2（能力与质量）**：C1–C6。
 - **P3（清理）**：A4。
 - **提案（未批准）**：D 节的可视化 Demo。
@@ -45,7 +45,7 @@
       留档还是删除，你定。
 - [ ] `.travis.yml` 删除（内容已被新 CI 覆盖）。
 
-## 4. 健壮性与工程化（B1–B7）
+## 4. 健壮性与工程化（B1–B5、B7）
 
 ### B1. CI 的格式门禁
 
@@ -79,25 +79,6 @@
   没有被任何构建引用。
 - 做法：删掉，或按 D 节的需求重新设计（不要从这个空壳继续）。
 - 建议：先删。
-
-### B6. `assert` 承担安全职责的地方
-
-- 现状（三处；后两处是审 `419f9c2` 时发现的**既有**问题，不是那笔引入的）：
-  1. `amD_mapid()`（dump 侧）只有 `assert(id != NULL)`，release 构建里是 NULL 解引用。
-  2. `am_cloneconstraint()`：`am_newconstraint()` 返回 NULL（分配失败）时，
-     `(c->relation = o->relation)` 直接解引用 NULL。
-  3. `am_delconstraint()`：`ce == NULL`（对同一指针重复删除，本质是 UAF 场景）时，
-     `assert(ce != NULL && *ce == c)` 在 NDEBUG 下消失，随后 `amH_del(&S->constraints, ce)`
-     拿 NULL 去算槽位偏移 → 野写。
-- 做法：
-  1. `amD_mapid()` 改成返回错误，让 `am_dump()` 返回 `AM_FAILED`。
-  2. `am_cloneconstraint()` 加 `if (c == NULL) return NULL;`（或把 `am_newconstraint()` 的
-     失败一路传上去，选哪种要看调用方怎么处理 NULL）。
-  3. `am_delconstraint()` 的重复删除要**先定语义**（早返回？返回错误码？`amC` 之外再挡一层？），
-     再决定是「不写」还是「写 `AM_FAILED`」——不要只把 `assert` 换成 `if`。
-  顺手扫一遍「`assert` 里做参数校验」的其他位置。
-- 验收：NULL 名字的 dump 不崩溃并返回错误码；clone 在分配失败时返回 NULL 而不是崩溃；
-  重复 `am_delconstraint()` 按第 3 条定下的语义行事，且 NDEBUG 构建下无野写（ASan 跑）。
 
 ### B7. `tests/*.gen.inc` 的生成依赖
 

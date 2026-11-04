@@ -290,12 +290,13 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
 
 - `void am_delsolver(am_Solver *solver);`
 
-  Delete a solver and frees all memory it used, after that, all variables/constraints created from this solver are all freed.
+  Delete a solver and frees all memory it used, after that, all variables/constraints created from this solver are all freed.  Passing `NULL` does nothing.
 
 - `void am_updatevars(am_Solver *solver);`
 
   Refresh variables' value into it's constrainted value.
   You could use `am_autoupdate()` to update all variables automatically when solver changes.
+  A `NULL` solver does nothing.
 
 - `void am_autoupdate(am_Solver *solver, int auto_update);`
 
@@ -305,6 +306,11 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
 - `int am_dump(am_Solver *solver, am_Dumper *d);`
 
   Dump whole solver state (without edits) into binary data.
+
+  Returns `AM_FAILED` when the state holds a symbol that the dump has no index
+  for.  `am_load()` accepts such a stream (it validates structure, not symbol
+  ownership), so a solver loaded from a hand-edited stream can reach that
+  shape; the bytes written up to the failure must be discarded.
 
 - `am_Solver *am_load(am_Allocf *allocf, void *ud, am_Loader *l, size_t maxmem);`
 
@@ -378,6 +384,7 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
 - `void am_suggest(am_Solver *solver, am_Id var, am_Num value);`
 
   Actually change the value of the variable `var`.
+  A variable id the solver does not know is ignored.
 
   After changed, other variable may changed due to the constraints in solver.
   If you do not want change the strength of suggest (default is `AM_MEDIUM`), you may call `am_suggest()` directly without `am_addedit()`.
@@ -402,6 +409,7 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
 - `am_Constraint *am_cloneconstraint(am_Constraint *other, am_Num strength);`
 
   Clone a new constraint from the existing one with new `strength`.
+  Returns `NULL` when the new constraint cannot be allocated.
 
 - `void am_resetconstraint(am_Constraint *cons);`
 
@@ -410,6 +418,13 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
 - `void am_delconstraint(am_Constraint *cons);`
 
   Free the constraint. if it's added into solver, remove it first.
+
+  This is free semantics: the constraint is recycled, its expression released
+  and its variable references dropped.  `cons` is dead when the call returns --
+  using it again (including passing it a second time) is undefined behaviour and
+  is not detected.  The default allocator puts the slot back into the constraint
+  pool, so a second call may still read plausible memory: that is reuse, not a
+  promise.
 
 - `int am_addterm(am_Constraint *cons, am_Id var, am_Num multiplier);`
 

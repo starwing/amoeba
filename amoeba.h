@@ -969,9 +969,12 @@ static int amD_count(am_Dump *X, am_Size count) {
     return AM_OK;
 }
 
-static unsigned amD_mapid(am_Dump *X, unsigned key) {
-    unsigned *id = (unsigned *)amH_get(&X->symmap, key);
-    return assert(id != NULL), *id;
+static int amD_sym(am_Dump *X, am_Symbol sym) {
+    const unsigned *id;
+    if (sym.id == 0) return amD_uint32(X, 0); /* id 0 = no such symbol */
+    id = (const unsigned *)amH_get(&X->symmap, sym.id);
+    amC(id != NULL);
+    return amD_uint32(X, (*id << 2) | sym.type);
 }
 
 static int amD_row(am_Dump *X, const am_Row *r) {
@@ -979,7 +982,7 @@ static int amD_row(am_Dump *X, const am_Row *r) {
     amE(amD_count(X, r->terms.count * 2 + 1));
     amE(amD_float(X, r->constant));
     while (amH_next(&it)) {
-        amE(amD_uint32(X, amD_mapid(X, it.key.id) << 2 | it.key.type));
+        amE(amD_sym(X, it.key));
         amE(amD_float(X, *amH_val(am_Num, it)));
     }
     return AM_OK;
@@ -1005,7 +1008,6 @@ static int amD_constraints(am_Dump *X) {
     amE(amD_count(X, S->constraints.count));
     for (i = 0; i < S->constraints.count; ++i) {
         const char     *name = NULL;
-        unsigned        id;
         am_Constraint **ce;
         ce = (am_Constraint **)amH_get(&S->constraints, X->cons[i]);
         assert(ce != NULL);
@@ -1014,12 +1016,8 @@ static int amD_constraints(am_Dump *X) {
             name = X->dumper->cons_name(X->dumper, i, (*ce));
         amE(amD_string(X, name));
         amE(amD_float(X, (*ce)->strength));
-        if (id = 0, (*ce)->marker.type)
-            id = amD_mapid(X, (*ce)->marker_id) << 2 | (*ce)->marker.type;
-        amE(amD_uint32(X, id));
-        if (id = 0, (*ce)->other.type)
-            id = amD_mapid(X, (*ce)->other_id) << 2 | (*ce)->other.type;
-        amE(amD_uint32(X, id));
+        amE(amD_sym(X, (*ce)->marker));
+        amE(amD_sym(X, (*ce)->other));
         amE(amD_uint32(X, (*ce)->relation));
         amE(amD_row(X, &(*ce)->expression));
     }
@@ -1036,7 +1034,7 @@ static int amD_rows(am_Dump *X) {
     amE(amD_count(X, S->rows.count * 2 + 1));
     amE(amD_uint32(X, (am_Size)arena));
     while (amH_next(&it)) {
-        amE(amD_uint32(X, amD_mapid(X, it.key.id) << 2 | it.key.type));
+        amE(amD_sym(X, it.key));
         amE(amD_row(X, amH_val(am_Row, it)));
     }
     return AM_OK;
@@ -1380,7 +1378,8 @@ AM_API void am_resetsolver(am_Solver *S) {
 }
 
 AM_API void am_delsolver(am_Solver *S) {
-    am_Iterator it = amH_iter(&S->constraints);
+    am_Iterator it = amH_iter(S ? &S->constraints : NULL);
+    if (it.t == NULL) return;
     while (amH_next(&it)) {
         am_Constraint *c = *amH_val(am_Constraint *, it);
         amR_free(S, &c->expression);
@@ -1406,6 +1405,7 @@ AM_API void am_delsolver(am_Solver *S) {
 }
 
 AM_API void am_updatevars(am_Solver *S) {
+    if (S == NULL) return;
     while (S->dirty_vars.id != 0) {
         am_Symbol var = S->dirty_vars;
         am_Var   *ve = (am_Var *)amH_get(&S->vars, var.id);
@@ -1487,7 +1487,8 @@ AM_API void am_suggest(am_Solver *S, am_Id var, am_Num value) {
     if (S == NULL || var == 0) return;
     ps = (am_Suggest **)amH_get(&S->suggests, var);
     s = ps ? *ps : amC_newedit(S, var, AM_MEDIUM);
-    assert(s != NULL), delta = value - s->edit_value, s->edit_value = value;
+    if (s == NULL) return; /* unknown var: nothing to suggest */
+    delta = value - s->edit_value, s->edit_value = value;
     amA_editdelta(S, s, delta), amA_dualoptimize(S);
     if (S->auto_update) am_updatevars(S);
 }
@@ -1538,7 +1539,7 @@ AM_API am_Constraint *am_cloneconstraint(am_Constraint *o, am_Num strength) {
     am_Constraint *c;
     if (o == NULL) return NULL;
     if (amN_nearzero(strength)) strength = o->strength;
-    c = am_newconstraint(o->S, strength);
+    if ((c = am_newconstraint(o->S, strength)) == NULL) return NULL;
     return am_merge(c, o, 1.0f), (c->relation = o->relation), c;
 }
 

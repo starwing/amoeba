@@ -203,6 +203,76 @@ TEST(param_checks_return_am_param) {
 }
 
 /* ---------------------------------------------------------------------- */
+/* lifetime: a missing object (or a pointer the solver no longer owns) is
+ * "nothing to do" instead of a dereference.  Each of these used to be an
+ * assert that vanished in release builds, leaving a NULL (or recycled)
+ * dereference behind. */
+
+/* A clone either returns a fully built constraint or NULL.  When the allocator
+ * refuses the new constraint there is no object to write a relation into. */
+static int fail_constraint_alloc;
+
+static void *clone_test_allocf(void **pud, void *p, size_t n, size_t o,
+                               am_Type t) {
+    if (n != 0 && fail_constraint_alloc && t == am_AllocConstraint) return NULL;
+    return am_test_allocf(pud, p, n, o, t);
+}
+
+TEST(cloneconstraint_reports_alloc_failure) {
+    am_Solver     *S = am_newsolver(clone_test_allocf, NULL);
+    am_Num         x = 0;
+    am_Id          vx;
+    am_Constraint *c;
+    assertok(S != NULL);
+
+    vx = am_newvariable(S, &x);
+    c = am_newconstraint(S, AM_REQUIRED);
+    am_addterm(c, vx, 1.f), am_setrelation(c, AM_EQUAL), am_addconstant(c, 1.f);
+    asserteq(am_add(c), AM_OK);
+
+    fail_constraint_alloc = 1;
+    assertok(am_cloneconstraint(c, AM_REQUIRED) == NULL);
+    fail_constraint_alloc = 0;
+
+    /* the positive control: with the allocator back, cloning still works */
+    c = am_cloneconstraint(c, AM_WEAK);
+    assertok(c != NULL);
+    asserteq(c->relation, AM_EQUAL);
+    am_delsolver(S);
+}
+
+/* am_suggest() on a variable the solver does not know has no edit to create
+ * and no value to move; the id may be stale after am_updatevars() collected
+ * the variable, so this is not just a parameter error. */
+TEST(suggest_unknown_var_is_noop) {
+    am_Solver *S = am_test_new_solver();
+    am_Num     x = 0;
+    am_Id      vx = am_newvariable(S, &x);
+
+    am_suggest(S, vx, 3.f); /* the positive control: this one does work */
+    assertok(am_hasedit(S, vx));
+    am_suggest(S, vx + 1000, 5.f); /* unknown id: nothing to do */
+    assertok(!am_hasedit(S, vx + 1000));
+    am_updatevars(S);
+    assertnear(x, 3, 1e-4);
+    am_delsolver(S);
+}
+
+/* A NULL solver is not a parameter error either: like free(NULL), it means
+ * "nothing to do" everywhere the solver is only used, not created. */
+TEST(null_solver_calls_are_noop) {
+    am_updatevars(NULL);
+    am_delsolver(NULL);
+    am_resetsolver(NULL);
+    am_clearedits(NULL);
+    am_remove(NULL);
+    am_resetconstraint(NULL);
+    am_delconstraint(NULL);
+    assertok(!am_hasedit(NULL, 1));
+    asserteq(am_refcount(NULL, 1), 0);
+}
+
+/* ---------------------------------------------------------------------- */
 /* load: fresh solver, byte budget, malformed frames */
 
 typedef struct dump_buf {
@@ -802,6 +872,36 @@ TEST(load_accepts_unconfigured_constraint) {
     assertok((S = load_stream(&sl, 0)) != NULL);
     assertok(sl.cons != NULL);
     asserteq(sl.cons->relation, 0);
+    am_delsolver(S);
+}
+
+/* am_load() accepts a stream whose constraint no longer owns its marker while
+ * the rows still reference that symbol: the loader checks structure, not
+ * ownership.  Such a solver has no stream index for that symbol, so am_dump()
+ * must report AM_FAILED instead of dereferencing a missing map entry -- the
+ * dump side cannot assume the load side was fed a real dump. */
+TEST(dump_reports_symbol_outside_the_map) {
+    static unsigned char stream[2048];
+    static unsigned char out[2048];
+    size_t               len = dump_one_row(stream);
+    size_t               at = dump_first_marker_offset(stream);
+    stream_loader        sl;
+    dump_buf             db;
+    am_Solver           *S;
+
+    assertok(len < sizeof(stream));
+    assertok(dump_u32len(stream + at) == 1); /* small dump: one byte */
+    stream[at] = 0; /* the constraint loses its marker */
+    stream_init(&sl, stream, len);
+    assertok((S = load_stream(&sl, 0)) != NULL);
+    assertok(sl.cons != NULL);
+    asserteq(sl.cons->marker_id, 0);
+
+    memset(&db, 0, sizeof(db));
+    db.base.var_name = dump_buf_varname;
+    db.base.writer = dump_buf_writer;
+    db.p = out;
+    asserteq(am_dump(S, &db.base), AM_FAILED);
     am_delsolver(S);
 }
 
