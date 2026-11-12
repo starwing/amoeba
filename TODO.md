@@ -11,7 +11,7 @@
 
 ## 0. 优先级总览
 
-- **P1（恢复与健壮性）**：A3、B1–B5、B7。
+- **P1（恢复与健壮性）**：A3、B1、B2、B4、B5、B7。
 - **P2（能力与质量）**：C1–C6。
 - **P3（清理）**：A4。
 - **提案（未批准）**：D 节的可视化 Demo。
@@ -45,7 +45,7 @@
       留档还是删除，你定。
 - [ ] `.travis.yml` 删除（内容已被新 CI 覆盖）。
 
-## 4. 健壮性与工程化（B1–B5、B7）
+## 4. 健壮性与工程化（B1、B2、B4、B5、B7）
 
 ### B1. CI 的格式门禁
 
@@ -60,12 +60,6 @@
 - 现状：`tests/justfile` 的 recipe 是 bash；Windows recipe 只 echo 一句「需要 POSIX shell」。
 - 做法：仿 znet 的 `tests/run.bat` + `check.bat`，至少覆盖 `/W4 /WX` 的编译检查。
 - 验收：GitHub Actions 的 windows job 能跑 `just check-msvc`。
-
-### B3. dump 的双精度保真
-
-- 现状：`amD_float()` 永远写 float32，`AM_USE_DOUBLE` 下 dump/load 有精度损失。
-- 做法：编码上区分 f32/f64（新增 `0xCB`），或者 `am_Num` 宽度写进版本头。
-- 验收：double 模式下 dump→load 的变量值与原始值逐位相等。
 
 ### B4. Lua 绑定
 
@@ -108,7 +102,7 @@
   notes/dump-format.md §7 写明，但接口本身仍然有副作用。
 - 做法：要么改名/加参数表达「会重解」，要么先 dump 再恢复 edits（需要保存 edit 状态）。
 - 验收：想清楚后写进 README；目前**至少不要**在拖拽过程中 dump。
-- （magic/版本号 见 A3；双精度保真 见 B3。）
+- （magic/版本号 见 A3。）
 
 ### C4. 数值
 

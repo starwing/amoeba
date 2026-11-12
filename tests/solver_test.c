@@ -344,7 +344,10 @@ TEST(binarytree) {
     arrY = arrX + 1024;
 
     numX = (am_Num *)calloc(2048, sizeof(am_Num));
-    if (numX == NULL) return;
+    if (numX == NULL) {
+        free(arrX);
+        return;
+    }
     numY = numX + 1024;
 
     /* Create set of rules to distribute vertexes of a binary tree like this one:
@@ -437,7 +440,7 @@ TEST(binarytree) {
     printf("allmem = %d\n", (int)allmem);
     printf("maxmem = %d\n", (int)maxmem);
     assertok(allmem == 0);
-    free(arrX);
+    free(arrX), free(numX);
     maxmem = 0;
 }
 

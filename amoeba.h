@@ -48,7 +48,7 @@
 #define AM_EQUAL      (2) /* x == k */
 #define AM_GREATEQUAL (3) /* x >= k */
 
-#define AM_REQUIRED ((am_Num)INFINITY) /* required, cannot be violated */
+#define AM_REQUIRED ((am_Num)HUGE_VAL) /* required; HUGE_VAL is C89's +inf */
 #define AM_STRONG   ((am_Num)1000000)  /* strong soft constraint */
 #define AM_MEDIUM   ((am_Num)1000)     /* medium, the default edit strength */
 #define AM_WEAK     ((am_Num)1)        /* weak soft constraint */
@@ -388,18 +388,20 @@ static am_Iterator amH_iter(const am_Table *t)
 static void amH_init(am_Table *t, size_t value_size)
 { memset(t, 0, sizeof(*t)), t->value_size = (am_Size)value_size; }
 
-static void amH_reset(am_Table *t)
-{ t->last_free = t->count = 0; memset(t->keys, 0, t->size * sizeof(am_Key)); }
-
 static am_Size amH_calcsize(am_Size request)
 { am_Size s = AM_MIN_HASHSIZE; while (s < request) s <<= 1; return s; }
 /* clang-format on */
+
+static void amH_reset(am_Table *t) {
+    t->last_free = t->count = 0;
+    if (t->keys) memset(t->keys, 0, t->size * sizeof(am_Key));
+}
 
 static int amH_next(am_Iterator *it) {
     am_Size   cur = it->offset, size = it->t->size;
     am_Symbol key;
     while (cur < size && (key = it->t->keys[cur].sym).id == 0) cur++;
-    if (cur == size) return it->key = amS_null(), it->offset = 0;
+    if (cur >= size) return it->key = amS_null(), it->offset = 0;
     return it->key = key, it->offset = cur + 1;
 }
 
@@ -888,7 +890,7 @@ typedef struct am_Dump {
 } am_Dump;
 
 /* clang-format off */
-typedef union { double f64; float f32; unsigned u32; } am_Bits;
+typedef union { double f64; float f32; unsigned u32[2]; } am_Bits;
 
 static int amD_intcmp(const void *lhs, const void *rhs)
 { return *(const int *)lhs - *(const int *)rhs; }
@@ -932,15 +934,23 @@ static int amD_uint32(am_Dump *X, am_Size n) {
 
 static int amD_float(am_Dump *X, am_Num n) {
     am_Bits u;
-    u.f32 = (sizeof(am_Num) == sizeof(float)) ? n : (float)(u.f64 = n, u.f64);
-    amE(amD_char(X, 0xCA));
-    amE(amD_raw32(X, u.u32));
+    if (sizeof(am_Num) == sizeof(double)) {
+        unsigned probe = 1;
+        int      be = *(const unsigned char *)&probe == 0; /* big-endian host */
+        u.f64 = (double)n;
+        amE(amD_char(X, 0xCB));
+        amE(amD_raw32(X, u.u32[!be])); /* high half first */
+        amE(amD_raw32(X, u.u32[be]));
+    } else {
+        amE(amD_char(X, 0xCA));
+        amE(amD_raw32(X, (u.f32 = (float)n, u.u32[0])));
+    }
     return AM_OK;
 }
 
 static int amD_string(am_Dump *X, const char *name) {
     am_Dumper *d = X->dumper;
-    size_t     namelen = (name ? strlen(name) : 0), buflen;
+    size_t     buflen, namelen = name ? strlen(name) : ((name = ""), 0);
     amC(namelen < AM_NAME_LEN && namelen <= 0xFF);
     if (namelen < 32)
         amE(amD_char(X, 0xA0 + (int)namelen));
@@ -1152,9 +1162,17 @@ static int amL_uint32(am_Load *X, am_Size *pv) {
 }
 
 static int amL_float(am_Load *X, am_Num *pv) {
+    int     ty = amL_getchar(X);
     am_Bits u;
-    amC(amL_getchar(X) == 0xCA);
-    amE(amL_raw32(X, &u.u32));
+    if (ty == 0xCB) {
+        unsigned probe = 1;
+        int      be = *(const unsigned char *)&probe == 0; /* big-endian host */
+        amE(amL_raw32(X, &u.u32[!be]));
+        amE(amL_raw32(X, &u.u32[be]));
+        return (*pv = (am_Num)u.f64), AM_OK;
+    }
+    amC(ty == 0xCA);
+    amE(amL_raw32(X, u.u32));
     return (*pv = (am_Num)u.f32), AM_OK;
 }
 

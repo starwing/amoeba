@@ -4,7 +4,12 @@
  *
  *   dumpload                       dump -> load preserves the shape and every
  *                                 variable value, not just the byte count
+ *   dump_roundtrip_is_exact        a double build's solution survives bit for
+ *                                 bit; float builds pass it trivially
+ *   load_reads_float64_stream      a float64 stream loads in either build
+ *   load_reads_float32_stream      a float32 stream loads in either build
  *   load_settles_nonbasic_binding  a variable without a row reads 0 after load
+ *   dump_empty                     a solver with no constraints dumps and loads
  *   load_then_remove_keeps_vars    load restores the per-term reference counts
  */
 
@@ -72,8 +77,8 @@ const char *load_reader(am_Loader *l, size_t *plen) {
     return *plen = 1, ml->p++;
 }
 
-/* Solutions come back through float32, so compare with a relative tolerance
- * instead of bit equality. */
+/* Solutions come back in the build's am_Num width; compare with a relative
+ * tolerance instead of bit equality. */
 static void assertclose(am_Num got, am_Num want, const char *what) {
     double tol = 1e-5 * (1.0 + fabs((double)want));
     if (fabs((double)got - (double)want) > tol) {
@@ -83,275 +88,489 @@ static void assertclose(am_Num got, am_Num want, const char *what) {
     }
 }
 
-/* One constraint of the enaml-like layout below.  These used to be declared
- * inside build_solver(); C++ keeps nested tags out of the enclosing scope, so
- * the file-scope form is what makes this suite compile as C++ too. */
+/* ---- re-encoding a real dump at either float width ----
+ *
+ * A double build writes every number as msgpack float64, a float build as
+ * float32, and the reader takes either.  A test binary is one build or the
+ * other, so the other width's stream is made by re-encoding a real dump
+ * instead of hand-writing one that could drift from the writer. */
+typedef struct reenc {
+    const unsigned char *r;
+    unsigned char       *w;
+    int                  bits; /* float width to re-encode every number to */
+} reenc;
+
+static void reenc_value(reenc *x);
+
+static void reenc_raw(reenc *x, unsigned n) {
+    while (n--) *x->w++ = *x->r++;
+}
+
+static void reenc_word(reenc *x, unsigned n) {
+    *x->w++ = (unsigned char)(n >> 24), *x->w++ = (unsigned char)(n >> 16);
+    *x->w++ = (unsigned char)(n >> 8), *x->w++ = (unsigned char)n;
+}
+
+static void reenc_seq(reenc *x, unsigned n, unsigned head) {
+    unsigned i;
+    reenc_raw(x, head);
+    for (i = 0; i < n; ++i) reenc_value(x);
+}
+
+/* re-encode one float at the target width; copies when the source already
+ * has that width */
+static void reenc_float(reenc *x, unsigned ty, int be) {
+    am_Bits  u;
+    unsigned i;
+    if (ty == 0xCA && x->bits == 64) {
+        x->r += 1, *u.u32 = 0;
+        for (i = 0; i < 4; ++i) *u.u32 = (*u.u32 << 8) | (unsigned)*x->r++;
+        *x->w++ = 0xCB, u.f64 = (double)u.f32;
+        reenc_word(x, u.u32[be ? 0 : 1]);
+        reenc_word(x, u.u32[be ? 1 : 0]);
+    } else if (ty == 0xCB && x->bits == 32) {
+        x->r += 1;
+        for (i = 0; i < 2; ++i) {
+            unsigned w = 0;
+            int      j;
+            for (j = 0; j < 4; ++j) w = (w << 8) | (unsigned)*x->r++;
+            u.u32[be ? i : 1 - i] = w;
+        }
+        *x->w++ = 0xCA, u.f32 = (float)u.f64;
+        reenc_word(x, u.u32[0]);
+    } else
+        reenc_raw(x, ty == 0xCA ? 5 : 9);
+}
+
+/* walks the writer's msgpack subset: ints, arrays, strings, floats */
+static void reenc_value(reenc *x) {
+    unsigned probe = 1, head, i, n, ty = *x->r;
+    int      be = *(const unsigned char *)&probe == 0;
+    if (ty == 0xCA || ty == 0xCB)
+        reenc_float(x, ty, be);
+    else if (ty >= 0x90 && ty <= 0x9F)
+        reenc_seq(x, ty - 0x90, 1);
+    else if (ty == 0xDC || ty == 0xDD) {
+        head = ty == 0xDC ? 3u : 5u, n = 0;
+        for (i = 1; i < head; ++i) n = (n << 8) | (unsigned)x->r[i];
+        reenc_seq(x, n, head);
+    } else if (ty >= 0xA0 && ty <= 0xBF)
+        reenc_raw(x, 1 + (unsigned)(ty - 0xA0));
+    else if (ty == 0xD9)
+        reenc_raw(x, 2 + (unsigned)x->r[1]);
+    else if (ty == 0xCC)
+        reenc_raw(x, 2);
+    else if (ty == 0xCD)
+        reenc_raw(x, 3);
+    else if (ty == 0xCE)
+        reenc_raw(x, 5);
+    else {
+        assertok(ty <= 0x7F);
+        reenc_raw(x, 1);
+    }
+}
+
+/* Dump a one-variable solver holding want, re-encode every float to bits
+ * (32 or 64), load the result and require the binding back bit for bit.
+ * The fixture must be exact in both widths. */
+static void reenc_roundtrip(am_Num want, int bits) {
+    am_Num         x = 0;
+    am_Solver     *S, *S2;
+    am_Id          xv;
+    am_Constraint *c;
+    char           buf[TEST_BUFSIZE];
+    char           enc[TEST_BUFSIZE];
+    size_t         len = 0, enclen;
+    MyDumper       md;
+    MyLoader       ml;
+    reenc          xr;
+
+    S = am_test_new_solver();
+    xv = am_newvariable(S, &x);
+    c = am_newconstraint(S, AM_REQUIRED);
+    assertok(am_addterm(c, xv, 1) == AM_OK);
+    assertok(am_addconstant(c, -want) == AM_OK);
+    assertok(am_setrelation(c, AM_EQUAL) == AM_OK);
+    assertok(am_add(c) == AM_OK);
+    am_updatevars(S);
+
+    md.base.var_name = dump_varname;
+    md.base.cons_name = NULL;
+    md.base.writer = dump_writer;
+    md.p = buf, md.len = &len;
+    assertok(am_dump(S, &md.base) == AM_OK);
+
+    xr.r = (const unsigned char *)buf, xr.w = (unsigned char *)enc;
+    xr.bits = bits;
+    reenc_value(&xr);
+    assertok(xr.r == (const unsigned char *)buf + len); /* one pass */
+    enclen = (size_t)(xr.w - (unsigned char *)enc);
+    assertok(enclen > 0 && enclen < TEST_BUFSIZE);
+
+    memset(&ml, 0, sizeof(ml));
+    ml.base.load_var = load_var;
+    ml.base.load_cons = load_cons;
+    ml.base.reader = load_reader;
+    ml.p = enc, ml.len = enclen;
+    assertok((S2 = am_load(am_test_allocf, NULL, &ml.base, 0)) != NULL);
+    assertok(memcmp(&ml.values[0], &want, sizeof(want)) == 0);
+
+    am_delsolver(S2);
+    am_delsolver(S);
+}
+
+/* One constraint of the enaml-like layout below.  The table is constant
+ * data: terms carry an index into layout_var (not an am_Id, which only
+ * exists at run time), so a strict C89 build can initialize it. */
 struct layout_item {
-    am_Id  var;
+    int    var; /* index into layout_var, -1 ends the list */
     am_Num mul;
 };
 
 struct layout_constraint {
-    struct layout_item term[5]; /* zero-terminated: var == 0 ends the list */
+    struct layout_item term[5];
     am_Num             constant;
     int                relation;
     am_Num             strength;
 };
 
+enum layout_var {
+    WIDTH,
+    HEIGHT,
+    LEFT,
+    TOP,
+    CONTENTS_TOP,
+    CONTENTS_BOTTOM,
+    CONTENTS_LEFT,
+    CONTENTS_RIGHT,
+    MIDLINE,
+    CTLEFT,
+    CTHEIGHT,
+    CTTOP,
+    CTWIDTH,
+    LB1LEFT,
+    LB1HEIGHT,
+    LB1TOP,
+    LB1WIDTH,
+    LB2LEFT,
+    LB2HEIGHT,
+    LB2TOP,
+    LB2WIDTH,
+    LB3LEFT,
+    LB3HEIGHT,
+    LB3TOP,
+    LB3WIDTH,
+    FL1LEFT,
+    FL1HEIGHT,
+    FL1TOP,
+    FL1WIDTH,
+    FL2LEFT,
+    FL2HEIGHT,
+    FL2TOP,
+    FL2WIDTH,
+    FL3LEFT,
+    FL3HEIGHT,
+    FL3TOP,
+    FL3WIDTH,
+    LAYOUT_NVARS
+};
+
+/* custom strengths, between AM_MEDIUM and AM_STRONG: macros, not const
+ * objects, so the table below stays a constant initializer */
+#define M_MEDIUM (AM_MEDIUM * 1.25)
+#define S_MEDIUM (AM_MEDIUM * 100)
+
+static const struct layout_constraint constraints[] = {
+        {{{LEFT, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{HEIGHT, 1}, {-1, 0}}, 0, AM_EQUAL, AM_MEDIUM},
+        {{{TOP, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{WIDTH, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{HEIGHT, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{TOP, -1}, {CONTENTS_TOP, 1}, {-1, 0}}, -10, AM_EQUAL, AM_REQUIRED},
+        {{{LB3HEIGHT, 1}, {-1, 0}}, -16, AM_EQUAL, AM_STRONG},
+        {{{LB3HEIGHT, 1}, {-1, 0}}, -16, AM_GREATEQUAL, AM_STRONG},
+        {{{CTLEFT, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{CTTOP, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{CTWIDTH, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{CTHEIGHT, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{FL3LEFT, 1}, {-1, 0}}, 0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{CTHEIGHT, 1}, {-1, 0}}, -24, AM_GREATEQUAL, S_MEDIUM},
+        {{{CTWIDTH, 1}, {-1, 0}}, -1.67772e+07, AM_LESSEQUAL, S_MEDIUM},
+        {{{CTHEIGHT, 1}, {-1, 0}}, -24, AM_LESSEQUAL, S_MEDIUM},
+        {{{FL3TOP, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{FL3WIDTH, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{FL3HEIGHT, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{LB1WIDTH, 1}, {-1, 0}}, -67, AM_EQUAL, AM_WEAK},
+        {{{LB2WIDTH, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{LB2HEIGHT, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{FL2HEIGHT, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{LB3LEFT, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{FL2WIDTH, 1}, {-1, 0}}, -125, AM_GREATEQUAL, AM_STRONG},
+        {{{FL2HEIGHT, 1}, {-1, 0}}, -21, AM_EQUAL, AM_STRONG},
+        {{{FL2HEIGHT, 1}, {-1, 0}}, -21, AM_GREATEQUAL, AM_STRONG},
+        {{{LB3TOP, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{LB3WIDTH, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{LB1LEFT, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{FL1WIDTH, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{LB1WIDTH, 1}, {-1, 0}}, -67, AM_GREATEQUAL, AM_STRONG},
+        {{{FL2LEFT, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{LB2WIDTH, 1}, {-1, 0}}, -66, AM_EQUAL, AM_WEAK},
+        {{{LB2WIDTH, 1}, {-1, 0}}, -66, AM_GREATEQUAL, AM_STRONG},
+        {{{LB2HEIGHT, 1}, {-1, 0}}, -16, AM_EQUAL, AM_STRONG},
+        {{{FL1HEIGHT, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{FL1TOP, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{LB2TOP, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{LB2TOP, -1}, {LB3TOP, 1}, {LB2HEIGHT, -1}, {-1, 0}},
+         -10,
+         AM_EQUAL,
+         M_MEDIUM},
+        {{{LB3TOP, -1}, {LB3HEIGHT, -1}, {FL3TOP, 1}, {-1, 0}},
+         -10,
+         AM_GREATEQUAL,
+         AM_REQUIRED},
+        {{{LB3TOP, -1}, {LB3HEIGHT, -1}, {FL3TOP, 1}, {-1, 0}},
+         -10,
+         AM_EQUAL,
+         M_MEDIUM},
+        {{{CONTENTS_BOTTOM, 1}, {FL3HEIGHT, -1}, {FL3TOP, -1}, {-1, 0}},
+         -0,
+         AM_EQUAL,
+         M_MEDIUM},
+        {{{FL1TOP, 1}, {CONTENTS_TOP, -1}, {-1, 0}},
+         0,
+         AM_GREATEQUAL,
+         AM_REQUIRED},
+        {{{FL1TOP, 1}, {CONTENTS_TOP, -1}, {-1, 0}}, 0, AM_EQUAL, M_MEDIUM},
+        {{{CONTENTS_BOTTOM, 1}, {FL3HEIGHT, -1}, {FL3TOP, -1}, {-1, 0}},
+         -0,
+         AM_GREATEQUAL,
+         AM_REQUIRED},
+        {{{LEFT, -1}, {WIDTH, -1}, {CONTENTS_RIGHT, 1}, {-1, 0}},
+         10,
+         AM_EQUAL,
+         AM_REQUIRED},
+        {{{TOP, -1}, {HEIGHT, -1}, {CONTENTS_BOTTOM, 1}, {-1, 0}},
+         10,
+         AM_EQUAL,
+         AM_REQUIRED},
+        {{{LEFT, -1}, {CONTENTS_LEFT, 1}, {-1, 0}}, -10, AM_EQUAL, AM_REQUIRED},
+        {{{LB3LEFT, 1}, {CONTENTS_LEFT, -1}, {-1, 0}}, 0, AM_EQUAL, M_MEDIUM},
+        {{{FL1LEFT, 1}, {MIDLINE, -1}, {-1, 0}}, 0, AM_EQUAL, AM_STRONG},
+        {{{FL2LEFT, 1}, {MIDLINE, -1}, {-1, 0}}, 0, AM_EQUAL, AM_STRONG},
+        {{{CTLEFT, 1}, {MIDLINE, -1}, {-1, 0}}, 0, AM_EQUAL, AM_STRONG},
+        {{{FL1TOP, 1},
+          {FL1HEIGHT, 0.5},
+          {LB1TOP, -1},
+          {LB1HEIGHT, -0.5},
+          {-1, 0}},
+         0,
+         AM_EQUAL,
+         AM_STRONG},
+        {{{LB1LEFT, 1}, {CONTENTS_LEFT, -1}, {-1, 0}},
+         0,
+         AM_GREATEQUAL,
+         AM_REQUIRED},
+        {{{LB1LEFT, 1}, {CONTENTS_LEFT, -1}, {-1, 0}}, 0, AM_EQUAL, M_MEDIUM},
+        {{{LB1LEFT, -1}, {FL1LEFT, 1}, {LB1WIDTH, -1}, {-1, 0}},
+         -10,
+         AM_GREATEQUAL,
+         AM_REQUIRED},
+        {{{LB1LEFT, -1}, {FL1LEFT, 1}, {LB1WIDTH, -1}, {-1, 0}},
+         -10,
+         AM_EQUAL,
+         M_MEDIUM},
+        {{{FL1LEFT, -1}, {CONTENTS_RIGHT, 1}, {FL1WIDTH, -1}, {-1, 0}},
+         -0,
+         AM_GREATEQUAL,
+         AM_REQUIRED},
+        {{{WIDTH, 1}, {-1, 0}}, 0, AM_EQUAL, AM_MEDIUM},
+        {{{FL1TOP, -1}, {FL2TOP, 1}, {FL1HEIGHT, -1}, {-1, 0}},
+         -10,
+         AM_GREATEQUAL,
+         AM_REQUIRED},
+        {{{FL1TOP, -1}, {FL2TOP, 1}, {FL1HEIGHT, -1}, {-1, 0}},
+         -10,
+         AM_EQUAL,
+         M_MEDIUM},
+        {{{CTTOP, 1}, {FL2TOP, -1}, {FL2HEIGHT, -1}, {-1, 0}},
+         -10,
+         AM_GREATEQUAL,
+         AM_REQUIRED},
+        {{{CTHEIGHT, -1}, {CTTOP, -1}, {FL3TOP, 1}, {-1, 0}},
+         -10,
+         AM_GREATEQUAL,
+         AM_REQUIRED},
+        {{{CONTENTS_BOTTOM, 1}, {FL3HEIGHT, -1}, {FL3TOP, -1}, {-1, 0}},
+         -0,
+         AM_GREATEQUAL,
+         AM_REQUIRED},
+        {{{CTTOP, 1}, {FL2TOP, -1}, {FL2HEIGHT, -1}, {-1, 0}},
+         -10,
+         AM_EQUAL,
+         M_MEDIUM},
+        {{{FL1LEFT, -1}, {CONTENTS_RIGHT, 1}, {FL1WIDTH, -1}, {-1, 0}},
+         -0,
+         AM_EQUAL,
+         M_MEDIUM},
+        {{{LB2TOP, -1},
+          {LB2HEIGHT, -0.5},
+          {FL2TOP, 1},
+          {FL2HEIGHT, 0.5},
+          {-1, 0}},
+         0,
+         AM_EQUAL,
+         AM_STRONG},
+        {{{CONTENTS_LEFT, -1}, {LB2LEFT, 1}, {-1, 0}},
+         0,
+         AM_GREATEQUAL,
+         AM_REQUIRED},
+        {{{CONTENTS_LEFT, -1}, {LB2LEFT, 1}, {-1, 0}}, 0, AM_EQUAL, M_MEDIUM},
+        {{{FL2LEFT, 1}, {LB2WIDTH, -1}, {LB2LEFT, -1}, {-1, 0}},
+         -10,
+         AM_GREATEQUAL,
+         AM_REQUIRED},
+        {{{CTHEIGHT, -1}, {CTTOP, -1}, {FL3TOP, 1}, {-1, 0}},
+         -10,
+         AM_EQUAL,
+         M_MEDIUM},
+        {{{CONTENTS_BOTTOM, 1}, {FL3HEIGHT, -1}, {FL3TOP, -1}, {-1, 0}},
+         -0,
+         AM_EQUAL,
+         M_MEDIUM},
+        {{{LB1TOP, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{LB1WIDTH, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{LB1HEIGHT, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{FL2LEFT, 1}, {LB2WIDTH, -1}, {LB2LEFT, -1}, {-1, 0}},
+         -10,
+         AM_EQUAL,
+         M_MEDIUM},
+        {{{FL2LEFT, -1}, {FL2WIDTH, -1}, {CONTENTS_RIGHT, 1}, {-1, 0}},
+         -0,
+         AM_EQUAL,
+         M_MEDIUM},
+        {{{FL2LEFT, -1}, {FL2WIDTH, -1}, {CONTENTS_RIGHT, 1}, {-1, 0}},
+         -0,
+         AM_GREATEQUAL,
+         AM_REQUIRED},
+        {{{LB3LEFT, 1}, {CONTENTS_LEFT, -1}, {-1, 0}},
+         0,
+         AM_GREATEQUAL,
+         AM_REQUIRED},
+        {{{LB1LEFT, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{CTHEIGHT, 0.5},
+          {CTTOP, 1},
+          {LB3TOP, -1},
+          {LB3HEIGHT, -0.5},
+          {-1, 0}},
+         0,
+         AM_EQUAL,
+         AM_STRONG},
+        {{{CTLEFT, 1}, {LB3LEFT, -1}, {LB3WIDTH, -1}, {-1, 0}},
+         -10,
+         AM_GREATEQUAL,
+         AM_REQUIRED},
+        {{{CTWIDTH, -1}, {CTLEFT, -1}, {CONTENTS_RIGHT, 1}, {-1, 0}},
+         -0,
+         AM_GREATEQUAL,
+         AM_REQUIRED},
+        {{{CTLEFT, 1}, {LB3LEFT, -1}, {LB3WIDTH, -1}, {-1, 0}},
+         -10,
+         AM_EQUAL,
+         M_MEDIUM},
+        {{{FL3LEFT, 1}, {CONTENTS_LEFT, -1}, {-1, 0}},
+         0,
+         AM_GREATEQUAL,
+         AM_REQUIRED},
+        {{{FL3LEFT, 1}, {CONTENTS_LEFT, -1}, {-1, 0}}, 0, AM_EQUAL, M_MEDIUM},
+        {{{CTWIDTH, -1}, {CTLEFT, -1}, {CONTENTS_RIGHT, 1}, {-1, 0}},
+         -0,
+         AM_EQUAL,
+         M_MEDIUM},
+        {{{FL3LEFT, -1}, {CONTENTS_RIGHT, 1}, {FL3WIDTH, -1}, {-1, 0}},
+         -0,
+         AM_EQUAL,
+         M_MEDIUM},
+        {{{CONTENTS_TOP, -1}, {LB1TOP, 1}, {-1, 0}},
+         0,
+         AM_GREATEQUAL,
+         AM_REQUIRED},
+        {{{CONTENTS_TOP, -1}, {LB1TOP, 1}, {-1, 0}}, 0, AM_EQUAL, M_MEDIUM},
+        {{{FL3LEFT, -1}, {CONTENTS_RIGHT, 1}, {FL3WIDTH, -1}, {-1, 0}},
+         -0,
+         AM_GREATEQUAL,
+         AM_REQUIRED},
+        {{{LB2TOP, 1}, {LB1TOP, -1}, {LB1HEIGHT, -1}, {-1, 0}},
+         -10,
+         AM_GREATEQUAL,
+         AM_REQUIRED},
+        {{{LB2TOP, -1}, {LB3TOP, 1}, {LB2HEIGHT, -1}, {-1, 0}},
+         -10,
+         AM_GREATEQUAL,
+         AM_REQUIRED},
+        {{{LB2TOP, 1}, {LB1TOP, -1}, {LB1HEIGHT, -1}, {-1, 0}},
+         -10,
+         AM_EQUAL,
+         M_MEDIUM},
+        {{{FL1HEIGHT, 1}, {-1, 0}}, -21, AM_EQUAL, AM_STRONG},
+        {{{FL1HEIGHT, 1}, {-1, 0}}, -21, AM_GREATEQUAL, AM_STRONG},
+        {{{LB2LEFT, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{LB2HEIGHT, 1}, {-1, 0}}, -16, AM_GREATEQUAL, AM_STRONG},
+        {{{FL2TOP, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{FL2WIDTH, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{LB1HEIGHT, 1}, {-1, 0}}, -16, AM_GREATEQUAL, AM_STRONG},
+        {{{LB1HEIGHT, 1}, {-1, 0}}, -16, AM_EQUAL, AM_STRONG},
+        {{{FL3WIDTH, 1}, {-1, 0}}, -125, AM_GREATEQUAL, AM_STRONG},
+        {{{FL3HEIGHT, 1}, {-1, 0}}, -21, AM_EQUAL, AM_STRONG},
+        {{{FL3HEIGHT, 1}, {-1, 0}}, -21, AM_GREATEQUAL, AM_STRONG},
+        {{{LB3HEIGHT, 1}, {-1, 0}}, -0, AM_GREATEQUAL, AM_REQUIRED},
+        {{{CTWIDTH, 1}, {-1, 0}}, -119, AM_GREATEQUAL, S_MEDIUM},
+        {{{LB3WIDTH, 1}, {-1, 0}}, -24, AM_EQUAL, AM_WEAK},
+        {{{LB3WIDTH, 1}, {-1, 0}}, -24, AM_GREATEQUAL, AM_STRONG},
+        {{{FL1WIDTH, 1}, {-1, 0}}, -125, AM_GREATEQUAL, AM_STRONG},
+};
+
 static void build_solver(am_Solver *S, am_Id width, am_Id height,
                          am_Num *values) {
-    /* Create custom strength */
-    am_Num mmedium = AM_MEDIUM * 1.25;
-    am_Num smedium = AM_MEDIUM * 100;
-
-    /* Create the variable */
-    am_Id left = am_newvariable(S, &values[0]);
-    am_Id top = am_newvariable(S, &values[1]);
-    am_Id contents_top = am_newvariable(S, &values[2]);
-    am_Id contents_bottom = am_newvariable(S, &values[3]);
-    am_Id contents_left = am_newvariable(S, &values[4]);
-    am_Id contents_right = am_newvariable(S, &values[5]);
-    am_Id midline = am_newvariable(S, &values[6]);
-    am_Id ctleft = am_newvariable(S, &values[7]);
-    am_Id ctheight = am_newvariable(S, &values[8]);
-    am_Id cttop = am_newvariable(S, &values[9]);
-    am_Id ctwidth = am_newvariable(S, &values[10]);
-    am_Id lb1left = am_newvariable(S, &values[11]);
-    am_Id lb1height = am_newvariable(S, &values[12]);
-    am_Id lb1top = am_newvariable(S, &values[13]);
-    am_Id lb1width = am_newvariable(S, &values[14]);
-    am_Id lb2left = am_newvariable(S, &values[15]);
-    am_Id lb2height = am_newvariable(S, &values[16]);
-    am_Id lb2top = am_newvariable(S, &values[17]);
-    am_Id lb2width = am_newvariable(S, &values[18]);
-    am_Id lb3left = am_newvariable(S, &values[19]);
-    am_Id lb3height = am_newvariable(S, &values[20]);
-    am_Id lb3top = am_newvariable(S, &values[21]);
-    am_Id lb3width = am_newvariable(S, &values[22]);
-    am_Id fl1left = am_newvariable(S, &values[23]);
-    am_Id fl1height = am_newvariable(S, &values[24]);
-    am_Id fl1top = am_newvariable(S, &values[25]);
-    am_Id fl1width = am_newvariable(S, &values[26]);
-    am_Id fl2left = am_newvariable(S, &values[27]);
-    am_Id fl2height = am_newvariable(S, &values[28]);
-    am_Id fl2top = am_newvariable(S, &values[29]);
-    am_Id fl2width = am_newvariable(S, &values[30]);
-    am_Id fl3left = am_newvariable(S, &values[31]);
-    am_Id fl3height = am_newvariable(S, &values[32]);
-    am_Id fl3top = am_newvariable(S, &values[33]);
-    am_Id fl3width = am_newvariable(S, &values[34]);
-
-#ifdef __GNUC__
-# pragma GCC diagnostic push
-# pragma GCC diagnostic ignored "-Wmissing-field-initializers"
-# pragma GCC diagnostic ignored "-Wc99-extensions"
-#endif
-
-    /* Add the constraints */
-    const struct layout_constraint constraints[] = {
-            {{{left}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{height}}, 0, AM_EQUAL, AM_MEDIUM},
-            {{{top}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{width}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{height}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{top, -1}, {contents_top}}, -10, AM_EQUAL, AM_REQUIRED},
-            {{{lb3height}}, -16, AM_EQUAL, AM_STRONG},
-            {{{lb3height}}, -16, AM_GREATEQUAL, AM_STRONG},
-            {{{ctleft}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{cttop}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{ctwidth}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{ctheight}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{fl3left}}, 0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{ctheight}}, -24, AM_GREATEQUAL, smedium},
-            {{{ctwidth}}, -1.67772e+07, AM_LESSEQUAL, smedium},
-            {{{ctheight}}, -24, AM_LESSEQUAL, smedium},
-            {{{fl3top}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{fl3width}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{fl3height}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{lb1width}}, -67, AM_EQUAL, AM_WEAK},
-            {{{lb2width}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{lb2height}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{fl2height}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{lb3left}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{fl2width}}, -125, AM_GREATEQUAL, AM_STRONG},
-            {{{fl2height}}, -21, AM_EQUAL, AM_STRONG},
-            {{{fl2height}}, -21, AM_GREATEQUAL, AM_STRONG},
-            {{{lb3top}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{lb3width}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{lb1left}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{fl1width}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{lb1width}}, -67, AM_GREATEQUAL, AM_STRONG},
-            {{{fl2left}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{lb2width}}, -66, AM_EQUAL, AM_WEAK},
-            {{{lb2width}}, -66, AM_GREATEQUAL, AM_STRONG},
-            {{{lb2height}}, -16, AM_EQUAL, AM_STRONG},
-            {{{fl1height}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{fl1top}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{lb2top}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{lb2top, -1}, {lb3top}, {lb2height, -1}}, -10, AM_EQUAL, mmedium},
-            {{{lb3top, -1}, {lb3height, -1}, {fl3top}},
-             -10,
-             AM_GREATEQUAL,
-             AM_REQUIRED},
-            {{{lb3top, -1}, {lb3height, -1}, {fl3top}}, -10, AM_EQUAL, mmedium},
-            {{{contents_bottom}, {fl3height, -1}, {fl3top, -1}},
-             -0,
-             AM_EQUAL,
-             mmedium},
-            {{{fl1top}, {contents_top, -1}}, 0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{fl1top}, {contents_top, -1}}, 0, AM_EQUAL, mmedium},
-            {{{contents_bottom}, {fl3height, -1}, {fl3top, -1}},
-             -0,
-             AM_GREATEQUAL,
-             AM_REQUIRED},
-            {{{left, -1}, {width, -1}, {contents_right}},
-             10,
-             AM_EQUAL,
-             AM_REQUIRED},
-            {{{top, -1}, {height, -1}, {contents_bottom}},
-             10,
-             AM_EQUAL,
-             AM_REQUIRED},
-            {{{left, -1}, {contents_left}}, -10, AM_EQUAL, AM_REQUIRED},
-            {{{lb3left}, {contents_left, -1}}, 0, AM_EQUAL, mmedium},
-            {{{fl1left}, {midline, -1}}, 0, AM_EQUAL, AM_STRONG},
-            {{{fl2left}, {midline, -1}}, 0, AM_EQUAL, AM_STRONG},
-            {{{ctleft}, {midline, -1}}, 0, AM_EQUAL, AM_STRONG},
-            {{{fl1top}, {fl1height, 0.5}, {lb1top, -1}, {lb1height, -0.5}},
-             0,
-             AM_EQUAL,
-             AM_STRONG},
-            {{{lb1left}, {contents_left, -1}}, 0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{lb1left}, {contents_left, -1}}, 0, AM_EQUAL, mmedium},
-            {{{lb1left, -1}, {fl1left}, {lb1width, -1}},
-             -10,
-             AM_GREATEQUAL,
-             AM_REQUIRED},
-            {{{lb1left, -1}, {fl1left}, {lb1width, -1}},
-             -10,
-             AM_EQUAL,
-             mmedium},
-            {{{fl1left, -1}, {contents_right}, {fl1width, -1}},
-             -0,
-             AM_GREATEQUAL,
-             AM_REQUIRED},
-            {{{width}}, 0, AM_EQUAL, AM_MEDIUM},
-            {{{fl1top, -1}, {fl2top}, {fl1height, -1}},
-             -10,
-             AM_GREATEQUAL,
-             AM_REQUIRED},
-            {{{fl1top, -1}, {fl2top}, {fl1height, -1}}, -10, AM_EQUAL, mmedium},
-            {{{cttop}, {fl2top, -1}, {fl2height, -1}},
-             -10,
-             AM_GREATEQUAL,
-             AM_REQUIRED},
-            {{{ctheight, -1}, {cttop, -1}, {fl3top}},
-             -10,
-             AM_GREATEQUAL,
-             AM_REQUIRED},
-            {{{contents_bottom}, {fl3height, -1}, {fl3top, -1}},
-             -0,
-             AM_GREATEQUAL,
-             AM_REQUIRED},
-            {{{cttop}, {fl2top, -1}, {fl2height, -1}}, -10, AM_EQUAL, mmedium},
-            {{{fl1left, -1}, {contents_right}, {fl1width, -1}},
-             -0,
-             AM_EQUAL,
-             mmedium},
-            {{{lb2top, -1}, {lb2height, -0.5}, {fl2top}, {fl2height, 0.5}},
-             0,
-             AM_EQUAL,
-             AM_STRONG},
-            {{{contents_left, -1}, {lb2left}}, 0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{contents_left, -1}, {lb2left}}, 0, AM_EQUAL, mmedium},
-            {{{fl2left}, {lb2width, -1}, {lb2left, -1}},
-             -10,
-             AM_GREATEQUAL,
-             AM_REQUIRED},
-            {{{ctheight, -1}, {cttop, -1}, {fl3top}}, -10, AM_EQUAL, mmedium},
-            {{{contents_bottom}, {fl3height, -1}, {fl3top, -1}},
-             -0,
-             AM_EQUAL,
-             mmedium},
-            {{{lb1top}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{lb1width}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{lb1height}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{fl2left}, {lb2width, -1}, {lb2left, -1}},
-             -10,
-             AM_EQUAL,
-             mmedium},
-            {{{fl2left, -1}, {fl2width, -1}, {contents_right}},
-             -0,
-             AM_EQUAL,
-             mmedium},
-            {{{fl2left, -1}, {fl2width, -1}, {contents_right}},
-             -0,
-             AM_GREATEQUAL,
-             AM_REQUIRED},
-            {{{lb3left}, {contents_left, -1}}, 0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{lb1left}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{ctheight, 0.5}, {cttop}, {lb3top, -1}, {lb3height, -0.5}},
-             0,
-             AM_EQUAL,
-             AM_STRONG},
-            {{{ctleft}, {lb3left, -1}, {lb3width, -1}},
-             -10,
-             AM_GREATEQUAL,
-             AM_REQUIRED},
-            {{{ctwidth, -1}, {ctleft, -1}, {contents_right}},
-             -0,
-             AM_GREATEQUAL,
-             AM_REQUIRED},
-            {{{ctleft}, {lb3left, -1}, {lb3width, -1}}, -10, AM_EQUAL, mmedium},
-            {{{fl3left}, {contents_left, -1}}, 0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{fl3left}, {contents_left, -1}}, 0, AM_EQUAL, mmedium},
-            {{{ctwidth, -1}, {ctleft, -1}, {contents_right}},
-             -0,
-             AM_EQUAL,
-             mmedium},
-            {{{fl3left, -1}, {contents_right}, {fl3width, -1}},
-             -0,
-             AM_EQUAL,
-             mmedium},
-            {{{contents_top, -1}, {lb1top}}, 0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{contents_top, -1}, {lb1top}}, 0, AM_EQUAL, mmedium},
-            {{{fl3left, -1}, {contents_right}, {fl3width, -1}},
-             -0,
-             AM_GREATEQUAL,
-             AM_REQUIRED},
-            {{{lb2top}, {lb1top, -1}, {lb1height, -1}},
-             -10,
-             AM_GREATEQUAL,
-             AM_REQUIRED},
-            {{{lb2top, -1}, {lb3top}, {lb2height, -1}},
-             -10,
-             AM_GREATEQUAL,
-             AM_REQUIRED},
-            {{{lb2top}, {lb1top, -1}, {lb1height, -1}}, -10, AM_EQUAL, mmedium},
-            {{{fl1height}}, -21, AM_EQUAL, AM_STRONG},
-            {{{fl1height}}, -21, AM_GREATEQUAL, AM_STRONG},
-            {{{lb2left}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{lb2height}}, -16, AM_GREATEQUAL, AM_STRONG},
-            {{{fl2top}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{fl2width}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{lb1height}}, -16, AM_GREATEQUAL, AM_STRONG},
-            {{{lb1height}}, -16, AM_EQUAL, AM_STRONG},
-            {{{fl3width}}, -125, AM_GREATEQUAL, AM_STRONG},
-            {{{fl3height}}, -21, AM_EQUAL, AM_STRONG},
-            {{{fl3height}}, -21, AM_GREATEQUAL, AM_STRONG},
-            {{{lb3height}}, -0, AM_GREATEQUAL, AM_REQUIRED},
-            {{{ctwidth}}, -119, AM_GREATEQUAL, smedium},
-            {{{lb3width}}, -24, AM_EQUAL, AM_WEAK},
-            {{{lb3width}}, -24, AM_GREATEQUAL, AM_STRONG},
-            {{{fl1width}}, -125, AM_GREATEQUAL, AM_STRONG},
-    };
-
-#ifdef __GNUC__
-# pragma GCC diagnostic pop
-#endif
-
+    am_Id  vars[LAYOUT_NVARS];
     size_t i;
     int    ret;
+
+    vars[WIDTH] = width, vars[HEIGHT] = height;
+    vars[LEFT] = am_newvariable(S, &values[0]);
+    vars[TOP] = am_newvariable(S, &values[1]);
+    vars[CONTENTS_TOP] = am_newvariable(S, &values[2]);
+    vars[CONTENTS_BOTTOM] = am_newvariable(S, &values[3]);
+    vars[CONTENTS_LEFT] = am_newvariable(S, &values[4]);
+    vars[CONTENTS_RIGHT] = am_newvariable(S, &values[5]);
+    vars[MIDLINE] = am_newvariable(S, &values[6]);
+    vars[CTLEFT] = am_newvariable(S, &values[7]);
+    vars[CTHEIGHT] = am_newvariable(S, &values[8]);
+    vars[CTTOP] = am_newvariable(S, &values[9]);
+    vars[CTWIDTH] = am_newvariable(S, &values[10]);
+    vars[LB1LEFT] = am_newvariable(S, &values[11]);
+    vars[LB1HEIGHT] = am_newvariable(S, &values[12]);
+    vars[LB1TOP] = am_newvariable(S, &values[13]);
+    vars[LB1WIDTH] = am_newvariable(S, &values[14]);
+    vars[LB2LEFT] = am_newvariable(S, &values[15]);
+    vars[LB2HEIGHT] = am_newvariable(S, &values[16]);
+    vars[LB2TOP] = am_newvariable(S, &values[17]);
+    vars[LB2WIDTH] = am_newvariable(S, &values[18]);
+    vars[LB3LEFT] = am_newvariable(S, &values[19]);
+    vars[LB3HEIGHT] = am_newvariable(S, &values[20]);
+    vars[LB3TOP] = am_newvariable(S, &values[21]);
+    vars[LB3WIDTH] = am_newvariable(S, &values[22]);
+    vars[FL1LEFT] = am_newvariable(S, &values[23]);
+    vars[FL1HEIGHT] = am_newvariable(S, &values[24]);
+    vars[FL1TOP] = am_newvariable(S, &values[25]);
+    vars[FL1WIDTH] = am_newvariable(S, &values[26]);
+    vars[FL2LEFT] = am_newvariable(S, &values[27]);
+    vars[FL2HEIGHT] = am_newvariable(S, &values[28]);
+    vars[FL2TOP] = am_newvariable(S, &values[29]);
+    vars[FL2WIDTH] = am_newvariable(S, &values[30]);
+    vars[FL3LEFT] = am_newvariable(S, &values[31]);
+    vars[FL3HEIGHT] = am_newvariable(S, &values[32]);
+    vars[FL3TOP] = am_newvariable(S, &values[33]);
+    vars[FL3WIDTH] = am_newvariable(S, &values[34]);
 
     /* Add the edit variables */
     ret = am_addedit(S, width, AM_STRONG);
@@ -362,8 +581,8 @@ static void build_solver(am_Solver *S, am_Id width, am_Id height,
     for (i = 0; i < sizeof(constraints) / sizeof(constraints[0]); ++i) {
         am_Constraint *c = am_newconstraint(S, constraints[i].strength);
         const struct layout_item *p;
-        for (p = constraints[i].term; p->var; ++p) {
-            ret = am_addterm(c, p->var, p->mul ? p->mul : 1);
+        for (p = constraints[i].term; p->var >= 0; ++p) {
+            ret = am_addterm(c, vars[p->var], p->mul);
             assertok(ret == AM_OK);
         }
         ret = am_addconstant(c, constraints[i].constant);
@@ -449,6 +668,58 @@ TEST(dumpload) {
     assertok(allmem == 0);
     maxmem = 0;
 }
+
+/* The stream carries am_Num's own width, so a value float32 cannot hold must
+ * survive a double build's dump/load bit for bit.  Float builds pass this
+ * trivially: the fixture is exact in either width. */
+TEST(dump_roundtrip_is_exact) {
+    am_Num         want = (am_Num)(1.0 / 3.0);
+    am_Num         x = 0;
+    am_Solver     *S, *S2;
+    am_Id          xv;
+    am_Constraint *c;
+    char           buf[TEST_BUFSIZE];
+    size_t         len = 0;
+    MyDumper       md;
+    MyLoader       ml;
+
+    S = am_test_new_solver();
+    assertok(S != NULL);
+    xv = am_newvariable(S, &x);
+    c = am_newconstraint(S, AM_REQUIRED);
+    assertok(am_addterm(c, xv, 1) == AM_OK);
+    assertok(am_addconstant(c, -want) == AM_OK);
+    assertok(am_setrelation(c, AM_EQUAL) == AM_OK);
+    assertok(am_add(c) == AM_OK);
+    am_updatevars(S);
+    /* the fixture itself must be exact, or a mismatch would not be dump's */
+    assertok(memcmp(&x, &want, sizeof(x)) == 0);
+
+    md.base.var_name = dump_varname;
+    md.base.cons_name = NULL;
+    md.base.writer = dump_writer;
+    md.p = buf, md.len = &len;
+    assertok(am_dump(S, &md.base) == AM_OK);
+
+    memset(&ml, 0, sizeof(ml));
+    ml.base.load_var = load_var;
+    ml.base.load_cons = load_cons;
+    ml.base.reader = load_reader;
+    ml.p = buf, ml.len = len;
+    assertok((S2 = am_load(am_test_allocf, NULL, &ml.base, 0)) != NULL);
+    assertok(memcmp(&ml.values[0], &want, sizeof(want)) == 0);
+
+    am_delsolver(S2);
+    am_delsolver(S);
+}
+
+/* The reader takes either float width: widen this build's stream to float64
+ * and load it again (a copy when the build already writes float64). */
+TEST(load_reads_float64_stream) { reenc_roundtrip((am_Num)(1.0 / 3.0), 64); }
+
+/* ... and the other direction: an old or float-build stream (float32) must
+ * load in a double build too. */
+TEST(load_reads_float32_stream) { reenc_roundtrip((am_Num)0.25, 32); }
 
 /* x + y == 10 leaves one variable without a row: its tableau value is 0, so a
  * load must overwrite whatever load_var() put in that binding. */

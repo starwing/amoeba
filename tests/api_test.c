@@ -342,8 +342,9 @@ static void dump_skipstring(dump_reader *r) {
 }
 
 static void dump_skipfloat(dump_reader *r) {
-    assertok(*r->p++ == 0xCA);
-    r->p += 4;
+    int ty = *r->p++; /* float32 or float64, depending on the build's am_Num */
+    assertok(ty == 0xCA || ty == 0xCB);
+    r->p += ty == 0xCA ? 4 : 8;
 }
 
 static void dump_skiprowbody(dump_reader *r, unsigned count) {
