@@ -11,8 +11,8 @@
 
 ## 0. 优先级总览
 
-- **P1（恢复与健壮性）**：A3、B1、B2、B4、B5、B7。
-- **P2（能力与质量）**：C1–C6。
+- **P1（恢复与健壮性）**：A3、A5、B1、B2、B4、B5、B7。
+- **P2（能力与质量）**：C2–C6。
 - **P3（清理）**：A4。
 - **提案（未批准）**：D 节的可视化 Demo。
 
@@ -21,15 +21,18 @@
 | ID | P | 问题 | 依赖 | 用例 |
 |---|---|---|---|---|
 | A3 | P1 | dump/load 没有 magic + 版本号 | 无 | 需新建（真 dump） |
+| A5 | P1 | dump/load 没有应用元数据 | A3 | 需新建（真 dump + 回调） |
 
 ## 2. 背景与依赖（事实，不是顺序）
 
-- **根因分组**：`A3` 是流没有版本头。
+- **根因分组**：`A3` 是流没有版本头；`A5` 是流里没有 app 自己的数据。
 - **依赖**：
   - `A3`：无前置；继续用「真 dump + 只改目标字段」的策略。
-- **A3 的用例策略**：继续用 `am_dump()` 生成真流、只改目标字段；手搓流会和真实 writer 不一致。
+  - `A5`：依赖 A3；两者共用一次顶层格式 bump，A3 先落地或与 A5 同一批实现。
+- **A3/A5 的用例策略**：继续用 `am_dump()` 生成真流、只改目标字段；手搓流会和真实 writer
+  不一致。5 元 legacy 流用当前 writer 生成的固定 fixture（真实 dump），不手写。
 
-## 3. 重点条目（A3 / A4）
+## 3. 重点条目（A3 / A5 / A4）
 
 ### A3. dump/load 加 magic + 版本号
 
@@ -38,6 +41,24 @@
   `[["amoeba", 1], total, vars, constraints, rows, objective]`。分析见
   [notes/dump-format.md](notes/dump-format.md) §8；上一版里实现过，后随旧提案一起 reset。
 - 前置：无；继续用真 dump + 只改目标字段的用例策略。
+
+### A5. dump/load 应用元数据（与 A3 同批）
+
+- 现状：dump 只通过 `var_name` / `cons_name` 带名字；load 后 app 拿不回自己的 doc，只能把
+  doc 另存成 JSON，或靠名字重建。
+- 方案（2026-11-13 用户拍板）：
+  - 顶层 6 元 `[meta, total, vars, constraints, rows, objective]`；
+    `meta = ["amoeba", 1, solver_blob]`。
+  - `am_Dumper` / `am_Loader` 末尾各加一个 `metadata` 回调，按 solver / var / constraint
+    逐对象提供 blob；loader 侧用交付式 `int (*)(am_Loader*, int, const char*, size_t)`。
+  - `am_Type` 的枚举值 `am_Alloc*` 改名 `am_T*`，新增 `am_TVar`；`am_Allocf` 保留原名。
+  - 5 元旧流仍可读；新 writer 恒写 6 元。
+- 不做：对篡改流的语义校验（dump 只当本地缓存/存档）；edit 序列化（见 C3）。
+- 依赖：A3；D 节 Demo 的前置。
+- 验收：solver/var/cons 元数据往返；空元数据在没有回调时也能读写；非空元数据但没有 loader
+  回调时 `am_load()` 返回 `NULL`；5 元旧流可 load；`just check`、`check-double`、
+  `check-c89`、`test-lua` 全绿。
+- 详见 [notes/plan-a3-meta.md](notes/plan-a3-meta.md)。
 
 ### A4. 工作区清理（需要用户确认后再删）
 
@@ -80,15 +101,7 @@
 - 做法：要么接受（现状，和 znet 一致），要么预生成并提交（省一个依赖，但多一步同步）。
 - 验收：随便选一个，并在 notes/testing.md 写清楚。
 
-## 5. 能力与质量（C1–C6）
-
-### C1. 内省 API（对 GUI 极其重要）
-
-- [ ] `am_constraint` 只读访问器：`am_consrelation` / `am_consstrength` / `am_consiter`（遍历项）
-      / `am_consname`；以及 `am_consrow`（dump 出来的原始表达式）。
-- [ ] `am_variter`：遍历 solver 里现存的变量。
-- [ ] 有了这些，D 节的 Demo 才可能「从 solver 反查约束」，而不必自己复制一份。
-- 验收：不定义 `AM_IMPLEMENTATION` 也能写出一个打印所有约束的程序。
+## 5. 能力与质量（C2–C6）
 
 ### C2. 约束违反度
 
@@ -100,9 +113,19 @@
 
 - 现状：`am_dump()` 会 `am_clearedits()`（丢掉所有 suggest/edit）——已在
   notes/dump-format.md §7 写明，但接口本身仍然有副作用。
-- 做法：要么改名/加参数表达「会重解」，要么先 dump 再恢复 edits（需要保存 edit 状态）。
+- **直接去掉 clear 不可行**：suggest 的隐藏约束已经在 `S->constraints` / `S->rows` 里，
+  格式里却没有 suggests 段，loader 也无法把某条约束认成 edit；不 clear 只会 dump 出一份
+  “带匿名隐藏约束”的表，edit_value、强度和变量绑定仍然丢，load 后还会多出普通约束。
+- 可行路线：
+  - **逻辑重放**：dump 前保存 `(var, strength, edit_value)`，clear 后写 base 流，再在流里加
+    edits 段；load 后 `am_addedit()` + `am_suggest()` 重放。实测可行，但 `am_dump()` 仍会
+    改 live solver（保存后界面会回弹），且重放不是逐位相等、强度会被夹到 `AM_STRONG`。
+  - **精确重建**：给 suggest 约束加流内标记，load 时构造 `am_Suggest` 并接管已读约束、
+    marker/other 与行；能保住 tableau，但侵入 dump/load 内部，且 `cons_name` 会看到隐藏约束。
+- 本期不做（见 [notes/plan-a3-meta.md](notes/plan-a3-meta.md) §8）；Demo 用「松手提交
+  nudge」或 doc 侧 replay，不在拖拽过程中 dump。
 - 验收：想清楚后写进 README；目前**至少不要**在拖拽过程中 dump。
-- （magic/版本号 见 A3。）
+- （magic/版本号见 A3；应用元数据见 A5。）
 
 ### C4. 数值
 
@@ -138,6 +161,9 @@
 5. 文档可以**保存成文件 / 从文件载入**。
 
 目标不是做产品，而是**验证 amoeba 的表达能力与交互手感**，同时得到一个能对外展示的 demo。
+
+**前置**：A3 + A5（6 元流 + 元数据回调）。约束形态由 doc 保存，内省 API 只是可选的
+反查能力。
 
 ### D1. 需求拆解（功能清单）
 
@@ -220,9 +246,9 @@ amoeba 的卖点，不必是 demo 的枷锁**——demo 放独立目录、独立
 必须现在想清楚的四个决策：
 
 1. **约束的 source of truth 是 `doc`，不是 solver。**
-   amoeba 没有内省 API（见 C1），`am_dump` 也不保存分组/名字/启停。所以应用层必须自己维护
-   一份约束数据，solver 只是「求值器」。好处：约束的显示、分组、开关、序列化全在 doc 层，
-   将来加 C1 的 API 也只是可选优化。
+   内省 API 只能反查到 solver 里的形态，`am_dump` 也不保存分组/名字/启停。所以应用层
+   必须自己维护一份约束数据，solver 只是「求值器」。好处：约束的显示、分组、开关、序列化全在
+   doc 层，反查只是可选优化。
 2. **拖动用 `am_suggest`，不要增删约束。**
    `am_suggest` 走脏行缓存（notes/algorithm.md §6），是唯一能做到「每帧重解」的路径；
    拖动期间**绝对不要** `am_add`/`am_remove`（会让缓存失效、`S->age` 变化）。
@@ -257,7 +283,7 @@ M0-M1 建议先在 Lua 原型里验证（一天内就能看到拖动重算），
 
 | 风险 | 对策 |
 |---|---|
-| amoeba 无内省，UI 无法反查约束 | doc 层自己存一份（D3 决策 1） |
+| 内省只能反映 solver 形态（无分组/名字/启停） | doc 层自己存一份（D3 决策 1） |
 | 求解失败后约束不可重试 | 编辑走「临时 solver 试算 + 回滚」（D3 决策 4）；失败后先 `am_remove()`/调整再重加 |
 | 拖动时抖动/震荡 | 强度分级：拖动变量 STRONG、nudge WEAK、真正布局约束 REQUIRED；必要时加「拖动期间锁定结构约束」 |
 | 坐标精度（像素 + float32） | 用**相对坐标/归一化坐标**存储，渲染时再乘缩放的画布尺寸；或直接开 `AM_USE_DOUBLE` |

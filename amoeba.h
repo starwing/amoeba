@@ -93,7 +93,7 @@ AM_API int  am_add(am_Constraint *c);
 AM_API void am_remove(am_Constraint *c);
 
 AM_API void am_clearedits(am_Solver *S);
-AM_API int  am_hasedit(am_Solver *S, am_Id var);
+AM_API int  am_hasedit(const am_Solver *S, am_Id var);
 AM_API int  am_addedit(am_Solver *S, am_Id var, am_Num strength);
 AM_API void am_suggest(am_Solver *S, am_Id var, am_Num value);
 AM_API void am_deledit(am_Solver *S, am_Id var);
@@ -101,10 +101,15 @@ AM_API void am_deledit(am_Solver *S, am_Id var);
 AM_API am_Id am_newvariable(am_Solver *S, am_Num *pvalue);
 AM_API void  am_delvariable(am_Solver *S, am_Id var);
 
-AM_API am_Num *am_varvalue(am_Solver *S, am_Id var, am_Num *newvalue);
+AM_API am_Num        *am_varvalue(am_Solver *S, am_Id var, am_Num *newvalue);
+AM_API am_Id          am_vars(const am_Solver *S, am_Id var);
+AM_API am_Constraint *am_constraints(const am_Solver *S, am_Constraint *c);
 
-AM_API int am_refcount(am_Solver *S, am_Id var);
-AM_API int am_hasconstraint(am_Constraint *c);
+AM_API int    am_refcount(const am_Solver *S, am_Id var);
+AM_API int    am_hasconstraint(const am_Constraint *c);
+AM_API am_Num am_strength(const am_Constraint *c);
+AM_API int    am_relation(const am_Constraint *c);
+AM_API am_Id  am_terms(const am_Constraint *c, am_Id var, am_Num *coef);
 
 AM_API am_Constraint *am_newconstraint(am_Solver *S, am_Num strength);
 AM_API am_Constraint *am_cloneconstraint(am_Constraint *other, am_Num strength);
@@ -117,7 +122,7 @@ AM_API int am_setrelation(am_Constraint *c, int relation);
 AM_API int am_addconstant(am_Constraint *c, am_Num constant);
 AM_API int am_setstrength(am_Constraint *c, am_Num strength);
 
-AM_API int am_merge(am_Constraint *c, const am_Constraint *o, am_Num factor);
+AM_API int am_merge(am_Constraint *c, const am_Constraint *o, am_Num coef);
 
 /* dump & load */
 
@@ -412,14 +417,19 @@ static void amH_free(am_Solver *S, am_Table *t) {
     amH_init(t, t->value_size);
 }
 
-static const void *amH_get(const am_Table *t, unsigned key) {
+static am_Size amH_find(const am_Table *t, am_Id key) {
     am_Size cur;
-    if (t->size == 0) return NULL;
+    if (t->size == 0) return 0;
     cur = key & (t->size - 1);
     for (; t->keys[cur].sym.id != key; cur += t->keys[cur].next)
-        if (t->keys[cur].next == 0) return NULL;
-    return amH_slot(t, cur);
+        if (t->keys[cur].next == 0) return 0;
+    return cur + 1;
 }
+
+/* clang-format off */
+static const void *amH_get(const am_Table *t, am_Id key)
+{ am_Size o = amH_find(t, key); return o ? amH_slot(t, o - 1) : NULL; }
+/* clang-format on */
 
 static void amH_attach(am_Table *t, am_Key *keys, size_t size, size_t vsize) {
     t->size = (am_Size)size, t->value_size = vsize;
@@ -527,7 +537,7 @@ static void amR_addrow(am_Solver *S, am_Row *r, const am_Row *o, am_Num f) {
 /* variables & constraints */
 
 /* clang-format off */
-static am_Var *amV_get(am_Solver *S, am_Id var)
+static am_Var *amV_get(const am_Solver *S, am_Id var)
 { return S ? (am_Var *)amH_get(&S->vars, var) : NULL; }
 /* clang-format on */
 
@@ -1332,21 +1342,24 @@ static int amL_body(am_Load *X) {
 /* APIs */
 
 /* clang-format off */
-AM_API void am_autoupdate(am_Solver *S, int auto_update)
-{ S->auto_update = auto_update; }
-
-AM_API int am_hasedit(am_Solver *S, am_Id var)
+AM_API int am_hasedit(const am_Solver *S, am_Id var)
 { return S ? amH_get(&S->suggests, var) != NULL : 0; }
 
-AM_API int am_refcount(am_Solver *S, am_Id var)
+AM_API int am_refcount(const am_Solver *S, am_Id var)
 { am_Var *ve = amV_get(S, var); return ve ? ve->refcount : 0; }
 
-AM_API int am_hasconstraint(am_Constraint *c)
+AM_API int am_hasconstraint(const am_Constraint *c)
 { return c != NULL && c->marker.id != 0; }
+
+AM_API am_Num am_strength(const am_Constraint *c)
+{ return c ? c->strength : 0; }
 
 static am_Solver *amL_fail(am_Solver *S)
 { return am_delsolver(S), (am_Solver *)0; }
 /* clang-format on */
+
+AM_API void am_autoupdate(am_Solver *S, int v) { S->auto_update = v; }
+AM_API int  am_relation(const am_Constraint *c) { return c ? c->relation : 0; }
 
 static void *amS_defallocf(void **pud, void *p, size_t n, size_t o, am_Type t) {
     void *np;
@@ -1541,6 +1554,30 @@ AM_API am_Num *am_varvalue(am_Solver *S, am_Id var, am_Num *newvalue) {
     return pvalue;
 }
 
+AM_API am_Id am_vars(const am_Solver *S, am_Id var) {
+    am_Iterator it;
+    if (S == NULL) return 0;
+    it = amH_iter(&S->vars);
+    if (var && !(it.offset = amH_find(&S->vars, var))) return 0;
+    return amH_next(&it) ? it.key.id : 0;
+}
+
+AM_API am_Constraint *am_constraints(const am_Solver *S, am_Constraint *c) {
+    am_Iterator it;
+    if (S == NULL) return 0;
+    it = amH_iter(&S->constraints);
+    if (c && !(it.offset = amH_find(&S->constraints, c->sym.id))) return 0;
+    return amH_next(&it) ? *amH_val(am_Constraint *, it) : 0;
+}
+
+AM_API am_Id am_terms(const am_Constraint *c, am_Id var, am_Num *coef) {
+    am_Iterator it;
+    if (c == NULL || coef == NULL) return 0;
+    it = amH_iter(&c->expression.terms);
+    if (var && !(it.offset = amH_find(&c->expression.terms, var))) return 0;
+    return amH_next(&it) ? ((*coef = *amH_val(am_Num, it)), it.key.id) : 0;
+}
+
 AM_API am_Constraint *am_newconstraint(am_Solver *S, am_Num strength) {
     am_Symbol      sym = {0, AM_EXTERNAL}; /* AM_EXTERNAL for pool cons */
     am_Constraint *c;
@@ -1625,15 +1662,15 @@ AM_API int am_setstrength(am_Constraint *c, am_Num strength) {
     return (S->age += 1, c->strength = strength), AM_OK;
 }
 
-AM_API int am_merge(am_Constraint *c, const am_Constraint *o, am_Num factor) {
+AM_API int am_merge(am_Constraint *c, const am_Constraint *o, am_Num coef) {
     am_Iterator it;
     if (c == NULL || o == NULL || c->S != o->S) return AM_PARAM;
     amC(c->marker.id == 0);
-    if (c->relation == AM_GREATEQUAL) factor = -factor;
-    c->expression.constant += o->expression.constant * factor;
+    if (c->relation == AM_GREATEQUAL) coef = -coef;
+    c->expression.constant += o->expression.constant * coef;
     it = amH_iter(&o->expression.terms);
     while (amH_next(&it))
-        amE(amC_addterm(c, it.key.id, *amH_val(am_Num, it) * factor));
+        amE(amC_addterm(c, it.key.id, *amH_val(am_Num, it) * coef));
     return AM_OK;
 }
 

@@ -261,6 +261,8 @@ TEST(suggest_unknown_var_is_noop) {
 /* A NULL solver is not a parameter error either: like free(NULL), it means
  * "nothing to do" everywhere the solver is only used, not created. */
 TEST(null_solver_calls_are_noop) {
+    am_Num coef = 0;
+
     am_updatevars(NULL);
     am_delsolver(NULL);
     am_resetsolver(NULL);
@@ -270,6 +272,265 @@ TEST(null_solver_calls_are_noop) {
     am_delconstraint(NULL);
     assertok(!am_hasedit(NULL, 1));
     asserteq(am_refcount(NULL, 1), 0);
+    asserteq(am_vars(NULL, 1), 0);
+    assertok(am_constraints(NULL, NULL) == NULL);
+    asserteq(am_terms(NULL, 1, &coef), 0);
+    asserteq(am_strength(NULL), 0);
+    asserteq(am_relation(NULL), 0);
+}
+
+/* ---------------------------------------------------------------------- */
+/* introspection: walking the solver's variables and constraints, and a
+ * constraint's terms.
+ *
+ * The anchor is an element you already hold: pass 0 / NULL to start, and a
+ * returned 0 / NULL means "end", so a walk is
+ *
+ *     for (id = 0; (id = am_vars(S, id)) != 0; )
+ *
+ * The order is the hash table's slot order, not creation order, so these
+ * tests mark what they see and compare as a set: every element exactly once,
+ * no strangers, and the walk stops after the last one. */
+
+#define WALK_N   6
+#define WALK_BIG 64
+
+TEST(vars_walk_covers_every_variable) {
+    am_Solver *S = am_test_new_solver();
+    am_Num     v[WALK_N];
+    am_Id      ids[WALK_N], id, last = 0;
+    int        i, n = 0, seen[WALK_N];
+
+    for (i = 0; i < WALK_N; ++i) v[i] = 0, ids[i] = am_newvariable(S, &v[i]);
+    for (i = 0; i < WALK_N; ++i) seen[i] = 0;
+
+    id = 0; /* 0 = start */
+    while ((id = am_vars(S, id)) != 0) {
+        for (i = 0; i < WALK_N; ++i)
+            if (ids[i] == id) ++seen[i];
+        last = id;
+        if (++n > WALK_N) break; /* runaway: the checks below fail */
+    }
+    asserteq(n, WALK_N); /* the walk is as long as the table */
+    for (i = 0; i < WALK_N; ++i) asserteq(seen[i], 1); /* each exactly once */
+    asserteq(am_vars(S, last), 0);        /* the last one ends the walk */
+    asserteq(am_vars(S, last + 1000), 0); /* an unknown anchor ends it too */
+    am_delsolver(S);
+}
+
+/* Growing past the initial table size rehashes the table: the walk must still
+ * visit every variable exactly once, across probe chains instead of one key
+ * per slot. */
+TEST(vars_walk_survives_resize) {
+    am_Solver *S = am_test_new_solver();
+    am_Num     v[WALK_BIG];
+    am_Id      ids[WALK_BIG], id;
+    int        i, n = 0, seen[WALK_BIG];
+
+    for (i = 0; i < WALK_BIG; ++i) v[i] = 0, ids[i] = am_newvariable(S, &v[i]);
+    for (i = 0; i < WALK_BIG; ++i) seen[i] = 0;
+
+    id = 0;
+    while ((id = am_vars(S, id)) != 0) {
+        for (i = 0; i < WALK_BIG; ++i)
+            if (ids[i] == id) ++seen[i];
+        if (++n > WALK_BIG) break; /* runaway: the count check fails */
+    }
+    asserteq(n, WALK_BIG);
+    for (i = 0; i < WALK_BIG; ++i) asserteq(seen[i], 1);
+    am_delsolver(S);
+}
+
+/* am_delvariable() leaves a hole in the table; the walk must skip it rather
+ * than visit the slot again or stop early. */
+TEST(vars_walk_skips_deleted_variable) {
+    am_Solver *S = am_test_new_solver();
+    am_Num     v[WALK_N];
+    am_Id      ids[WALK_N], id;
+    int        i, k, n = 0, seen[WALK_N];
+
+    for (i = 0; i < WALK_N; ++i) v[i] = 0, ids[i] = am_newvariable(S, &v[i]);
+    for (i = 0; i < WALK_N; i += 2) am_delvariable(S, ids[i]); /* keep odd */
+    for (i = 0; i < WALK_N; ++i) seen[i] = 0;
+
+    id = 0;
+    while ((id = am_vars(S, id)) != 0) {
+        for (k = -1, i = 0; i < WALK_N; ++i)
+            if (ids[i] == id) k = i;
+        assertok(k >= 0 && (k & 1)); /* a deleted variable must not come back */
+        ++seen[k];
+        if (++n > WALK_N) break;
+    }
+    asserteq(n, WALK_N / 2);
+    for (i = 0; i < WALK_N; ++i) asserteq(seen[i], (i & 1) ? 1 : 0);
+    am_delsolver(S);
+}
+
+TEST(constraints_walk_covers_every_constraint) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         x = 0;
+    am_Id          vx = am_newvariable(S, &x);
+    am_Constraint *cs[WALK_N], *c, *last = 0;
+    int            i, n = 0, seen[WALK_N];
+
+    for (i = 0; i < WALK_N; ++i)
+        cs[i] = am_newconstraint(S, i & 1 ? AM_WEAK : AM_MEDIUM);
+    for (i = 0; i < WALK_N; ++i) seen[i] = 0;
+    /* creating a constraint already registers it: adding is not required to
+     * be walkable, which is what lets a caller enumerate what it built */
+    am_addterm(cs[0], vx, 1.f), am_setrelation(cs[0], AM_EQUAL);
+    asserteq(am_add(cs[0]), AM_OK);
+
+    c = 0; /* NULL = start */
+    while ((c = am_constraints(S, c)) != NULL) {
+        for (i = 0; i < WALK_N; ++i)
+            if (cs[i] == c) ++seen[i];
+        last = c;
+        if (++n > WALK_N) break;
+    }
+    asserteq(n, WALK_N);
+    for (i = 0; i < WALK_N; ++i) asserteq(seen[i], 1);
+    assertok(am_constraints(S, last) == NULL);
+    am_delsolver(S);
+}
+
+TEST(constraints_walk_skips_deleted_constraint) {
+    am_Solver     *S = am_test_new_solver();
+    am_Constraint *cs[WALK_N], *c;
+    int            i, k, n = 0, seen[WALK_N];
+
+    for (i = 0; i < WALK_N; ++i) cs[i] = am_newconstraint(S, AM_MEDIUM);
+    for (i = 0; i < WALK_N; ++i) seen[i] = 0;
+    am_delconstraint(cs[1]), am_delconstraint(cs[4]);
+
+    c = 0;
+    while ((c = am_constraints(S, c)) != NULL) {
+        for (k = -1, i = 0; i < WALK_N; ++i)
+            if (cs[i] == c) k = i;
+        assertok(k >= 0 && k != 1 && k != 4);
+        ++seen[k];
+        if (++n > WALK_N) break;
+    }
+    asserteq(n, WALK_N - 2);
+    for (i = 0; i < WALK_N; ++i) asserteq(seen[i], (i == 1 || i == 4) ? 0 : 1);
+    am_delsolver(S);
+}
+
+/* A constraint's terms are walkable before it is added: that is the "read
+ * back what I configured" direction the introspection API exists for. */
+TEST(terms_walk_reports_each_term_once) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         v[WALK_N];
+    am_Id          ids[WALK_N], id, last = 0;
+    am_Constraint *c = am_newconstraint(S, AM_MEDIUM);
+    am_Num         coef;
+    int            i, k, n = 0, seen[WALK_N];
+
+    for (i = 0; i < WALK_N; ++i) v[i] = 0, ids[i] = am_newvariable(S, &v[i]);
+    for (i = 0; i < WALK_N; ++i) seen[i] = 0;
+    for (i = 0; i < WALK_N; ++i) am_addterm(c, ids[i], (am_Num)(i + 1));
+    am_setrelation(c, AM_EQUAL); /* the terms written first are the LHS */
+
+    id = 0; /* 0 = start */
+    while ((id = am_terms(c, id, &coef)) != 0) {
+        for (k = -1, i = 0; i < WALK_N; ++i)
+            if (ids[i] == id) k = i;
+        assertok(k >= 0); /* only terms we added may come back */
+        ++seen[k];
+        /* the expression as stored: a LHS written before the relation is
+         * kept negated (notes/api-contract.md 3) */
+        assertnear(coef, -(am_Num)(k + 1), 1e-5);
+        last = id;
+        if (++n > WALK_N) break;
+    }
+    asserteq(n, WALK_N);
+    for (i = 0; i < WALK_N; ++i) asserteq(seen[i], 1);
+    asserteq(am_terms(c, last, &coef), 0); /* the last term ends the walk */
+    asserteq(am_terms(c, last + 1000, &coef), 0); /* unknown anchor */
+    asserteq(am_terms(c, 0, NULL), 0);            /* coef is required */
+    am_delsolver(S);
+}
+
+/* +2 cancels the stored -2, so ids[1] leaves the expression; the walk must
+ * not report a term that is no longer there. */
+TEST(terms_walk_skips_cancelled_term) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         v[WALK_N];
+    am_Id          ids[WALK_N], id;
+    am_Constraint *c = am_newconstraint(S, AM_MEDIUM);
+    am_Num         coef;
+    int            i, k, n = 0, seen[WALK_N];
+
+    for (i = 0; i < WALK_N; ++i) v[i] = 0, ids[i] = am_newvariable(S, &v[i]);
+    for (i = 0; i < WALK_N; ++i) seen[i] = 0;
+    for (i = 0; i < WALK_N; ++i) am_addterm(c, ids[i], (am_Num)(i + 1));
+    am_setrelation(c, AM_EQUAL);
+    asserteq(am_addterm(c, ids[1], 2.f), AM_OK);
+
+    id = 0;
+    while ((id = am_terms(c, id, &coef)) != 0) {
+        for (k = -1, i = 0; i < WALK_N; ++i)
+            if (ids[i] == id) k = i;
+        assertok(k >= 0 && k != 1); /* the cancelled term is gone */
+        ++seen[k];
+        if (++n > WALK_N) break;
+    }
+    asserteq(n, WALK_N - 1);
+    for (i = 0; i < WALK_N; ++i) asserteq(seen[i], i == 1 ? 0 : 1);
+    am_delsolver(S);
+}
+
+/* AM_REQUIRED is +inf and a strength is an am_Num: an accessor returning int
+ * truncates it into undefined behaviour, which UBSan reports at the call. */
+TEST(strength_accessor_keeps_the_number) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         x = 0;
+    am_Id          vx = am_newvariable(S, &x);
+    am_Constraint *req = am_newconstraint(S, AM_REQUIRED);
+    am_Constraint *zero = am_newconstraint(S, 0.f);
+    am_Constraint *frac = am_newconstraint(S, (am_Num)0.5);
+    am_Constraint *added = am_newconstraint(S, AM_MEDIUM);
+
+    assertok(am_strength(req) == AM_REQUIRED);  /* inf only compares exactly */
+    assertok(am_strength(zero) == AM_REQUIRED); /* 0 is normalized, not kept */
+    assertnear(am_strength(frac), 0.5, 0);
+
+    am_addterm(added, vx, 1.f), am_setrelation(added, AM_EQUAL);
+    asserteq(am_add(added), AM_OK);
+    assertnear(am_strength(added), AM_MEDIUM, 0);
+    asserteq(am_setstrength(added, AM_STRONG), AM_OK);
+    assertnear(am_strength(added), AM_STRONG, 0);
+    am_delsolver(S);
+}
+
+TEST(relation_accessor_reports_the_relation) {
+    am_Solver     *S = am_test_new_solver();
+    am_Constraint *le = am_newconstraint(S, AM_MEDIUM);
+    am_Constraint *eq = am_newconstraint(S, AM_MEDIUM);
+    am_Constraint *ge = am_newconstraint(S, AM_MEDIUM);
+    am_Constraint *unset = am_newconstraint(S, AM_MEDIUM);
+
+    asserteq(am_relation(unset), 0); /* no relation set yet */
+    am_setrelation(le, AM_LESSEQUAL), am_setrelation(eq, AM_EQUAL);
+    am_setrelation(ge, AM_GREATEQUAL);
+    asserteq(am_relation(le), AM_LESSEQUAL);
+    asserteq(am_relation(eq), AM_EQUAL);
+    asserteq(am_relation(ge), AM_GREATEQUAL);
+    am_delsolver(S);
+}
+
+TEST(introspection_of_an_empty_solver_is_empty) {
+    am_Solver     *S = am_test_new_solver();
+    am_Constraint *c = am_newconstraint(S, AM_MEDIUM);
+    am_Num         coef = 0;
+
+    asserteq(am_vars(S, 0), 0);         /* no variables */
+    asserteq(am_vars(S, 1), 0);         /* no such anchor either */
+    asserteq(am_terms(c, 0, &coef), 0); /* no terms */
+    asserteq(am_terms(c, 1, &coef), 0);
+    assertok(am_constraints(S, NULL) == c); /* just the one we created */
+    assertok(am_constraints(S, c) == NULL); /* and it is the last one */
+    am_delsolver(S);
 }
 
 /* ---------------------------------------------------------------------- */

@@ -345,7 +345,7 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
 
   Remove this variable, after that, it cannot be added into further constraints.
 
-- `int am_refcount(am_Solver *solver, am_Id var);`
+- `int am_refcount(const am_Solver *solver, am_Id var);`
 
   Retrieve the internal reference count of the variable: one for the variable
   itself, plus one per live term.  It is what decides when an unreferenced
@@ -357,13 +357,44 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
   only retrieve the old pointer, otherwise the binding is retargeted to
   `newvalue` and the original pointer is returned.
 
+- `am_Id am_vars(const am_Solver *solver, am_Id var);`
+
+  Walk the variables the solver holds.  Pass `0` for the first one, then the
+  previous result; `0` means "no more".  The order is the solver's internal
+  slot order, not creation order, and any change to the solver may reshuffle
+  it, so start over instead of keeping an anchor across changes.
+
+- `am_Constraint *am_constraints(const am_Solver *solver, am_Constraint *cons);`
+
+  Walk the constraints registered in `solver` the same way: `NULL` starts the
+  walk, `NULL` ends it.  A constraint is registered by `am_newconstraint()`
+  and stays registered until `am_delconstraint()`, so walking does not require
+  adding it.  The anchor must be a constraint of this solver.
+
 - `int am_add(am_Constraint *cons);`
 
   Add constraint into the solver it's created from.
 
-- `int am_hasconstraint(am_Constraint *cons);`
+- `int am_hasconstraint(const am_Constraint *cons);`
 
   Check whether a constraint has been added into the solver or not.
+
+- `am_Num am_strength(const am_Constraint *cons);`
+
+  The strength of the constraint.  It stays an `am_Num` so `AM_REQUIRED`
+  (`+inf`) survives the round trip; `NULL` returns `0`.
+
+- `int am_relation(const am_Constraint *cons);`
+
+  The relation set by `am_setrelation()`, or `0` when none is set yet.
+
+- `am_Id am_terms(const am_Constraint *cons, am_Id var, am_Num *coef);`
+
+  Walk the terms of the constraint's expression: pass `0` for the first term,
+  then the previous result; `0` means "no more".  `*coef` receives the
+  coefficient as stored, which for a left-hand side written before
+  `am_setrelation()` is the negated value (see `am_setrelation()`).  Works
+  before the constraint is added to the solver.
 
 - `void am_remove(am_Constraint *cons);`
 
@@ -373,7 +404,7 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
 
   Remove all variable suggests from `solver`.
 
-- `int am_hasedit(am_Solver *solver, am_Id var);`
+- `int am_hasedit(const am_Solver *solver, am_Id var);`
 
   Check whether a variable has suggested value in the `solver`.
 
@@ -459,7 +490,7 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
 
   Set the strength of a constraint.
 
-- `int am_merge(am_Constraint *cons, const am_Constraint *other, am_Num multiplier);`
+- `int am_merge(am_Constraint *cons, const am_Constraint *other, am_Num coef);`
 
-  Merge other constraints into `cons`, with a multiplier multiples with `other`.
+  Merge other constraints into `cons`, with a coefficient multiplying `other`.
 
