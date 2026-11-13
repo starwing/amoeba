@@ -44,9 +44,9 @@
 #define AM_UNSATISFIED (-3) /* Constraint cannot be satisfied */
 #define AM_UNBOUND     (-4) /* Required constraints conflict */
 
-#define AM_LESSEQUAL  (1) /* x <= k */
-#define AM_EQUAL      (2) /* x == k */
-#define AM_GREATEQUAL (3) /* x >= k */
+#define AM_LESSEQUAL    (1) /* x <= k */
+#define AM_EQUAL        (2) /* x == k */
+#define AM_GREATEREQUAL (3) /* x >= k */
 
 #define AM_REQUIRED ((am_Num)HUGE_VAL) /* required; HUGE_VAL is C89's +inf */
 #define AM_STRONG   ((am_Num)1000000)  /* strong soft constraint */
@@ -269,7 +269,7 @@ struct am_Constraint {
     am_Symbol  other;      /* second error symbol, id 0 = none */
     unsigned   marker_id;  /* symbol id reserved for marker */
     unsigned   other_id : AM_UNSIGNED_BITS - 2; /* id reserved for other */
-    unsigned   relation : 2; /* AM_LESSEQUAL, AM_EQUAL or AM_GREATEQUAL */
+    unsigned   relation : 2; /* AM_LESSEQUAL, AM_EQUAL or AM_GREATEREQUAL */
     am_Num     strength;     /* AM_REQUIRED or a soft strength */
     am_Solver *S;            /* owning solver */
 };
@@ -1292,7 +1292,7 @@ static int amL_constraint(am_Load *X, am_Size i) {
     amE(amL_marker(X, &c->other, &value));
     c->other_id = value;
     amE(amL_uint32(X, &value));
-    amC(value <= AM_GREATEQUAL); /* 0 = never configured */
+    amC(value <= AM_GREATEREQUAL); /* 0 = never configured */
     c->relation = value;
     amE(amL_row(X, &c->expression));
     it = amH_iter(&c->expression.terms);
@@ -1581,21 +1581,21 @@ AM_API am_Constraint *am_constraints(const am_Solver *S, am_Constraint *c) {
 AM_API int am_addterm(am_Constraint *c, am_Id var, am_Num f) {
     if (c == NULL || var == 0) return AM_PARAM;
     amC(c->marker.id == 0);
-    return amC_addterm(c, var, c->relation == AM_GREATEQUAL ? -f : f);
+    return amC_addterm(c, var, c->relation == AM_GREATEREQUAL ? -f : f);
 }
 
 AM_API int am_setrelation(am_Constraint *c, int relation) {
     if (c == NULL) return AM_PARAM;
-    if (relation < AM_LESSEQUAL || relation > AM_GREATEQUAL) return AM_PARAM;
+    if (relation < AM_LESSEQUAL || relation > AM_GREATEREQUAL) return AM_PARAM;
     amC(c->marker.id == 0 && c->relation == 0);
-    if (relation != AM_GREATEQUAL) amR_mul(&c->expression, -1.0f);
+    if (relation != AM_GREATEREQUAL) amR_mul(&c->expression, -1.0f);
     return (c->relation = relation), AM_OK;
 }
 
 AM_API int am_addconstant(am_Constraint *c, am_Num constant) {
     if (c == NULL) return AM_PARAM;
     amC(c->marker.id == 0);
-    if (c->relation == AM_GREATEQUAL) constant = -constant;
+    if (c->relation == AM_GREATEREQUAL) constant = -constant;
     return (c->expression.constant += constant), AM_OK;
 }
 
@@ -1624,7 +1624,7 @@ AM_API int am_merge(am_Constraint *c, const am_Constraint *o, am_Num coef) {
     am_Iterator it;
     if (c == NULL || o == NULL || c->S != o->S) return AM_PARAM;
     amC(c->marker.id == 0);
-    if (c->relation == AM_GREATEQUAL) coef = -coef;
+    if (c->relation == AM_GREATEREQUAL) coef = -coef;
     c->expression.constant += o->expression.constant * coef;
     it = amH_iter(&o->expression.terms);
     while (amH_next(&it))

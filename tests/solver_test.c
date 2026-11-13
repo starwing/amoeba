@@ -125,16 +125,16 @@ TEST(all) {
     xd = am_newvariable(S, &vxd);
     am_delvariable(S, xd);
 
-    assertok(am_setrelation(NULL, AM_GREATEQUAL) == AM_PARAM);
+    assertok(am_setrelation(NULL, AM_GREATEREQUAL) == AM_PARAM);
 
     c1 = am_newconstraint(S, AM_REQUIRED);
     am_addterm(c1, xl, 1.0);
-    am_setrelation(c1, AM_GREATEQUAL);
+    am_setrelation(c1, AM_GREATEREQUAL);
     ret = am_add(c1);
     assertok(ret == AM_OK);
     am_dumpsolver(S);
 
-    assertok(am_setrelation(c1, AM_GREATEQUAL) == AM_FAILED);
+    assertok(am_setrelation(c1, AM_GREATEREQUAL) == AM_FAILED);
     assertok(AM_REQUIRED - 10 == AM_REQUIRED);
     assertok(am_setstrength(c1, AM_STRONG) == AM_OK);
     assertok(am_setstrength(c1, AM_REQUIRED) == AM_OK);
@@ -192,7 +192,7 @@ TEST(all) {
     /* c4: xl >= 0 */
     c4 = am_newconstraint(S, AM_REQUIRED);
     am_addterm(c4, xl, 1.0);
-    am_setrelation(c4, AM_GREATEQUAL);
+    am_setrelation(c4, AM_GREATEREQUAL);
     am_addconstant(c4, 0.0);
     ret = am_add(c4);
     printf("c4: marker=%d other=%d\n", c4->marker.id, c4->other.id);
@@ -393,7 +393,7 @@ TEST(binarytree) {
                 /* Xcur >= XPrev + 5 */
                 pC = am_newconstraint(pSolver, AM_REQUIRED);
                 am_addterm(pC, arrX[nCurrentRowFirstPointIndex + nPoint], 1.0);
-                am_setrelation(pC, AM_GREATEQUAL);
+                am_setrelation(pC, AM_GREATEREQUAL);
                 am_addterm(pC, arrX[nCurrentRowFirstPointIndex + nPoint - 1],
                            1.0);
                 am_addconstant(pC, 5.0);
@@ -403,7 +403,7 @@ TEST(binarytree) {
                 /* When these lines added it crashes at the line 109 */
                 pC = am_newconstraint(pSolver, AM_REQUIRED);
                 am_addterm(pC, arrX[nCurrentRowFirstPointIndex + nPoint], 1.0);
-                am_setrelation(pC, AM_GREATEQUAL);
+                am_setrelation(pC, AM_GREATEREQUAL);
                 am_addconstant(pC, 0.0);
                 nResult = am_add(pC);
                 assertok(nResult == AM_OK);
@@ -478,7 +478,7 @@ TEST(unbounded) {
     ret = am_addterm(c, x, 1.0);
     printf("addterm = %d\n", ret);
     assertok(ret == AM_OK);
-    am_setrelation(c, AM_GREATEQUAL);
+    am_setrelation(c, AM_GREATEREQUAL);
     am_addconstant(c, 10.0);
     ret = am_add(c);
     assertok(ret == AM_OK);
@@ -507,7 +507,7 @@ TEST(unbounded) {
     /* x >= 10.0 */
     c = am_newconstraint(S, AM_REQUIRED);
     am_addterm(c, x, 1.0);
-    am_setrelation(c, AM_GREATEQUAL);
+    am_setrelation(c, AM_GREATEREQUAL);
     am_addconstant(c, 10.0);
     ret = am_add(c);
     assertok(ret == AM_OK);
@@ -652,7 +652,7 @@ TEST(suggest) {
     /* left_child_r = splitter_bar_l */
     /* right_child_l = splitter_bar_r */
     new_constraint(S, AM_REQUIRED, splitter_bar_w, 1.0, AM_EQUAL, 6.0, END);
-    new_constraint(S, AM_REQUIRED, splitter_bar_l, 1.0, AM_GREATEQUAL, delta,
+    new_constraint(S, AM_REQUIRED, splitter_bar_l, 1.0, AM_GREATEREQUAL, delta,
                    splitter_l, 1.0, END);
     new_constraint(S, AM_REQUIRED, splitter_bar_r, 1.0, AM_LESSEQUAL, -delta,
                    splitter_r, 1.0, END);
@@ -663,7 +663,7 @@ TEST(suggest) {
 
     /* right_child_r >= splitter_r + 1 */
     /* left_child_w = 256 */
-    new_constraint(S, strength1, right_child_r, 1.0, AM_GREATEQUAL, 1.0,
+    new_constraint(S, strength1, right_child_r, 1.0, AM_GREATEREQUAL, 1.0,
                    splitter_r, 1.0, END);
     new_constraint(S, strength2, left_child_w, 1.0, AM_EQUAL, 256.0, END);
 

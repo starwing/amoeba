@@ -71,7 +71,7 @@ int main(void) {
     // c2: r - l >= 100
     am_addterm(c2, vr, 1.f);
     am_addterm(c2, vl, -1.f);
-    am_setrelation(c2, AM_GREATEQUAL);
+    am_setrelation(c2, AM_GREATEREQUAL);
     am_addconstant(c2, 100.f);
     // apply c2
     ret = am_add(c2);
@@ -452,7 +452,7 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
   Set the relations of constraint, could be one of these:
 
   - `AM_EQUAL`
-  - `AM_GREATEQUAL`
+  - `AM_GREATEREQUAL`
   - `AM_LESSEQUAL`
 
   The terms added before `am_setrelation()` become the left hand terms of constraints, and the terms adds after call will become the right hand terms of constraints.

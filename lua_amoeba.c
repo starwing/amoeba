@@ -218,13 +218,13 @@ static int aml_checkrelation(lua_State *L, int idx) {
     else if (strcmp(op, "<=") == 0)
         return AM_LESSEQUAL;
     else if (strcmp(op, ">=") == 0)
-        return AM_GREATEQUAL;
+        return AM_GREATEREQUAL;
     else if (strcmp(op, "eq") == 0)
         return AM_EQUAL;
     else if (strcmp(op, "le") == 0)
         return AM_LESSEQUAL;
     else if (strcmp(op, "ge") == 0)
-        return AM_GREATEQUAL;
+        return AM_GREATEREQUAL;
     return aml_argferror(L, 2, "invalid relation operator: '%s'", op);
 }
 
@@ -367,7 +367,7 @@ static int Lexpr_cmp(lua_State *L, int op) {
 
 static int Lexpr_le(lua_State *L) { return Lexpr_cmp(L, AM_LESSEQUAL); }
 static int Lexpr_eq(lua_State *L) { return Lexpr_cmp(L, AM_EQUAL); }
-static int Lexpr_ge(lua_State *L) { return Lexpr_cmp(L, AM_GREATEQUAL); }
+static int Lexpr_ge(lua_State *L) { return Lexpr_cmp(L, AM_GREATEREQUAL); }
 
 /* variable */
 

@@ -118,7 +118,7 @@ TEST(setstrength_soft_inequality_downgrade_is_safe) {
     am_Id          vx = am_newvariable(S, &x);
     am_Constraint *ge = am_newconstraint(S, AM_MEDIUM);
 
-    am_addterm(ge, vx, 1.f), am_setrelation(ge, AM_GREATEQUAL);
+    am_addterm(ge, vx, 1.f), am_setrelation(ge, AM_GREATEREQUAL);
     am_addconstant(ge, 10.f); /* x >= 10 */
     asserteq(am_add(ge), AM_OK);
     am_updatevars(S);
@@ -572,10 +572,10 @@ TEST(relation_accessor_reports_the_relation) {
 
     asserteq(am_relation(unset), 0); /* no relation set yet */
     am_setrelation(le, AM_LESSEQUAL), am_setrelation(eq, AM_EQUAL);
-    am_setrelation(ge, AM_GREATEQUAL);
+    am_setrelation(ge, AM_GREATEREQUAL);
     asserteq(am_relation(le), AM_LESSEQUAL);
     asserteq(am_relation(eq), AM_EQUAL);
-    asserteq(am_relation(ge), AM_GREATEQUAL);
+    asserteq(am_relation(ge), AM_GREATEREQUAL);
     am_delsolver(S);
 }
 
@@ -603,7 +603,7 @@ TEST(error_reports_the_violation) {
     am_addterm(eq, vx, 1.f), am_setrelation(eq, AM_EQUAL);
     am_addconstant(eq, 10.f);
     asserteq(am_add(eq), AM_OK);
-    am_addterm(ge, vx, 1.f), am_setrelation(ge, AM_GREATEQUAL);
+    am_addterm(ge, vx, 1.f), am_setrelation(ge, AM_GREATEREQUAL);
     am_addconstant(ge, 5.f);
     asserteq(am_add(ge), AM_OK);
     am_addterm(le, vx, 1.f), am_setrelation(le, AM_LESSEQUAL);
