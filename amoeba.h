@@ -1610,8 +1610,8 @@ AM_API int am_setstrength(am_Constraint *c, am_Num strength) {
         return assert(ra == AM_OK), (void)ra, r;
     }
     S = c->S, diff = strength - c->strength;
-    amA_mergerow(S, &S->objective, c->marker, diff);
-    amA_mergerow(S, &S->objective, c->other, diff);
+    if (amV_iserror(c->marker)) amA_mergerow(S, &S->objective, c->marker, diff);
+    if (amV_iserror(c->other)) amA_mergerow(S, &S->objective, c->other, diff);
     amA_optimize(S, &S->objective);
     if (S->auto_update) am_updatevars(S);
     return (S->age += 1, c->strength = strength), AM_OK;

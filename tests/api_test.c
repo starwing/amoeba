@@ -105,6 +105,64 @@ TEST(setstrength_tighten_failure_restores) {
     am_delsolver(S);
 }
 
+/* A soft inequality carries its violation in the error symbol only; the
+ * marker of an inequality is a slack, never part of the objective.  Lowering
+ * the strength of an added one must therefore only reweight that error.
+ *
+ * Regression: am_setstrength() merged the marker into the objective as well,
+ * so a downgrade gave the slack a negative weight.  amA_optimize() then had a
+ * direction it could follow for ever and hit assert(leave.id != 0). */
+TEST(setstrength_soft_inequality_downgrade_is_safe) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         x = 0;
+    am_Id          vx = am_newvariable(S, &x);
+    am_Constraint *ge = am_newconstraint(S, AM_MEDIUM);
+
+    am_addterm(ge, vx, 1.f), am_setrelation(ge, AM_GREATEQUAL);
+    am_addconstant(ge, 10.f); /* x >= 10 */
+    asserteq(am_add(ge), AM_OK);
+    am_updatevars(S);
+    assertnear(x, 10, 1e-4);
+
+    asserteq(am_setstrength(ge, AM_WEAK), AM_OK);
+    am_updatevars(S);
+    assertnear(x, 10, 1e-4); /* still the only constraint deciding */
+    assertnear(am_error(ge), 0, 1e-4);
+    am_delsolver(S);
+}
+
+/* x <= 10 and x == 0 are both satisfied at 0, so making the first constraint
+ * stronger must not move the solution: what changes is the price of a
+ * violation, not the price of using the slack.  The marker is a real tableau
+ * variable, so a slack that leaks into the objective acts like a force and
+ * drags x to the boundary.
+ *
+ * Regression: the same merge that aborts on a downgrade made this upgrade
+ * converge to x == 10. */
+TEST(setstrength_soft_inequality_upgrade_keeps_the_optimum) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         x = 0;
+    am_Id          vx = am_newvariable(S, &x);
+    am_Constraint *le = am_newconstraint(S, AM_WEAK);
+    am_Constraint *eq = am_newconstraint(S, AM_WEAK);
+
+    am_addterm(le, vx, 1.f), am_setrelation(le, AM_LESSEQUAL);
+    am_addconstant(le, 10.f); /* x <= 10 */
+    asserteq(am_add(le), AM_OK);
+    am_addterm(eq, vx, 1.f), am_setrelation(eq, AM_EQUAL);
+    am_addconstant(eq, 0.f); /* x == 0 */
+    asserteq(am_add(eq), AM_OK);
+    am_updatevars(S);
+    assertnear(x, 0, 1e-4);
+
+    asserteq(am_setstrength(le, AM_MEDIUM), AM_OK);
+    am_updatevars(S);
+    assertnear(x, 0, 1e-4); /* 0 satisfies both, at any weight */
+    assertnear(am_error(le), 0, 1e-4);
+    assertnear(am_error(eq), 0, 1e-4);
+    am_delsolver(S);
+}
+
 /* A variable holds one reference for itself plus one per term that really
  * lives in a constraint expression; am_updatevars() reads that count.
  *
