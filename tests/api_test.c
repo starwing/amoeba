@@ -276,6 +276,8 @@ TEST(null_solver_calls_are_noop) {
     assertok(am_constraints(NULL, NULL) == NULL);
     asserteq(am_terms(NULL, 1, &coef), 0);
     asserteq(am_strength(NULL), 0);
+    asserteq(am_constant(NULL), 0);
+    asserteq(am_error(NULL), 0);
     asserteq(am_relation(NULL), 0);
 }
 
@@ -516,6 +518,77 @@ TEST(relation_accessor_reports_the_relation) {
     asserteq(am_relation(le), AM_LESSEQUAL);
     asserteq(am_relation(eq), AM_EQUAL);
     asserteq(am_relation(ge), AM_GREATEQUAL);
+    am_delsolver(S);
+}
+
+/* The violation is the sum of the constraint's error variables, read straight
+ * from the tableau: a required constraint has none, a soft equality keeps both
+ * signs in two error variables, an inequality counts only the part it exceeds.
+ * No am_updatevars() call is needed to make it current. */
+TEST(error_reports_the_violation) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         x = 0;
+    am_Id          vx = am_newvariable(S, &x);
+    am_Constraint *pin = am_newconstraint(S, AM_REQUIRED); /* x == 0 */
+    am_Constraint *sat = am_newconstraint(S, AM_MEDIUM);   /* x == 0 */
+    am_Constraint *eq = am_newconstraint(S, AM_MEDIUM);    /* x == 10 */
+    am_Constraint *ge = am_newconstraint(S, AM_WEAK);      /* x >= 5 */
+    am_Constraint *le = am_newconstraint(S, AM_STRONG);    /* x <= -5 */
+    am_Constraint *un = am_newconstraint(S, AM_MEDIUM);    /* not added */
+
+    am_addterm(pin, vx, 1.f), am_setrelation(pin, AM_EQUAL);
+    am_addconstant(pin, 0.f);
+    asserteq(am_add(pin), AM_OK);
+    am_addterm(sat, vx, 1.f), am_setrelation(sat, AM_EQUAL);
+    am_addconstant(sat, 0.f);
+    asserteq(am_add(sat), AM_OK);
+    am_addterm(eq, vx, 1.f), am_setrelation(eq, AM_EQUAL);
+    am_addconstant(eq, 10.f);
+    asserteq(am_add(eq), AM_OK);
+    am_addterm(ge, vx, 1.f), am_setrelation(ge, AM_GREATEQUAL);
+    am_addconstant(ge, 5.f);
+    asserteq(am_add(ge), AM_OK);
+    am_addterm(le, vx, 1.f), am_setrelation(le, AM_LESSEQUAL);
+    am_addconstant(le, -5.f);
+    asserteq(am_add(le), AM_OK);
+
+    am_updatevars(S);
+    assertnear(x, 0, 1e-4);
+    assertnear(am_error(pin), 0, 1e-4); /* required: satisfied once added */
+    assertnear(am_error(sat), 0, 1e-4);
+    assertnear(am_error(eq), 10, 1e-4); /* |x - 10| in expression units */
+    assertnear(am_error(ge), 5, 1e-4);  /* 5 - x, only the exceeded part */
+    assertnear(am_error(le), 5, 1e-4);  /* x - (-5) */
+    assertnear(am_error(un), 0, 0);     /* not in the solver */
+
+    am_remove(eq);
+    assertnear(am_error(eq), 0, 0); /* the marker is gone after removal */
+    am_delsolver(S);
+}
+
+/* am_constant() reports the constant in the same form am_terms() uses: the
+ * stored expression is "right hand side minus left hand side", so a constant
+ * written after am_setrelation() keeps its sign and one written before it is
+ * negated together with the terms. */
+TEST(constant_matches_the_stored_expression) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         x = 0;
+    am_Id          vx = am_newvariable(S, &x);
+    am_Constraint *after = am_newconstraint(S, AM_MEDIUM);
+    am_Constraint *before = am_newconstraint(S, AM_MEDIUM);
+    am_Num         coef;
+
+    am_addterm(after, vx, 2.f), am_setrelation(after, AM_EQUAL);
+    am_addconstant(after, 3.f); /* 3 is the right hand side */
+    am_addterm(before, vx, 2.f), am_addconstant(before, 3.f);
+    am_setrelation(before, AM_EQUAL); /* negates both terms and constant */
+
+    assertnear(am_constant(after), 3, 0);
+    asserteq(am_terms(after, 0, &coef), vx);
+    assertnear(coef, -2, 0);
+    assertnear(am_constant(before), -3, 0);
+    asserteq(am_terms(before, 0, &coef), vx);
+    assertnear(coef, -2, 0);
     am_delsolver(S);
 }
 
@@ -883,6 +956,53 @@ TEST(load_accepts_real_dump) {
 /* A row with eight terms has a count of 17, which the writer encodes as a
  * msgpack uint16.  When the reader hands the loader the whole stream at once,
  * the loader's two-byte read path runs without a refill. */
+/* The loader restores marker/other with their symbol types, so am_error()
+ * still reports the violation of a loaded soft constraint. */
+static size_t dump_violated_soft(unsigned char *buf) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         x = 0;
+    am_Id          vx = am_newvariable(S, &x);
+    am_Constraint *pin = am_newconstraint(S, AM_REQUIRED); /* x == 0 */
+    am_Constraint *soft = am_newconstraint(S, AM_MEDIUM);  /* x == 10 */
+    dump_buf       db;
+
+    am_addterm(pin, vx, 1.f), am_setrelation(pin, AM_EQUAL);
+    am_addconstant(pin, 0.f);
+    asserteq(am_add(pin), AM_OK);
+    am_addterm(soft, vx, 1.f), am_setrelation(soft, AM_EQUAL);
+    am_addconstant(soft, 10.f);
+    asserteq(am_add(soft), AM_OK);
+    am_updatevars(S);
+
+    memset(&db, 0, sizeof(db));
+    db.base.var_name = dump_buf_varname;
+    db.base.writer = dump_buf_writer;
+    db.p = buf;
+    asserteq(am_dump(S, &db.base), AM_OK);
+    am_delsolver(S);
+    return db.len;
+}
+
+TEST(error_survives_dump_load) {
+    static unsigned char stream[2048];
+    size_t               len = dump_violated_soft(stream);
+    stream_loader        sl;
+    am_Solver           *L;
+    am_Constraint       *c;
+    int                  soft = 0;
+
+    stream_init(&sl, stream, len);
+    assertok((L = load_stream(&sl, 0)) != NULL);
+    for (c = NULL; (c = am_constraints(L, c)) != NULL;) {
+        if (am_strength(c) < AM_REQUIRED) {
+            assertnear(am_error(c), 10, 1e-4); /* x == 10 against pinned 0 */
+            ++soft;
+        }
+    }
+    asserteq(soft, 1);
+    am_delsolver(L);
+}
+
 TEST(load_reads_u16_in_one_chunk) {
     static unsigned char stream[2048];
     am_Num               values[8] = {0};

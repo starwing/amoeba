@@ -369,7 +369,8 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
   Walk the constraints registered in `solver` the same way: `NULL` starts the
   walk, `NULL` ends it.  A constraint is registered by `am_newconstraint()`
   and stays registered until `am_delconstraint()`, so walking does not require
-  adding it.  The anchor must be a constraint of this solver.
+  adding it.  The hidden constraints an edit creates for `am_suggest()` are
+  not returned.  The anchor must be a constraint of this solver.
 
 - `int am_add(am_Constraint *cons);`
 
@@ -383,6 +384,23 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
 
   The strength of the constraint.  It stays an `am_Num` so `AM_REQUIRED`
   (`+inf`) survives the round trip; `NULL` returns `0`.
+
+- `am_Num am_constant(const am_Constraint *cons);`
+
+  The constant of the constraint's expression, in the same stored form
+  `am_terms()` uses (see `am_setrelation()`): a constant written after the
+  relation keeps its sign, one written before it is negated with the terms.
+
+- `am_Num am_error(const am_Constraint *cons);`
+
+  How much the constraint is violated in the current solution, in the units of
+  its stored expression: the sum of the constraint's error variables.  A
+  required constraint has none and reports `0`; an inequality counts only the
+  part it exceeds; a soft equality reports the absolute residual.  The value
+  is read from the tableau, so it is current without `am_updatevars()`, and it
+  survives `am_dump()`/`am_load()`.  `NULL` and a constraint that is not in
+  the solver return `0`.  The strength is not applied — multiply by
+  `am_strength()` yourself if you need the objective contribution.
 
 - `int am_relation(const am_Constraint *cons);`
 
