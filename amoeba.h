@@ -86,45 +86,42 @@ AM_API am_Solver *am_newsolver(am_Allocf *allocf, void *ud);
 AM_API void       am_resetsolver(am_Solver *S);
 AM_API void       am_delsolver(am_Solver *S);
 
-AM_API am_Id am_newvariable(am_Solver *S, am_Num *pvalue);
-AM_API void  am_delvariable(am_Solver *S, am_Id var);
-
-AM_API am_Num *am_varvalue(am_Solver *S, am_Id var, am_Num *newvalue);
-AM_API am_Id   am_vars(const am_Solver *S, am_Id var);
-
-AM_API int  am_refcount(const am_Solver *S, am_Id var);
 AM_API void am_updatevars(am_Solver *S);
 AM_API void am_autoupdate(am_Solver *S, int auto_update);
 
-AM_API void am_clearedits(am_Solver *S);
-AM_API int  am_hasedit(const am_Solver *S, am_Id var);
+AM_API am_Id   am_newvariable(am_Solver *S, am_Num *pvalue);
+AM_API void    am_delvariable(am_Solver *S, am_Id var);
+AM_API am_Num *am_varvalue(am_Solver *S, am_Id var, am_Num *newvalue);
+AM_API int     am_refcount(const am_Solver *S, am_Id var);
+AM_API am_Id   am_vars(const am_Solver *S, am_Id var);
+
 AM_API int  am_addedit(am_Solver *S, am_Id var, am_Num strength);
-AM_API void am_suggest(am_Solver *S, am_Id var, am_Num value);
 AM_API void am_deledit(am_Solver *S, am_Id var);
+AM_API void am_suggest(am_Solver *S, am_Id var, am_Num value);
+AM_API int  am_hasedit(const am_Solver *S, am_Id var);
+AM_API void am_clearedits(am_Solver *S);
 
 AM_API am_Constraint *am_newconstraint(am_Solver *S, am_Num strength);
+AM_API void           am_resetconstraint(am_Constraint *c);
+AM_API void           am_delconstraint(am_Constraint *c);
 AM_API am_Constraint *am_cloneconstraint(am_Constraint *other, am_Num strength);
 AM_API am_Constraint *am_constraints(const am_Solver *S, am_Constraint *c);
-
-AM_API int  am_add(am_Constraint *c);
-AM_API void am_remove(am_Constraint *c);
-
-AM_API void  am_resetconstraint(am_Constraint *c);
-AM_API void  am_delconstraint(am_Constraint *c);
-AM_API int   am_hasconstraint(const am_Constraint *c);
-AM_API int   am_relation(const am_Constraint *c);
-AM_API am_Id am_terms(const am_Constraint *c, am_Id var, am_Num *coef);
-
-AM_API am_Num am_strength(const am_Constraint *c);
-AM_API am_Num am_constant(const am_Constraint *c);
-AM_API am_Num am_error(const am_Constraint *c);
 
 AM_API int am_addterm(am_Constraint *c, am_Id var, am_Num f);
 AM_API int am_setrelation(am_Constraint *c, int relation);
 AM_API int am_addconstant(am_Constraint *c, am_Num constant);
 AM_API int am_setstrength(am_Constraint *c, am_Num strength);
-
 AM_API int am_merge(am_Constraint *c, const am_Constraint *o, am_Num coef);
+
+AM_API int  am_add(am_Constraint *c);
+AM_API void am_remove(am_Constraint *c);
+
+AM_API int    am_hasconstraint(const am_Constraint *c);
+AM_API am_Id  am_terms(const am_Constraint *c, am_Id var, am_Num *coef);
+AM_API int    am_relation(const am_Constraint *c);
+AM_API am_Num am_constant(const am_Constraint *c);
+AM_API am_Num am_strength(const am_Constraint *c);
+AM_API am_Num am_error(const am_Constraint *c);
 
 /* dump & load */
 
@@ -1345,20 +1342,20 @@ static int amL_body(am_Load *X) {
 /* APIs */
 
 /* clang-format off */
-AM_API int am_hasedit(const am_Solver *S, am_Id var)
-{ return S ? amH_get(&S->suggests, var) != NULL : 0; }
-
 AM_API int am_refcount(const am_Solver *S, am_Id var)
 { am_Var *ve = amV_get(S, var); return ve ? ve->refcount : 0; }
+
+AM_API int am_hasedit(const am_Solver *S, am_Id var)
+{ return S ? amH_get(&S->suggests, var) != NULL : 0; }
 
 AM_API int am_hasconstraint(const am_Constraint *c)
 { return c != NULL && c->marker.id != 0; }
 
-AM_API am_Num am_strength(const am_Constraint *c)
-{ return c ? c->strength : 0; }
-
 AM_API am_Num am_constant(const am_Constraint *c)
 { return c ? c->expression.constant : 0; }
+
+AM_API am_Num am_strength(const am_Constraint *c)
+{ return c ? c->strength : 0; }
 
 static am_Solver *amL_fail(am_Solver *S)
 { return am_delsolver(S), (am_Solver *)0; }
@@ -1457,87 +1454,6 @@ AM_API void am_updatevars(am_Solver *S) {
     }
 }
 
-AM_API int am_add(am_Constraint *c) {
-    am_Solver *S = c ? c->S : NULL;
-    int        ret;
-    am_Symbol  sym;
-    am_Row     r;
-    if (S == NULL) return AM_PARAM;
-    amC(c->marker.id == 0);
-    if (c->marker_id == 0) c->marker_id = ((sym = amS_new(S, 0)), sym.id);
-    if (c->other_id == 0 && c->strength < AM_REQUIRED)
-        c->other_id = ((sym = amS_new(S, 0)), sym.id);
-    r = amA_makerow(S, c);
-    if ((ret = amA_tryaddrow(S, &r, c)) != AM_OK)
-        amA_removeerrors(S, c);
-    else {
-        amA_optimize(S, &S->objective);
-        if (S->auto_update) am_updatevars(S);
-        S->age += 1;
-    }
-    return assert(S->infeasible_rows.id == 0), ret;
-}
-
-AM_API void am_remove(am_Constraint *c) {
-    am_Solver *S;
-    am_Symbol  marker;
-    am_Row     tmp;
-    if (c == NULL || c->marker.id == 0) return;
-    S = c->S, marker = c->marker;
-    amA_removeerrors(S, c);
-    if (amA_takerow(S, marker, &tmp) != AM_OK) {
-        am_Symbol leave = amA_leavingrow(S, marker);
-        am_Var   *ve;
-        assert(leave.id != 0);
-        amA_takerow(S, leave, &tmp);
-        amA_solvefor(S, &tmp, marker, leave);
-        amA_substitute(S, marker, &tmp);
-        if (amV_isexternal(leave) && (ve = amV_get(S, leave.id)))
-            *ve->pvalue = 0.f;
-    }
-    amR_free(S, &tmp);
-    amA_optimize(S, &S->objective), S->age += 1;
-    if (S->auto_update) am_updatevars(S);
-}
-
-AM_API void am_clearedits(am_Solver *S) {
-    am_Iterator it;
-    if (S == NULL) return;
-    it = amH_iter(&S->suggests);
-    if (!S->auto_update) am_updatevars(S);
-    while (amH_next(&it)) amC_freesuggest(S, *amH_val(am_Suggest *, it));
-    amH_reset(&S->suggests);
-}
-
-AM_API int am_addedit(am_Solver *S, am_Id var, am_Num strength) {
-    am_Suggest **s;
-    if (S == NULL || var == 0) return AM_PARAM;
-    if (strength >= AM_STRONG) strength = AM_STRONG;
-    s = (am_Suggest **)amH_get(&S->suggests, var);
-    if (s) return assert(*s), am_setstrength(&(*s)->constraint, strength);
-    amC(amC_newedit(S, var, strength));
-    return AM_OK;
-}
-
-AM_API void am_suggest(am_Solver *S, am_Id var, am_Num value) {
-    am_Suggest **ps, *s;
-    am_Num       delta;
-    if (S == NULL || var == 0) return;
-    ps = (am_Suggest **)amH_get(&S->suggests, var);
-    s = ps ? *ps : amC_newedit(S, var, AM_MEDIUM);
-    if (s == NULL) return; /* unknown var: nothing to suggest */
-    delta = value - s->edit_value, s->edit_value = value;
-    amA_editdelta(S, s, delta), amA_dualoptimize(S);
-    if (S->auto_update) am_updatevars(S);
-}
-
-AM_API void am_deledit(am_Solver *S, am_Id var) {
-    am_Suggest **ps, *s;
-    if (S == NULL || var == 0) return;
-    ps = (am_Suggest **)amH_get(&S->suggests, var);
-    if (ps) s = *ps, amH_del(&S->suggests, ps), amC_freesuggest(S, s);
-}
-
 AM_API am_Id am_newvariable(am_Solver *S, am_Num *pvalue) {
     am_Symbol sym;
     am_Var   *ve;
@@ -1569,22 +1485,42 @@ AM_API am_Id am_vars(const am_Solver *S, am_Id var) {
     return amH_next(&it) ? it.key.id : 0;
 }
 
-AM_API am_Constraint *am_constraints(const am_Solver *S, am_Constraint *c) {
-    am_Iterator it;
-    if (S == NULL) return 0;
-    it = amH_iter(&S->constraints);
-    if (c && !(it.offset = amH_find(&S->constraints, c->sym.id))) return 0;
-    while (amH_next(&it))
-        if (amV_isexternal(it.key)) return *amH_val(am_Constraint *, it);
-    return 0;
+AM_API int am_addedit(am_Solver *S, am_Id var, am_Num strength) {
+    am_Suggest **s;
+    if (S == NULL || var == 0) return AM_PARAM;
+    if (strength >= AM_STRONG) strength = AM_STRONG;
+    s = (am_Suggest **)amH_get(&S->suggests, var);
+    if (s) return assert(*s), am_setstrength(&(*s)->constraint, strength);
+    amC(amC_newedit(S, var, strength));
+    return AM_OK;
 }
 
-AM_API am_Id am_terms(const am_Constraint *c, am_Id var, am_Num *coef) {
+AM_API void am_deledit(am_Solver *S, am_Id var) {
+    am_Suggest **ps, *s;
+    if (S == NULL || var == 0) return;
+    ps = (am_Suggest **)amH_get(&S->suggests, var);
+    if (ps) s = *ps, amH_del(&S->suggests, ps), amC_freesuggest(S, s);
+}
+
+AM_API void am_suggest(am_Solver *S, am_Id var, am_Num value) {
+    am_Suggest **ps, *s;
+    am_Num       delta;
+    if (S == NULL || var == 0) return;
+    ps = (am_Suggest **)amH_get(&S->suggests, var);
+    s = ps ? *ps : amC_newedit(S, var, AM_MEDIUM);
+    if (s == NULL) return; /* unknown var: nothing to suggest */
+    delta = value - s->edit_value, s->edit_value = value;
+    amA_editdelta(S, s, delta), amA_dualoptimize(S);
+    if (S->auto_update) am_updatevars(S);
+}
+
+AM_API void am_clearedits(am_Solver *S) {
     am_Iterator it;
-    if (c == NULL || coef == NULL) return 0;
-    it = amH_iter(&c->expression.terms);
-    if (var && !(it.offset = amH_find(&c->expression.terms, var))) return 0;
-    return amH_next(&it) ? ((*coef = *amH_val(am_Num, it)), it.key.id) : 0;
+    if (S == NULL) return;
+    it = amH_iter(&S->suggests);
+    if (!S->auto_update) am_updatevars(S);
+    while (amH_next(&it)) amC_freesuggest(S, *amH_val(am_Suggest *, it));
+    amH_reset(&S->suggests);
 }
 
 AM_API am_Constraint *am_newconstraint(am_Solver *S, am_Num strength) {
@@ -1597,14 +1533,6 @@ AM_API am_Constraint *am_newconstraint(am_Solver *S, am_Num strength) {
     c->strength = amN_nearzero(strength) ? AM_REQUIRED : strength;
     if (r != AM_OK) amS_putcons(S, c), c = NULL;
     return c;
-}
-
-AM_API am_Constraint *am_cloneconstraint(am_Constraint *o, am_Num strength) {
-    am_Constraint *c;
-    if (o == NULL) return NULL;
-    if (amN_nearzero(strength)) strength = o->strength;
-    if ((c = am_newconstraint(o->S, strength)) == NULL) return NULL;
-    return am_merge(c, o, 1.0f), (c->relation = o->relation), c;
 }
 
 AM_API void am_resetconstraint(am_Constraint *c) {
@@ -1629,16 +1557,22 @@ AM_API void am_delconstraint(am_Constraint *c) {
     if (amV_isexternal(c->sym)) amS_putcons(S, c);
 }
 
-AM_API am_Num am_error(const am_Constraint *c) {
-    am_Solver *S = c ? c->S : NULL;
-    am_Row    *r;
-    am_Num     err = 0;
-    if (c == NULL || c->marker.id == 0) return 0;
-    if (amV_iserror(c->marker) && (r = amR_get(S, c->marker.id)))
-        err += r->constant;
-    if (amV_iserror(c->other) && (r = amR_get(S, c->other.id)))
-        err += r->constant;
-    return err;
+AM_API am_Constraint *am_cloneconstraint(am_Constraint *o, am_Num strength) {
+    am_Constraint *c;
+    if (o == NULL) return NULL;
+    if (amN_nearzero(strength)) strength = o->strength;
+    if ((c = am_newconstraint(o->S, strength)) == NULL) return NULL;
+    return am_merge(c, o, 1.0f), (c->relation = o->relation), c;
+}
+
+AM_API am_Constraint *am_constraints(const am_Solver *S, am_Constraint *c) {
+    am_Iterator it;
+    if (S == NULL) return 0;
+    it = amH_iter(&S->constraints);
+    if (c && !(it.offset = amH_find(&S->constraints, c->sym.id))) return 0;
+    while (amH_next(&it))
+        if (amV_isexternal(it.key)) return *amH_val(am_Constraint *, it);
+    return 0;
 }
 
 AM_API int am_addterm(am_Constraint *c, am_Id var, am_Num f) {
@@ -1693,6 +1627,69 @@ AM_API int am_merge(am_Constraint *c, const am_Constraint *o, am_Num coef) {
     while (amH_next(&it))
         amE(amC_addterm(c, it.key.id, *amH_val(am_Num, it) * coef));
     return AM_OK;
+}
+
+AM_API int am_add(am_Constraint *c) {
+    am_Solver *S = c ? c->S : NULL;
+    int        ret;
+    am_Symbol  sym;
+    am_Row     r;
+    if (S == NULL) return AM_PARAM;
+    amC(c->marker.id == 0);
+    if (c->marker_id == 0) c->marker_id = ((sym = amS_new(S, 0)), sym.id);
+    if (c->other_id == 0 && c->strength < AM_REQUIRED)
+        c->other_id = ((sym = amS_new(S, 0)), sym.id);
+    r = amA_makerow(S, c);
+    if ((ret = amA_tryaddrow(S, &r, c)) != AM_OK)
+        amA_removeerrors(S, c);
+    else {
+        amA_optimize(S, &S->objective);
+        if (S->auto_update) am_updatevars(S);
+        S->age += 1;
+    }
+    return assert(S->infeasible_rows.id == 0), ret;
+}
+
+AM_API void am_remove(am_Constraint *c) {
+    am_Solver *S;
+    am_Symbol  marker;
+    am_Row     tmp;
+    if (c == NULL || c->marker.id == 0) return;
+    S = c->S, marker = c->marker;
+    amA_removeerrors(S, c);
+    if (amA_takerow(S, marker, &tmp) != AM_OK) {
+        am_Symbol leave = amA_leavingrow(S, marker);
+        am_Var   *ve;
+        assert(leave.id != 0);
+        amA_takerow(S, leave, &tmp);
+        amA_solvefor(S, &tmp, marker, leave);
+        amA_substitute(S, marker, &tmp);
+        if (amV_isexternal(leave) && (ve = amV_get(S, leave.id)))
+            *ve->pvalue = 0.f;
+    }
+    amR_free(S, &tmp);
+    amA_optimize(S, &S->objective), S->age += 1;
+    if (S->auto_update) am_updatevars(S);
+}
+
+AM_API am_Id am_terms(const am_Constraint *c, am_Id var, am_Num *coef) {
+    am_Iterator it;
+    if (c == NULL || coef == NULL) return 0;
+    it = amH_iter(&c->expression.terms);
+    if (var && !(it.offset = amH_find(&c->expression.terms, var))) return 0;
+    return amH_next(&it) ? ((*coef = *amH_val(am_Num, it)), it.key.id) : 0;
+}
+
+AM_API am_Num am_error(const am_Constraint *c) {
+    am_Solver *S = c ? c->S : NULL;
+    am_Row    *r;
+    am_Num     err = 0;
+    if (c == NULL || c->marker.id == 0) return 0;
+    if (amV_iserror(c->marker) && (r = amR_get(S, c->marker.id)))
+        err += r->constant;
+    if (amV_iserror(c->other) && (r = amR_get(S, c->other.id)))
+        err += r->constant;
+    return err;
 }
 
 AM_API int am_dump(am_Solver *S, am_Dumper *dumper) {

@@ -303,24 +303,6 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
   Set the auto update flags.
   If setted, all variables will be updated to its latest values right after any changes done to the `solver`.
 
-- `int am_dump(am_Solver *solver, am_Dumper *d);`
-
-  Dump whole solver state (without edits) into binary data.
-
-  Returns `AM_FAILED` when the state holds a symbol that the dump has no index
-  for.  `am_load()` accepts such a stream (it validates structure, not symbol
-  ownership), so a solver loaded from a hand-edited stream can reach that
-  shape; the bytes written up to the failure must be discarded.
-
-- `am_Solver *am_load(am_Allocf *allocf, void *ud, am_Loader *l, size_t maxmem);`
-
-  Creates a new solver, loads a dump stream into it and returns it, or `NULL`
-  when the stream cannot be loaded.  `allocf`/`ud` are passed to
-  `am_newsolver()`.  `maxmem` is the strict byte budget of the load (`0` =
-  `AM_MAX_LOADMEM`); a single allocation may not consume the whole remaining
-  budget.  Only streams produced by `am_dump()` are supported, and variable
-  bindings are not refreshed yet (see "Dump & Load").
-
 - `am_Id am_newvariable(am_Solver *solver, am_Num *pvalue);`
 
   Create a new variable with a value `pvalue` binding to it. Returns `0` on
@@ -345,17 +327,17 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
 
   Remove this variable, after that, it cannot be added into further constraints.
 
-- `int am_refcount(const am_Solver *solver, am_Id var);`
-
-  Retrieve the internal reference count of the variable: one for the variable
-  itself, plus one per live term.  It is what decides when an unreferenced
-  variable is dropped; it is not a user-facing ownership count.
-
 - `am_Num *am_varvalue(am_Solver *solver, am_Id var, am_Num *newvalue);`
 
   Retrieve or reset the value binding of the variable. if `newvalue` is `NULL`,
   only retrieve the old pointer, otherwise the binding is retargeted to
   `newvalue` and the original pointer is returned.
+
+- `int am_refcount(const am_Solver *solver, am_Id var);`
+
+  Retrieve the internal reference count of the variable: one for the variable
+  itself, plus one per live term.  It is what decides when an unreferenced
+  variable is dropped; it is not a user-facing ownership count.
 
 - `am_Id am_vars(const am_Solver *solver, am_Id var);`
 
@@ -364,71 +346,14 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
   slot order, not creation order, and any change to the solver may reshuffle
   it, so start over instead of keeping an anchor across changes.
 
-- `am_Constraint *am_constraints(const am_Solver *solver, am_Constraint *cons);`
-
-  Walk the constraints registered in `solver` the same way: `NULL` starts the
-  walk, `NULL` ends it.  A constraint is registered by `am_newconstraint()`
-  and stays registered until `am_delconstraint()`, so walking does not require
-  adding it.  The hidden constraints an edit creates for `am_suggest()` are
-  not returned.  The anchor must be a constraint of this solver.
-
-- `int am_add(am_Constraint *cons);`
-
-  Add constraint into the solver it's created from.
-
-- `int am_hasconstraint(const am_Constraint *cons);`
-
-  Check whether a constraint has been added into the solver or not.
-
-- `am_Num am_strength(const am_Constraint *cons);`
-
-  The strength of the constraint.  It stays an `am_Num` so `AM_REQUIRED`
-  (`+inf`) survives the round trip; `NULL` returns `0`.
-
-- `am_Num am_constant(const am_Constraint *cons);`
-
-  The constant of the constraint's expression, in the same stored form
-  `am_terms()` uses (see `am_setrelation()`): a constant written after the
-  relation keeps its sign, one written before it is negated with the terms.
-
-- `am_Num am_error(const am_Constraint *cons);`
-
-  How much the constraint is violated in the current solution, in the units of
-  its stored expression: the sum of the constraint's error variables.  A
-  required constraint has none and reports `0`; an inequality counts only the
-  part it exceeds; a soft equality reports the absolute residual.  The value
-  is read from the tableau, so it is current without `am_updatevars()`, and it
-  survives `am_dump()`/`am_load()`.  `NULL` and a constraint that is not in
-  the solver return `0`.  The strength is not applied — multiply by
-  `am_strength()` yourself if you need the objective contribution.
-
-- `int am_relation(const am_Constraint *cons);`
-
-  The relation set by `am_setrelation()`, or `0` when none is set yet.
-
-- `am_Id am_terms(const am_Constraint *cons, am_Id var, am_Num *coef);`
-
-  Walk the terms of the constraint's expression: pass `0` for the first term,
-  then the previous result; `0` means "no more".  `*coef` receives the
-  coefficient as stored, which for a left-hand side written before
-  `am_setrelation()` is the negated value (see `am_setrelation()`).  Works
-  before the constraint is added to the solver.
-
-- `void am_remove(am_Constraint *cons);`
-
-  Remove added constraint.
-
-- `int am_clearedits(am_Solver *solver);`
-
-  Remove all variable suggests from `solver`.
-
-- `int am_hasedit(const am_Solver *solver, am_Id var);`
-
-  Check whether a variable has suggested value in the `solver`.
-
 - `int am_addedit(am_Solver *solver, am_Id var, am_Num strength);`
 
   Prepare to change the value of variables or the `strength` value if the variable is in edit now.
+
+- `void am_deledit(am_Solver *solver, am_Id var);`
+
+  Cancel the modify of variable.
+  The value binding by `var` will restore to the referred value according the solver.
 
 - `void am_suggest(am_Solver *solver, am_Id var, am_Num value);`
 
@@ -438,10 +363,13 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
   After changed, other variable may changed due to the constraints in solver.
   If you do not want change the strength of suggest (default is `AM_MEDIUM`), you may call `am_suggest()` directly without `am_addedit()`.
 
-- `void am_deledit(am_Solver *solver, am_Id var);`
+- `int am_hasedit(const am_Solver *solver, am_Id var);`
 
-  Cancel the modify of variable.
-  The value binding by `var` will restore to the referred value according the solver.
+  Check whether a variable has suggested value in the `solver`.
+
+- `void am_clearedits(am_Solver *solver);`
+
+  Remove all variable suggests from `solver`.
 
 - `am_Constraint *am_newconstraint(am_Solver *solver, am_Num strength);`
 
@@ -454,11 +382,6 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
   ctx->mydata = 1;
   *(MyContext**)cons = ctx;
   ```
-
-- `am_Constraint *am_cloneconstraint(am_Constraint *other, am_Num strength);`
-
-  Clone a new constraint from the existing one with new `strength`.
-  Returns `NULL` when the new constraint cannot be allocated.
 
 - `void am_resetconstraint(am_Constraint *cons);`
 
@@ -474,6 +397,19 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
   is not detected.  The default allocator puts the slot back into the constraint
   pool, so a second call may still read plausible memory: that is reuse, not a
   promise.
+
+- `am_Constraint *am_cloneconstraint(am_Constraint *other, am_Num strength);`
+
+  Clone a new constraint from the existing one with new `strength`.
+  Returns `NULL` when the new constraint cannot be allocated.
+
+- `am_Constraint *am_constraints(const am_Solver *solver, am_Constraint *cons);`
+
+  Walk the constraints registered in `solver` the same way: `NULL` starts the
+  walk, `NULL` ends it.  A constraint is registered by `am_newconstraint()`
+  and stays registered until `am_delconstraint()`, so walking does not require
+  adding it.  The hidden constraints an edit creates for `am_suggest()` are
+  not returned.  The anchor must be a constraint of this solver.
 
 - `int am_addterm(am_Constraint *cons, am_Id var, am_Num multiplier);`
 
@@ -511,4 +447,68 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
 - `int am_merge(am_Constraint *cons, const am_Constraint *other, am_Num coef);`
 
   Merge other constraints into `cons`, with a coefficient multiplying `other`.
+
+- `int am_add(am_Constraint *cons);`
+
+  Add constraint into the solver it's created from.
+
+- `void am_remove(am_Constraint *cons);`
+
+  Remove added constraint.
+
+- `int am_hasconstraint(const am_Constraint *cons);`
+
+  Check whether a constraint has been added into the solver or not.
+
+- `am_Id am_terms(const am_Constraint *cons, am_Id var, am_Num *coef);`
+
+  Walk the terms of the constraint's expression: pass `0` for the first term,
+  then the previous result; `0` means "no more".  `*coef` receives the
+  coefficient as stored, which for a left-hand side written before
+  `am_setrelation()` is the negated value (see `am_setrelation()`).  Works
+  before the constraint is added to the solver.
+
+- `int am_relation(const am_Constraint *cons);`
+
+  The relation set by `am_setrelation()`, or `0` when none is set yet.
+
+- `am_Num am_constant(const am_Constraint *cons);`
+
+  The constant of the constraint's expression, in the same stored form
+  `am_terms()` uses (see `am_setrelation()`): a constant written after the
+  relation keeps its sign, one written before it is negated with the terms.
+
+- `am_Num am_strength(const am_Constraint *cons);`
+
+  The strength of the constraint.  It stays an `am_Num` so `AM_REQUIRED`
+  (`+inf`) survives the round trip; `NULL` returns `0`.
+
+- `am_Num am_error(const am_Constraint *cons);`
+
+  How much the constraint is violated in the current solution, in the units of
+  its stored expression: the sum of the constraint's error variables.  A
+  required constraint has none and reports `0`; an inequality counts only the
+  part it exceeds; a soft equality reports the absolute residual.  The value
+  is read from the tableau, so it is current without `am_updatevars()`, and it
+  survives `am_dump()`/`am_load()`.  `NULL` and a constraint that is not in
+  the solver return `0`.  The strength is not applied — multiply by
+  `am_strength()` yourself if you need the objective contribution.
+
+- `int am_dump(am_Solver *solver, am_Dumper *d);`
+
+  Dump whole solver state (without edits) into binary data.
+
+  Returns `AM_FAILED` when the state holds a symbol that the dump has no index
+  for.  `am_load()` accepts such a stream (it validates structure, not symbol
+  ownership), so a solver loaded from a hand-edited stream can reach that
+  shape; the bytes written up to the failure must be discarded.
+
+- `am_Solver *am_load(am_Allocf *allocf, void *ud, am_Loader *l, size_t maxmem);`
+
+  Creates a new solver, loads a dump stream into it and returns it, or `NULL`
+  when the stream cannot be loaded.  `allocf`/`ud` are passed to
+  `am_newsolver()`.  `maxmem` is the strict byte budget of the load (`0` =
+  `AM_MAX_LOADMEM`); a single allocation may not consume the whole remaining
+  budget.  Only streams produced by `am_dump()` are supported, and variable
+  bindings are not refreshed yet (see "Dump & Load").
 
