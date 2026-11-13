@@ -205,7 +205,7 @@ static void reenc_roundtrip(am_Num want, int bits) {
     md.base.cons_name = NULL;
     md.base.writer = dump_writer;
     md.p = buf, md.len = &len;
-    assertok(am_dump(S, &md.base) == AM_OK);
+    assertok(am_dump(S, &md.base) == AM_OK && len > 0);
 
     xr.r = (const unsigned char *)buf, xr.w = (unsigned char *)enc;
     xr.bits = bits;

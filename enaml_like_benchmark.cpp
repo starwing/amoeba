@@ -431,6 +431,7 @@ int main() {
                 };
                 MyLoader l;
                 l.buf = &buf;
+                l.base.solver = NULL;
                 l.base.load_var = [](am_Loader *rl, const char *, unsigned idx,
                                      am_Id) {
                     MyLoader *l = (MyLoader *)rl;
