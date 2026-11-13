@@ -84,9 +84,9 @@
 
 ### B4. Lua 绑定
 
-- 现状：`just test-lua` 只跑 `test.lua` 这条 smoke（无断言），也没有 rockspec。
-- 做法：把 `test.lua` 里的检查改成断言（或引入 `luaunit.lua`），加 rockspec。
-- 验收：绑定层回归能被 CI 抓到。
+- 现状：`test.lua` 已断言化，CI 的 `just test-lua` 会跑它；还没有 rockspec。
+- 做法：加 rockspec（`luarocks make` 能装出 `amoeba.so`），并考虑 LuaJIT / double 的 CI job。
+- 验收：`luarocks make` 安装后 `require "amoeba"` 能用；CI 跑绑定回归。
 
 ### B5. `am_flexbox.h` 决策
 

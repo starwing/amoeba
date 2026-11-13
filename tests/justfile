@@ -24,6 +24,11 @@ CC  := env("CC", "cc")
 CXX := env("CXX", "c++")
 LUA := env("LUA", "lua")
 
+# Lua binding: first existing pkg-config package wins; LUA_INC overrides both.
+LUAJIT    := env("LUAJIT", "luajit")
+LUA_PKG   := env("LUA_PKG", "lua5.5 lua5.4 lua5.3 lua")
+LUAJIT_PKG := env("LUAJIT_PKG", "luajit")
+
 WARN := "-Wall -Wextra -Werror -pedantic -Wno-variadic-macros"
 INC  := "-I" + ROOT + " -I" + SRC
 BASE := "-std=c89 " + WARN + " " + INC
@@ -175,30 +180,117 @@ check-cpp03:
 
 # ---------------------------------------------------------------------------
 # Lua binding: built from lua_amoeba.c, then test.lua drives it
+#
+# Every recipe picks the first existing pkg-config package; LUA_INC overrides
+# the search.  Never fall back to the default include path: that silently
+# builds against another Lua version.
 
+# build build/lua/<tag>/amoeba.so
 [unix]
 [private]
-lua-run script=(ROOT / "test.lua"):
+lua-build tag pkgs flags="":
     #!/usr/bin/env bash
     set -euo pipefail
-    out='{{BUILD}}/lua'
+    out='{{BUILD}}/lua/{{tag}}'
+    rm -rf "$out"
     mkdir -p "$out"
-    inc="${LUA_INC:-$(pkg-config --cflags lua5.4 lua5.3 lua 2>/dev/null || true)}"
+    inc=''
+    for p in {{pkgs}}; do
+        if pkg-config --exists "$p"; then inc="$(pkg-config --cflags "$p")"; break; fi
+    done
+    if [ -z "${LUA_INC:-}" ] && [ -z "$inc" ]; then
+        echo "lua: no pkg-config for '{{pkgs}}'; set LUA_INC" >&2
+        exit 1
+    fi
     case "$(uname -s)" in
         Darwin) shlib='-bundle -undefined dynamic_lookup' ;;
         *)      shlib='-shared -fPIC' ;;
     esac
-    {{CC}} -std=c99 -O2 $shlib $inc -I'{{ROOT}}' \
+    {{CC}} -std=c99 -O2 {{flags}} $shlib ${LUA_INC:-$inc} -I'{{ROOT}}' \
         -o "$out/amoeba.so" '{{ROOT}}/lua_amoeba.c'
+    # record the Lua ABI of these headers: a module built against another
+    # version fails deep inside `require`, so lua-run checks it up front
+    printf '%s\n' '#include <lua.h>' '#include <stdio.h>' \
+        'int main(void) { printf("%d", LUA_VERSION_NUM); return 0; }' \
+        > "$out/lua-version.c"
+    {{CC}} ${LUA_INC:-$inc} -o "$out/lua-version" "$out/lua-version.c"
+    "$out/lua-version" > "$out/lua-version-num"
+
+[unix]
+[private]
+lua-run tag bin script=(ROOT / "test.lua"):
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out='{{BUILD}}/lua/{{tag}}'
+    err="$out/stderr.txt"
+    status=0
+    # LUA/LUA_PKG are independent knobs; a mismatch only surfaces as a cryptic
+    # `dlopen` failure, so reject it before running the suite
+    want=$(cat "$out/lua-version-num" 2>/dev/null || echo '')
+    if [ -n "$want" ]; then
+        got=$('{{bin}}' -e 'io.write(_VERSION:match("%d+%.%d+"))') || {
+            echo "lua: cannot run '{{bin}}'" >&2
+            exit 1
+        }
+        wmaj=$((want / 100))
+        wmin=$((want % 100))
+        if [ "$wmaj.$wmin" != "$got" ]; then
+            echo "lua: '{{bin}}' is Lua $got, but the module was built" \
+                 "against Lua $wmaj.$wmin headers; set LUA and LUA_PKG" \
+                 "(or LUAJIT and LUAJIT_PKG) together" >&2
+            exit 1
+        fi
+    fi
     # a versioned LUA_CPATH_5_x wins over the plain one, so set them all
     LUA_CPATH="$out/?.so" \
         LUA_CPATH_5_5="$out/?.so" LUA_CPATH_5_4="$out/?.so" \
         LUA_CPATH_5_3="$out/?.so" LUA_CPATH_5_2="$out/?.so" \
         LUA_CPATH_5_1="$out/?.so" \
-        {{LUA}} '{{script}}'
+        {{bin}} '{{script}}' 2>"$err" || status=$?
+    if [ "$status" -ne 0 ]; then
+        cat "$err" >&2
+        echo "lua binding test failed (exit $status)" >&2
+        exit "$status"
+    fi
+    # test.lua is silent: a finalizer error or a warning means it failed
+    if [ -s "$err" ]; then
+        cat "$err" >&2
+        echo "lua binding test wrote to stderr" >&2
+        exit 1
+    fi
 
 [unix]
-test-lua: (lua-run)
+test-lua: (lua-build "lua" LUA_PKG) (lua-run "lua" LUA)
+
+[unix]
+test-lua-luajit: (lua-build "luajit" LUAJIT_PKG) (lua-run "luajit" LUAJIT)
+
+[unix]
+test-lua-double: (lua-build "double" LUA_PKG "-DAM_USE_DOUBLE") \
+    (lua-run "double" LUA)
+
+# line coverage of amoeba.h and lua_amoeba.c from one test.lua run
+[unix]
+cov-lua: (lua-build "cov" LUA_PKG "-O0 -g --coverage") (lua-run "cov" LUA)
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir='{{BUILD}}/lua/cov'
+    out='{{BUILD}}/cov-lua'
+    rm -rf "$out"
+    mkdir -p "$out"
+    lcov --capture --directory "$dir" --rc branch_coverage=1 \
+        --ignore-errors inconsistent,unsupported,empty,corrupt,gcov \
+        --output-file "$out/lua.info"
+    lcov --extract "$out/lua.info" '*/amoeba.h' '*/lua_amoeba.c' \
+        --rc branch_coverage=1 --ignore-errors inconsistent,unused,corrupt \
+        --output-file "$out/amoeba-lua.info"
+    lcov --list "$out/amoeba-lua.info" --rc branch_coverage=1 \
+        --ignore-errors inconsistent,corrupt
+    # every zero-hit line, with its source text
+    awk '/^SF:/{f=substr($0,4)} /^DA:/{split($0,a,","); if (a[2]=="0") print f "\t" substr(a[1],4)}' \
+        "$out/amoeba-lua.info" | while IFS=$'\t' read -r f ln; do
+        printf '%s:%s: %s\n' "$(basename "$f")" "$ln" "$(sed -n "${ln}p" "$f")"
+    done
 
 # ---------------------------------------------------------------------------
 # coverage (lcov)
@@ -238,7 +330,7 @@ uncovered:
 
 [unix]
 clean-cov:
-    rm -rf '{{BUILD}}/cov'
+    rm -rf '{{BUILD}}/cov' '{{BUILD}}/cov-lua' '{{BUILD}}/lua/cov'
     rm -f '{{BUILD}}'/*.info
 
 # ---------------------------------------------------------------------------

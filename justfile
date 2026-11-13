@@ -17,7 +17,10 @@
 #   just uncovered        lines of amoeba.h no test ever executed
 #   just format           clang-format the whole tree in place
 #   just format-check     fail if the tree is not formatted
-#   just test-lua         build the Lua binding + run test.lua
+#   just test-lua         build the Lua binding + run test.lua (Lua 5.x)
+#   just test-lua-luajit  same, against LuaJIT 2.1
+#   just test-lua-double  same, with -DAM_USE_DOUBLE
+#   just cov-lua          lcov line coverage of amoeba.h + lua_amoeba.c from test.lua
 #   just clean            remove every build artifact
 
 set windows-shell := ["cmd.exe", "/C"]
@@ -65,9 +68,19 @@ test suite="solver" *args="":
     set -euo pipefail
     exec just --justfile tests/justfile test '{{suite}}' {{args}}
 
-# Lua binding smoke test (needs Lua >= 5.3 and its headers)
+# Lua binding: build lua_amoeba.c + run test.lua (LuaJIT / AM_USE_DOUBLE variants)
 [unix]
 test-lua: (tests::test-lua)
+
+[unix]
+test-lua-luajit: (tests::test-lua-luajit)
+
+[unix]
+test-lua-double: (tests::test-lua-double)
+
+# line coverage of amoeba.h + lua_amoeba.c from one `lua test.lua` run
+[unix]
+cov-lua: (tests::cov-lua)
 
 # lcov line coverage for amoeba.h
 [unix]

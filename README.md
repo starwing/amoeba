@@ -124,6 +124,18 @@ the tests).  Code style is defined by `.clang-format` (clang-format >= 19).
 See [notes/](notes/) for implementation notes and [TODO.md](TODO.md) for the
 roadmap.
 
+## Lua binding
+
+`lua_amoeba.c` embeds the library into Lua.  The binding's contract -- supported
+runtimes (LuaJIT 2.1 / LÖVE 11.x and Lua 5.5), lifecycle and handle validity,
+names, `dump` side effects and every method -- is documented in
+[amoeba.d.lua](amoeba.d.lua) (LuaLS type declarations, English).  It also covers
+how to load the C module when `amoeba.lua` shadows it.
+
+`just test-lua`, `just test-lua-luajit` and `just test-lua-double` build the
+module and run the assertion suite `test.lua` against Lua 5.x, LuaJIT 2.1 and
+the `AM_USE_DOUBLE` build.
+
 ## Reference
 
 ### Return value
