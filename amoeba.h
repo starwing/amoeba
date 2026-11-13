@@ -53,8 +53,8 @@
 #define AM_MEDIUM   ((am_Num)1000)     /* medium, the default edit strength */
 #define AM_WEAK     ((am_Num)1)        /* weak soft constraint */
 
-#include <stddef.h>
 #include <math.h>
+#include <stddef.h>
 
 AM_NS_BEGIN
 
@@ -131,17 +131,19 @@ typedef struct am_Loader am_Loader;
 AM_API int        am_dump(am_Solver *S, am_Dumper *dumper);
 AM_API am_Solver *am_load(am_Allocf *a, void *ud, am_Loader *l, size_t maxmem);
 
+typedef const char *am_Name;
+
 struct am_Dumper {
-    const char *(*var_name)(am_Dumper *D, unsigned i, am_Id var, am_Num *value);
-    const char *(*cons_name)(am_Dumper *D, unsigned i, am_Constraint *c);
+    am_Name (*var_name)(am_Dumper *D, unsigned i, am_Id var, am_Num *value);
+    am_Name (*cons_name)(am_Dumper *D, unsigned i, am_Constraint *c);
 
     int (*writer)(am_Dumper *D, const void *buf, size_t len);
 };
 
 struct am_Loader {
-    am_Num *(*load_var)(am_Loader *L, const char *name, unsigned i, am_Id var);
-    void (*load_cons)(am_Loader *L, const char *name, unsigned i,
-                      am_Constraint *c);
+    void (*solver)(am_Loader *L, const am_Solver *S);
+    am_Num *(*load_var)(am_Loader *L, am_Name name, unsigned i, am_Id var);
+    void (*load_cons)(am_Loader *L, am_Name name, unsigned i, am_Constraint *c);
 
     const char *(*reader)(am_Loader *L, size_t *plen);
 };
@@ -159,9 +161,9 @@ AM_NS_END
 
 #include <assert.h>
 #include <float.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
-#include <limits.h>
 
 #define AM_EXTERNAL (0)
 #define AM_SLACK    (1)
@@ -958,7 +960,7 @@ static int amD_float(am_Dump *X, am_Num n) {
     return AM_OK;
 }
 
-static int amD_string(am_Dump *X, const char *name) {
+static int amD_string(am_Dump *X, am_Name name) {
     am_Dumper *d = X->dumper;
     size_t     buflen, namelen = name ? strlen(name) : ((name = ""), 0);
     amC(namelen < AM_NAME_LEN && namelen <= 0xFF);
@@ -1013,8 +1015,8 @@ static int amD_vars(am_Dump *X) {
     am_Size          i;
     amE(amD_count(X, S->vars.count));
     for (i = 0; i < S->vars.count; ++i) {
-        am_Var     *ve = (am_Var *)amH_get(&S->vars, X->syms[i]);
-        const char *vn;
+        am_Var *ve = (am_Var *)amH_get(&S->vars, X->syms[i]);
+        am_Name vn;
         assert(ve != NULL);
         vn = X->dumper->var_name(X->dumper, i, X->syms[i], ve->pvalue);
         amE(amD_string(X, vn));
@@ -1027,7 +1029,7 @@ static int amD_constraints(am_Dump *X) {
     am_Size          i;
     amE(amD_count(X, S->constraints.count));
     for (i = 0; i < S->constraints.count; ++i) {
-        const char     *name = NULL;
+        am_Name         name = NULL;
         am_Constraint **ce;
         ce = (am_Constraint **)amH_get(&S->constraints, X->cons[i]);
         assert(ce != NULL);
@@ -1329,6 +1331,7 @@ static int amL_rows(am_Load *X) {
 
 static int amL_body(am_Load *X) {
     am_Size i, count;
+    if (X->loader->solver) X->loader->solver(X->loader, X->S);
     amE(amL_count(X, &count)); /* vars */
     amC(count <= X->total);    /* ids are offset+i, keep them in total */
     for (i = 0; i < count; ++i) amE(amL_var(X, i));

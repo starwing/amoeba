@@ -151,6 +151,13 @@ writes every variable binding from the loaded tableau: a basic variable gets its
 row constant, a variable without a row gets 0.  `load_var()` still decides where
 each binding lives.
 
+The loader can see the new solver before the body is parsed: if
+`am_Loader::solver` is set, it is called once, right after the stream header is
+validated and before any variable or constraint is read.  The solver is empty at
+that point and is passed as `const am_Solver *`: keep the pointer if you need
+it, but do not build objects on it.  If the load fails afterwards, the solver is
+destroyed, so that pointer must be dropped and must never be freed.
+
 Only streams produced by `am_dump()` are supported.  Loading any other data is
 unsupported: the loader only promises that `am_load()` itself does not crash.
 What a solver does after a successful load of a non-dump stream (including
@@ -221,8 +228,10 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
 
 - `struct am_Loader`
 
-  A user-defined dump behavior control type.  The user must provide `reader`
-  and `load_var` function pointers in it. there is a example:
+  A user-defined load behavior control type.  Zero-initialize it (for example
+  with `memset`) before setting the callbacks: `reader` and `load_var` are
+  required, `solver` and `load_cons` are optional and are skipped when left
+  null.  There is an example:
 
   ```c
   /* loads from a string buffer */
@@ -230,15 +239,22 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
       am_Loader base;
       VarMap    vars;
       ConsMap   cons;
+      const am_Solver *solver; /* set by load_solver */
       const char *buf; /* the buffer to read */
       size_t remain;   /* remain bytes */
   } MyLoader;
+
+  static void load_solver(am_Loader *l, const am_Solver *solver) {
+      /* optional: the solver exists, but is still empty and read-only */
+      ((MyLoader*)l)->solver = solver;
+  }
 
   static am_Num *load_var(am_Loader *l, const char *name, unsigned idx, am_Id var) {
       /* you should returns a binding for variable named `name`, or the load
        * fails and `am_load()` returns `NULL`.
        * A common implement creates variable context into some map, returns it.
-       * Notice that `name` can be `NULL` if no name avaialable.  */
+       * Notice that `name` can be `NULL` if no name avaialable, and that it is
+       * only valid during this call: copy it if you keep it.  */
       MyLoader *myl = (MyLoader*)l;
       MyContext *ctx = my_create_ctx_by_idx_and_name(&myl->vars, idx, name);
       return &ctx->value;
@@ -247,7 +263,7 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
   static void load_cons(am_Loader *l, const char *name, unsigned idx, am_Constraint *cons) {
       /* same as `var_name`, but can be NULL in `am_Loader*` means do not
        * retrieve any constraints from previous state.
-       * Notice that `name` can be `NULL`.  */
+       * Notice that `name` can be `NULL` and is only valid during the call.  */
       MyLoader *myl = (MyLoader*)l;
       MyContext *ctx = save_cons_and_create_context(&myl->cons, idx, name, cons);
       *(MyContext**)cons = ctx;
@@ -268,8 +284,10 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
 
   /* do actually load */
   MyLoader l;
+  memset(&l, 0, sizeof(l)); /* optional callbacks must start null */
+  l.base.solver    = load_solver; /* optional */
   l.base.load_var  = load_var;
-  l.base.load_cons = load_cons; /* optional */
+  l.base.load_cons = load_cons;   /* optional */
   l.base.reader    = load_reader;
   d.buf = get_some_data(&d.len);
 
@@ -277,6 +295,9 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
   assert(solver != NULL);
   /* now uses the solver */
   ```
+
+  `am_load()` returns `NULL` on failure and releases the half-built solver; any
+  pointer kept from `solver`, `load_var` or `load_cons` is dead then.
 
 ### Routines
 

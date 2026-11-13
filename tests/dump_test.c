@@ -11,6 +11,13 @@
  *   load_settles_nonbasic_binding  a variable without a row reads 0 after load
  *   dump_empty                     a solver with no constraints dumps and loads
  *   load_then_remove_keeps_vars    load restores the per-term reference counts
+ *   load_hands_over_the_solver_before_the_body  the loader sees the solver
+ *                                 once, before any variable or constraint
+ *   load_hands_over_the_solver_without_variables  an empty stream still hands
+ *                                 it over, though load_var() never runs
+ *   load_skips_the_solver_callback_for_a_bad_header  a header failure hands
+ *                                 nothing out, so nothing has to be dropped
+ *   load_failure_releases_the_solver  a later failure frees the handed solver
  */
 
 #include "amoeba_test.h"
@@ -636,6 +643,7 @@ TEST(dumpload) {
         am_Solver *S2;
         size_t     i;
 
+        memset(&myl, 0, sizeof(myl));
         myl.base.load_var = load_var;
         myl.base.load_cons = load_cons;
         myl.base.reader = load_reader;
@@ -781,6 +789,7 @@ TEST(dump_empty) {
     md.base.cons_name = NULL;
     md.base.writer = dump_writer;
     md.p = buf, md.len = &len;
+    memset(&ml, 0, sizeof(ml));
     ml.base.load_var = load_var;
     ml.base.load_cons = load_cons;
     ml.base.reader = load_reader;
@@ -886,6 +895,175 @@ TEST(load_then_remove_keeps_vars) {
 
     am_delsolver(S2);
     am_delsolver(S);
+}
+
+/* ---- the loader's view of the solver while loading ----
+ *
+ * load_var() is not called for a stream with no variables, so the solver is
+ * handed over separately, read-only, before the body is parsed.  These tests
+ * pin when that happens, what the solver looks like at that moment, and what
+ * becomes of it when the load fails. */
+
+#define SOLVER_VALUES 4
+
+typedef struct SolverLoader {
+    am_Loader        base;
+    const char      *p;
+    size_t           len;
+    am_Num           values[SOLVER_VALUES];
+    const am_Solver *seen;      /* solver handed to the callback */
+    unsigned         calls;     /* solver callbacks */
+    unsigned         vars;      /* load_var calls */
+    unsigned         cons;      /* load_cons calls */
+    unsigned         steps;     /* callback sequence counter */
+    unsigned         at_solver; /* where the solver callback fell */
+    unsigned         at_var;    /* ... and the first load_var */
+    unsigned         at_cons;   /* ... and the first load_cons */
+    int              empty;     /* no variables and no constraints then */
+} SolverLoader;
+
+static void loader_solver(am_Loader *l, const am_Solver *S) {
+    SolverLoader *sl = (SolverLoader *)l;
+    sl->seen = S, sl->calls += 1, sl->at_solver = sl->steps++;
+    sl->empty = (am_vars(S, 0) == 0 && am_constraints(S, NULL) == NULL);
+}
+
+static am_Num *loader_var(am_Loader *l, const char *name, unsigned i,
+                          am_Id var) {
+    SolverLoader *sl = (SolverLoader *)l;
+    (void)name, (void)var;
+    if (sl->vars == 0) sl->at_var = sl->steps++;
+    sl->vars += 1;
+    return &sl->values[i % SOLVER_VALUES];
+}
+
+static void loader_cons(am_Loader *l, const char *name, unsigned i,
+                        am_Constraint *cons) {
+    SolverLoader *sl = (SolverLoader *)l;
+    (void)name, (void)i, (void)cons;
+    if (sl->cons == 0) sl->at_cons = sl->steps++;
+    sl->cons += 1;
+}
+
+static const char *loader_reader(am_Loader *l, size_t *plen) {
+    SolverLoader *sl = (SolverLoader *)l;
+    if (sl->len == 0) return NULL;
+    *plen = sl->len, sl->len = 0;
+    return sl->p;
+}
+
+static void loader_init(SolverLoader *sl, const char *p, size_t len) {
+    memset(sl, 0, sizeof(*sl));
+    sl->base.solver = loader_solver;
+    sl->base.load_var = loader_var;
+    sl->base.load_cons = loader_cons;
+    sl->base.reader = loader_reader;
+    sl->p = p, sl->len = len;
+}
+
+/* dumps S into buf with the shared writer, returns the stream length */
+static size_t dump_into(am_Solver *S, char *buf) {
+    MyDumper md;
+    size_t   len = 0;
+    md.base.var_name = dump_varname;
+    md.base.cons_name = NULL;
+    md.base.writer = dump_writer;
+    md.p = buf, md.len = &len;
+    assertok(am_dump(S, &md.base) == AM_OK);
+    return len;
+}
+
+TEST(load_hands_over_the_solver_before_the_body) {
+    am_Num         x = 0;
+    am_Solver     *S, *S2;
+    am_Id          xv;
+    am_Constraint *c;
+    char           buf[TEST_BUFSIZE];
+    size_t         len;
+    SolverLoader   sl;
+
+    S = am_test_new_solver();
+    xv = am_newvariable(S, &x);
+    c = am_newconstraint(S, AM_REQUIRED);
+    assertok(am_addterm(c, xv, 1) == AM_OK);
+    assertok(am_addconstant(c, -10) == AM_OK);
+    assertok(am_setrelation(c, AM_GREATEQUAL) == AM_OK);
+    assertok(am_add(c) == AM_OK);
+
+    len = dump_into(S, buf);
+    loader_init(&sl, buf, len);
+    assertok((S2 = am_load(am_test_allocf, NULL, &sl.base, 0)) != NULL);
+
+    asserteq(sl.calls, 1);   /* once per load, not once per object */
+    assertok(sl.seen == S2); /* the solver that comes back to the caller */
+    asserteq(sl.empty, 1);   /* nothing was built yet */
+    asserteq(sl.vars, 1);
+    assertok(sl.at_solver < sl.at_var);
+    assertok(sl.at_solver < sl.at_cons);
+    assertclose(sl.values[0], 10, "load_var binding written");
+
+    am_delsolver(S2);
+    am_delsolver(S);
+}
+
+TEST(load_hands_over_the_solver_without_variables) {
+    am_Solver   *S;
+    am_Solver   *S2;
+    char         buf[TEST_BUFSIZE];
+    size_t       len;
+    SolverLoader sl;
+
+    S = am_test_new_solver();
+    len = dump_into(S, buf);
+    loader_init(&sl, buf, len);
+    assertok((S2 = am_load(am_test_allocf, NULL, &sl.base, 0)) != NULL);
+
+    /* an empty stream never calls load_var: this hook is the only way in */
+    asserteq(sl.calls, 1);
+    asserteq(sl.vars, 0);
+    asserteq(sl.cons, 0);
+    asserteq(sl.empty, 1);
+    asserteq(S2->vars.count, 0);
+    asserteq(S2->constraints.count, 0);
+
+    am_delsolver(S2);
+    am_delsolver(S);
+}
+
+TEST(load_skips_the_solver_callback_for_a_bad_header) {
+    SolverLoader sl;
+
+    loader_init(&sl, "not a dump", 10);
+    assertok(am_load(am_test_allocf, NULL, &sl.base, 0) == NULL);
+
+    /* nothing was handed out, so there is nothing for the loader to drop */
+    asserteq(sl.calls, 0);
+    asserteq(sl.vars, 0);
+}
+
+TEST(load_failure_releases_the_solver) {
+    am_Num         x = 0;
+    am_Solver     *S;
+    am_Id          xv;
+    am_Constraint *c;
+    char           buf[TEST_BUFSIZE];
+    size_t         len;
+    SolverLoader   sl;
+
+    S = am_test_new_solver();
+    xv = am_newvariable(S, &x);
+    c = am_newconstraint(S, AM_REQUIRED);
+    assertok(am_addterm(c, xv, 1) == AM_OK);
+    assertok(am_addconstant(c, -10) == AM_OK);
+    assertok(am_setrelation(c, AM_GREATEQUAL) == AM_OK);
+    assertok(am_add(c) == AM_OK);
+    len = dump_into(S, buf);
+    am_delsolver(S); /* from here on only the failed load may hold memory */
+
+    loader_init(&sl, buf, len - 1);
+    assertok(am_load(am_test_allocf, NULL, &sl.base, 0) == NULL);
+    asserteq(sl.calls, 1); /* it ran, then the stream ran out */
+    asserteq(allmem, 0);   /* the half-built solver was released */
 }
 
 #include "dump_test.gen.inc"
