@@ -1509,6 +1509,47 @@ TEST(reset_after_unsat_add_leaves_a_clean_solver) {
     am_delsolver(S);
 }
 
+/* Removing a soft edit while a strength-scaled row is being pivoted through
+ * the objective must not mistake float rounding for an unbounded direction.
+ *
+ * Regression: the strong row's 1e6 term cancels in the objective and leaves a
+ * tiny negative cost on a column that no row can block.  amA_optimize() then
+ * found no leaving row: debug tripped assert(leave.id != 0), release spun. */
+TEST(remove_edit_after_strong_row_keeps_solver_usable) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         x = 0;
+    am_Id          vx = am_newvariable(S, &x);
+    am_Constraint *strong, *req;
+
+    am_suggest(S, vx, -9); /* the edit holds x at -9 */
+
+    strong = am_newconstraint(S, AM_STRONG); /* 3*x <= 6 */
+    am_addterm(strong, vx, 2);
+    am_addterm(strong, vx, 1);
+    am_addconstant(strong, -6);
+    am_setrelation(strong, AM_LESSEQUAL);
+    asserteq(am_add(strong), AM_OK);
+    am_updatevars(S);
+    assertnear(x, -9, 1e-4); /* satisfied by the edit's value */
+
+    req = am_newconstraint(S, AM_REQUIRED); /* x >= 9 overrides the edit */
+    am_addterm(req, vx, -1);
+    am_addconstant(req, 9);
+    am_setrelation(req, AM_LESSEQUAL);
+    asserteq(am_add(req), AM_OK);
+    am_updatevars(S);
+    assertnear(x, 9, 1e-4);
+
+    /* the removal pivots the strong row's 1e6 term out of the objective */
+    am_remove(req);
+    am_clearedits(S);
+    am_updatevars(S);
+    assertnear(x, 2, 1e-4); /* only 3*x <= 6 is left */
+    asserteq(S->infeasible_rows.id, 0);
+
+    am_delsolver(S);
+}
+
 /* A row that leaves the infeasible work list must be queueable again.
  *
  * Regression: amA_flushinfeasible() emptied S->infeasible_rows but left each

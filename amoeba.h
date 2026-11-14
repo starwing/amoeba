@@ -683,7 +683,11 @@ static void amA_optimize(am_Solver *S, am_Row *obj) {
             if (ratio < min || (amN_approx(ratio, min) && it.key.id < leave.id))
                 min = ratio, leave = it.key;
         }
-        assert(leave.id != 0);
+        if (leave.id == 0) { /* feasible means bounded, so this is noise */
+            am_Num *z = (am_Num *)amH_get(&obj->terms, enter.id);
+            assert(z != NULL), amH_del(&obj->terms, z);
+            continue;
+        }
         amA_takerow(S, leave, &tmp);
         amA_solvefor(S, &tmp, enter, leave);
         amA_substitute(S, enter, &tmp);
