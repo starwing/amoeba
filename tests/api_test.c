@@ -1623,4 +1623,53 @@ TEST(flushed_row_can_be_queued_again) {
     am_delsolver(S);
 }
 
+/* A failed add must not take a row that sits on the infeasible work list.
+ *
+ * Regression: the artificial stage of a failed add installed its row as a
+ * tableau row, and the amA_substitute() on the way queued the edit's negative
+ * error row; the am_remove() that followed took that very row as its leaving
+ * row and dropped it, so the queue kept an id without a row.  The next
+ * amA_flushinfeasible() aborted on it (release cut the list off silently).
+ * The sequence is the reduced form of fuzz seed 1112. */
+TEST(failed_add_does_not_strand_a_queued_row) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         v[6] = {0, 0, 0, 0, 0, 0};
+    am_Id          x[6];
+    am_Constraint *c;
+    int            i;
+
+    for (i = 0; i < 6; ++i) x[i] = am_newvariable(S, &v[i]);
+
+    c = am_newconstraint(S, AM_REQUIRED); /* -x4 + x0 + 5 <= 0 */
+    am_addterm(c, x[4], -1);
+    am_addterm(c, x[0], 1);
+    am_addconstant(c, 5);
+    am_setrelation(c, AM_LESSEQUAL);
+    asserteq(am_add(c), AM_OK);
+
+    am_suggest(S, x[0], -5);
+    asserteq(am_addedit(S, x[4], AM_WEAK), AM_OK);
+
+    c = am_newconstraint(S, AM_REQUIRED); /* x0 - x4 - 3 == 0: conflicts */
+    am_addterm(c, x[0], 1);
+    am_addterm(c, x[4], -1);
+    am_addconstant(c, -3);
+    am_setrelation(c, AM_EQUAL);
+    asserteq(am_add(c), AM_UNBOUND);
+    asserteq(S->infeasible_rows.id, 0); /* every id still names a row */
+
+    am_updatevars(S);
+    assertnear(v[0] - v[4], -5, 1e-3); /* the old solution is intact */
+
+    c = am_newconstraint(S, AM_REQUIRED); /* the solver still works */
+    am_addterm(c, x[1], 1);
+    am_addconstant(c, -7);
+    am_setrelation(c, AM_EQUAL);
+    asserteq(am_add(c), AM_OK);
+    am_updatevars(S);
+    assertnear(v[1], 7, 1e-4);
+
+    am_delsolver(S);
+}
+
 #include "api_test.gen.inc"

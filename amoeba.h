@@ -744,6 +744,7 @@ static int amA_addartificial(am_Solver *S, am_Row *r, am_Constraint *c) {
     amA_putrow(S, a, r), amA_optimize(S, &tmp);
     ret = amN_nearzero(tmp.constant) ? AM_OK : AM_UNBOUND;
     amR_free(S, &tmp);
+    if (ret != AM_OK) am_remove(c); /* still a's row, nothing queued yet */
     if (amA_takerow(S, a, &tmp) == AM_OK) {
         am_Symbol enter = amS_null();
         if (tmp.terms.count == 0) return amR_free(S, &tmp), ret;
@@ -763,7 +764,6 @@ static int amA_addartificial(am_Solver *S, am_Row *r, am_Constraint *c) {
     }
     term = (am_Num *)amH_get(&S->objective.terms, a.id);
     if (term) amH_del(&S->objective.terms, term);
-    if (ret != AM_OK) am_remove(c);
     return ret;
 }
 
