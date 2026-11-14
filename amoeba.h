@@ -1502,7 +1502,7 @@ AM_API am_Id am_vars(const am_Solver *S, am_Id var) {
 
 AM_API int am_addedit(am_Solver *S, am_Id var, am_Num strength) {
     am_Suggest **s;
-    if (S == NULL || var == 0) return AM_PARAM;
+    if (S == NULL || var == 0 || amN_negative(strength)) return AM_PARAM;
     if (strength >= AM_STRONG) strength = AM_STRONG;
     s = (am_Suggest **)amH_get(&S->suggests, var);
     if (s) return assert(*s), am_setstrength(&(*s)->constraint, strength);
@@ -1574,7 +1574,7 @@ AM_API void am_delconstraint(am_Constraint *c) {
 
 AM_API am_Constraint *am_cloneconstraint(am_Constraint *o, am_Num strength) {
     am_Constraint *c;
-    if (o == NULL) return NULL;
+    if (o == NULL || amN_negative(strength)) return NULL;
     if (amN_nearzero(strength)) strength = o->strength;
     if ((c = am_newconstraint(o->S, strength)) == NULL) return NULL;
     return am_merge(c, o, 1.0f), (c->relation = o->relation), c;
@@ -1614,7 +1614,7 @@ AM_API int am_addconstant(am_Constraint *c, am_Num constant) {
 AM_API int am_setstrength(am_Constraint *c, am_Num strength) {
     am_Solver *S;
     am_Num     old, diff;
-    if (c == NULL) return AM_PARAM;
+    if (c == NULL || amN_negative(strength)) return AM_PARAM;
     strength = amN_nearzero(strength) ? AM_REQUIRED : strength;
     if (c->strength == strength) return AM_OK;
     if (!am_hasconstraint(c)) return (c->strength = strength), AM_OK;

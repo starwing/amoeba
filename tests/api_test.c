@@ -105,6 +105,47 @@ TEST(setstrength_tighten_failure_restores) {
     am_delsolver(S);
 }
 
+/* A negative strength would give an error symbol a negative weight, i.e. a
+ * direction that lowers the objective for ever.  Every entry point that takes
+ * a strength must reject it up front: the pointer-returning constructors
+ * return NULL, the int-returning ones return AM_PARAM, and an existing
+ * constraint/edit keeps its old weight.
+ *
+ * Regression: am_setstrength() and am_addedit() accepted it and rewrote the
+ * objective coefficients, so a later amA_optimize() could see an unbounded
+ * objective. */
+TEST(negative_strength_is_rejected) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         x = 0;
+    am_Id          vx = am_newvariable(S, &x);
+    am_Constraint *soft = am_newconstraint(S, AM_STRONG);
+    am_Constraint *idle = am_newconstraint(S, AM_WEAK);
+
+    assertok(am_newconstraint(S, -1.f) == NULL);
+    assertok(am_cloneconstraint(soft, -1.f) == NULL);
+
+    am_addterm(soft, vx, 1.f), am_setrelation(soft, AM_EQUAL);
+    am_addconstant(soft, 5.f);
+    asserteq(am_add(soft), AM_OK);
+
+    asserteq(am_setstrength(soft, -1.f), AM_PARAM);
+    assertnear(soft->strength, AM_STRONG, 1e-3);
+    assertok(am_hasconstraint(soft));
+
+    asserteq(am_setstrength(idle, -1.f), AM_PARAM);
+    assertnear(idle->strength, AM_WEAK, 1e-3);
+    assertok(!am_hasconstraint(idle));
+
+    asserteq(am_addedit(S, vx, -1.f), AM_PARAM);
+    assertok(!am_hasedit(S, vx)); /* nothing was created */
+    asserteq(am_addedit(S, vx, AM_MEDIUM), AM_OK);
+    asserteq(am_addedit(S, vx, -1.f), AM_PARAM); /* the edit keeps its weight */
+
+    am_updatevars(S);
+    assertnear(x, 5, 1e-4); /* the installed constraint still decides */
+    am_delsolver(S);
+}
+
 /* A soft inequality carries its violation in the error symbol only; the
  * marker of an inequality is a slack, never part of the objective.  Lowering
  * the strength of an added one must therefore only reweight that error.
