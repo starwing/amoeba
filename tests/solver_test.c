@@ -862,4 +862,70 @@ TEST(cycling) {
     am_delsolver(S);
 }
 
+/* am_suggest() repairs a negative row with the dual simplex: it walks the
+ * infeasible-row list and takes each next entry from the link.  A link that
+ * stored AM_DUMMY as its "on the list" sentinel lost the next symbol's type,
+ * so from the second entry on a slack/error symbol entered the tableau as a
+ * dummy; a dummy is never pivotable, so the dual then found no entering
+ * column.
+ *
+ * Regression: this all-AM_OK sequence aborted on assert(enter.id != 0) in
+ * debug builds and never returned (clang) or crashed (gcc) in release. */
+TEST(dual_optimize_keeps_symbol_types) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         v0 = 0, v1 = 0, v2 = 0, v3 = 0;
+    am_Id          x0 = am_newvariable(S, &v0), x1 = am_newvariable(S, &v1);
+    am_Id          x2 = am_newvariable(S, &v2), x3 = am_newvariable(S, &v3);
+    am_Constraint *c;
+
+    c = am_newconstraint(S, AM_REQUIRED); /* -2*x2 - 2*x1 <= 60 */
+    am_addterm(c, x2, -2.f);
+    am_addterm(c, x1, -2.f);
+    am_addconstant(c, 60.f);
+    am_setrelation(c, AM_LESSEQUAL);
+    asserteq(am_add(c), AM_OK);
+
+    c = am_newconstraint(S, AM_REQUIRED); /* -x1 >= -100 */
+    am_addterm(c, x1, -1.f);
+    am_addconstant(c, 100.f);
+    am_setrelation(c, AM_GREATEREQUAL);
+    asserteq(am_add(c), AM_OK);
+
+    am_suggest(S, x3, 0);
+
+    c = am_newconstraint(S, AM_MEDIUM); /* -2*x0 + 2*x2 >= -100 */
+    am_addterm(c, x0, -2.f);
+    am_addterm(c, x2, 2.f);
+    am_addconstant(c, 100.f);
+    am_setrelation(c, AM_GREATEREQUAL);
+    asserteq(am_add(c), AM_OK);
+    am_suggest(S, x0, 10);
+
+    c = am_newconstraint(S, AM_WEAK); /* 2*x1 == -100 */
+    am_addterm(c, x1, 2.f);
+    am_addconstant(c, 100.f);
+    am_setrelation(c, AM_EQUAL);
+    asserteq(am_add(c), AM_OK);
+
+    c = am_newconstraint(S, AM_REQUIRED); /* -2*x3 - 2*x2 >= 40 */
+    am_addterm(c, x3, -2.f);
+    am_addterm(c, x2, -2.f);
+    am_addconstant(c, -40.f);
+    am_setrelation(c, AM_GREATEREQUAL);
+    asserteq(am_add(c), AM_OK);
+
+    am_suggest(S, x1, 100);
+    am_suggest(S, x3, 90); /* the dual walks two entries here */
+    am_updatevars(S);
+
+    asserteq(S->infeasible_rows.id, 0);
+    assertok(-2 * v1 - 2 * v2 <= -60 + 1e-3);
+    assertok(v1 <= 100 + 1e-3);
+    assertok(-2 * v3 - 2 * v2 >= 40 - 1e-3);
+    assertnear(v1, 100, 1e-3); /* the weak equality gives way */
+    /* x2/x3 are not pinned: the LP has multiple optima along x2 + x3 == 20 */
+
+    am_delsolver(S);
+}
+
 #include "solver_test.gen.inc"

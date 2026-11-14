@@ -250,7 +250,7 @@ typedef struct am_Iterator {
 } am_Iterator;
 
 typedef struct am_Row {
-    am_Symbol infeasible_next; /* link in the infeasible row list */
+    am_Symbol infeasible_next; /* next queued symbol, {0,AM_DUMMY} ends it */
     am_Num    constant;        /* constant term */
     am_Table  terms;           /* symbol -> coefficient */
 } am_Row;
@@ -622,10 +622,10 @@ static void amA_markdirty(am_Solver *S, am_Symbol var) {
 }
 
 static int amA_infeasible(am_Solver *S, am_Symbol sym, am_Row *r) {
-    if (amV_isdummy(r->infeasible_next)) return 1;
+    if (!amV_isexternal(r->infeasible_next)) return 1; /* already queued */
     if (!amN_negative(r->constant)) return 0;
-    r->infeasible_next.id = S->infeasible_rows.id;
-    r->infeasible_next.type = AM_DUMMY;
+    r->infeasible_next = S->infeasible_rows;
+    if (r->infeasible_next.id == 0) r->infeasible_next.type = AM_DUMMY;
     return (S->infeasible_rows = sym), 1;
 }
 
@@ -650,7 +650,19 @@ static int amA_putrow(am_Solver *S, am_Symbol sym, const am_Row *src) {
     return (r->constant = src->constant, r->terms = src->terms), AM_OK;
 }
 
+static void amA_flushinfeasible(am_Solver *S) {
+    am_Symbol next, cur = S->infeasible_rows;
+    for (; cur.id != 0; cur = next) {
+        am_Row *r = amR_get(S, cur.id);
+        assert(r != NULL && !amN_negative(r->constant)); /* must be stale */
+        next = r ? r->infeasible_next : amS_null();
+        if (r) r->infeasible_next = amS_null(); /* unmark for a later push */
+    }
+    S->infeasible_rows = amS_null();
+}
+
 static void amA_optimize(am_Solver *S, am_Row *obj) {
+    amA_flushinfeasible(S);
     for (;;) {
         am_Symbol   enter = amS_null(), leave = amS_null();
         am_Num      ratio, min = AM_NUM_MAX, *term;
@@ -1411,7 +1423,7 @@ AM_API void am_resetsolver(am_Solver *S) {
     it = amH_iter(&S->rows);
     while (amH_next(&it)) amR_free(S, amH_val(am_Row, it));
     amH_reset(&S->rows), amR_reset(&S->objective);
-    amM_freearena(S, &S->arena), assert(S->infeasible_rows.id == 0), S->age = 0;
+    amM_freearena(S, &S->arena), S->infeasible_rows = amS_null(), S->age = 0;
 }
 
 AM_API void am_delsolver(am_Solver *S) {

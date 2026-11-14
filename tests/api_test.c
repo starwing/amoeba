@@ -1371,4 +1371,174 @@ TEST(symbol_fits_one_unsigned) {
     asserteq(sizeof(am_Symbol), sizeof(unsigned));
 }
 
+/* A required equality that conflicts with a required inequality must fail
+ * cleanly even when a soft constraint is present: the failed add leaves the
+ * tableau as it was, so the solver stays usable and the old solution is
+ * intact.
+ *
+ * Regression: the failed add left a stale entry on the infeasible-row list.
+ * The next primal optimize asserted that the list is empty (debug), and in
+ * release the entry outlived every later operation. */
+TEST(add_unsat_with_soft_keeps_solver_usable) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         x = 0;
+    am_Id          vx = am_newvariable(S, &x);
+    am_Constraint *soft, *ge, *eq;
+
+    soft = am_newconstraint(S, AM_STRONG); /* x == 11, soft */
+    am_addterm(soft, vx, 1.f);
+    am_addconstant(soft, -11.f);
+    am_setrelation(soft, AM_EQUAL);
+    asserteq(am_add(soft), AM_OK);
+
+    ge = am_newconstraint(S, AM_REQUIRED); /* x >= 14.25 */
+    am_addterm(ge, vx, 1.f);
+    am_addconstant(ge, -14.25f);
+    am_setrelation(ge, AM_GREATEREQUAL);
+    asserteq(am_add(ge), AM_OK);
+    am_updatevars(S);
+    assertnear(x, 14.25, 1e-4);
+
+    eq = am_newconstraint(S, AM_REQUIRED); /* x == -58 conflicts */
+    am_addterm(eq, vx, 1.f);
+    am_addconstant(eq, 58.f);
+    am_setrelation(eq, AM_EQUAL);
+    asserteq(am_add(eq), AM_UNBOUND);
+    assertok(!am_hasconstraint(eq));
+    asserteq(S->infeasible_rows.id, 0); /* no work left behind */
+    am_updatevars(S);
+    assertnear(x, 14.25, 1e-4); /* the old solution is untouched */
+
+    eq = am_newconstraint(S, AM_REQUIRED); /* the solver still works */
+    am_addterm(eq, vx, 1.f);
+    am_addconstant(eq, -30.f);
+    am_setrelation(eq, AM_EQUAL);
+    asserteq(am_add(eq), AM_OK);
+    am_updatevars(S);
+    assertnear(x, 30, 1e-4);
+    asserteq(S->infeasible_rows.id, 0);
+
+    am_delsolver(S);
+}
+
+/* The same failed add followed by am_resetsolver(): the reset frees every row,
+ * so it must drop the infeasible-row list with them.
+ *
+ * Regression: the reset only asserted that the list was empty.  In release the
+ * stale id survived it and the next suggest() ran the dual simplex over a row
+ * that had been freed and reused (hang or crash). */
+TEST(reset_after_unsat_add_leaves_a_clean_solver) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         x = 0;
+    am_Id          vx = am_newvariable(S, &x);
+    am_Constraint *soft, *ge, *eq;
+
+    soft = am_newconstraint(S, AM_STRONG); /* x == 11, soft */
+    am_addterm(soft, vx, 1.f);
+    am_addconstant(soft, -11.f);
+    am_setrelation(soft, AM_EQUAL);
+    asserteq(am_add(soft), AM_OK);
+
+    ge = am_newconstraint(S, AM_REQUIRED); /* x >= 14.25 */
+    am_addterm(ge, vx, 1.f);
+    am_addconstant(ge, -14.25f);
+    am_setrelation(ge, AM_GREATEREQUAL);
+    asserteq(am_add(ge), AM_OK);
+
+    eq = am_newconstraint(S, AM_REQUIRED); /* x == -58 conflicts */
+    am_addterm(eq, vx, 1.f);
+    am_addconstant(eq, 58.f);
+    am_setrelation(eq, AM_EQUAL);
+    asserteq(am_add(eq), AM_UNBOUND);
+
+    am_resetsolver(S);
+    asserteq(S->infeasible_rows.id, 0); /* the list goes with the rows */
+
+    soft = am_newconstraint(S, AM_STRONG); /* the solver still works */
+    am_addterm(soft, vx, 1.f);
+    am_addconstant(soft, -10.f);
+    am_setrelation(soft, AM_EQUAL);
+    asserteq(am_add(soft), AM_OK);
+    asserteq(am_addedit(S, vx, AM_WEAK), AM_OK);
+    am_suggest(S, vx, 100);
+    am_updatevars(S);
+    assertnear(x, 10, 1e-4); /* the strong x == 10 still wins */
+    asserteq(S->infeasible_rows.id, 0);
+
+    am_delsolver(S);
+}
+
+/* A row that leaves the infeasible work list must be queueable again.
+ *
+ * Regression: amA_flushinfeasible() emptied S->infeasible_rows but left each
+ * visited row's infeasible_next pointing at its old neighbour.  That link is
+ * also the "already queued" mark (amA_infeasible), so a flushed row could
+ * never be queued again: the next negative constant was dropped silently and
+ * the dual simplex skipped the repair.  Here the edit's error row is flushed
+ * by the unsatisfiable add, then turns negative on the last suggest. */
+TEST(flushed_row_can_be_queued_again) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         v[6] = {0, 0, 0, 0, 0, 0};
+    am_Id          x[6];
+    am_Constraint *c;
+    int            i;
+
+    for (i = 0; i < 6; ++i) x[i] = am_newvariable(S, &v[i]);
+    am_suggest(S, x[4], -38);
+    am_resetsolver(S);
+    am_suggest(S, x[2], -39);
+
+    c = am_newconstraint(S, AM_WEAK); /* -x0 + 17 <= 0 */
+    am_addterm(c, x[0], -1);
+    am_addconstant(c, 17);
+    am_setrelation(c, AM_LESSEQUAL);
+    asserteq(am_add(c), AM_OK);
+
+    c = am_newconstraint(S, AM_STRONG); /* 2*x3 - 12 >= 0 */
+    am_addterm(c, x[3], 2);
+    am_addconstant(c, -12);
+    am_setrelation(c, AM_GREATEREQUAL);
+    asserteq(am_add(c), AM_OK);
+
+    c = am_newconstraint(S, AM_MEDIUM); /* -2*x1 + 17 >= 0 */
+    am_addterm(c, x[1], -2);
+    am_addconstant(c, 17);
+    am_setrelation(c, AM_GREATEREQUAL);
+    asserteq(am_add(c), AM_OK);
+
+    c = am_newconstraint(S, AM_REQUIRED); /* x3 - 19 >= 0 */
+    am_addterm(c, x[3], 1);
+    am_addconstant(c, -19);
+    am_setrelation(c, AM_GREATEREQUAL);
+    asserteq(am_add(c), AM_OK);
+
+    c = am_newconstraint(S, AM_REQUIRED); /* -x1 - 5 >= 0 */
+    am_addterm(c, x[1], -1);
+    am_addconstant(c, -5);
+    am_setrelation(c, AM_GREATEREQUAL);
+    asserteq(am_add(c), AM_OK);
+
+    c = am_newconstraint(S, AM_STRONG); /* x5 + 2 <= 0 */
+    am_addterm(c, x[5], 1);
+    am_addconstant(c, 2);
+    am_setrelation(c, AM_LESSEQUAL);
+    asserteq(am_add(c), AM_OK);
+
+    asserteq(am_addedit(S, x[3], AM_MEDIUM), AM_OK);
+
+    c = am_newconstraint(S, AM_REQUIRED); /* x3 == 4: unsatisfiable */
+    am_addterm(c, x[3], 1);
+    am_addconstant(c, -4);
+    am_setrelation(c, AM_EQUAL);
+    asserteq(am_add(c), AM_UNBOUND);
+    asserteq(S->infeasible_rows.id, 0); /* the failed add flushed the queue */
+
+    am_suggest(S, x[3], 30);
+    am_updatevars(S);
+    assertnear(v[3], 30, 1e-4); /* the edit's error row was repaired */
+    asserteq(S->infeasible_rows.id, 0);
+
+    am_delsolver(S);
+}
+
 #include "api_test.gen.inc"
