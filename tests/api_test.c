@@ -1337,8 +1337,11 @@ TEST(load_accepts_zero_marker) {
     stream_init(&sl, stream, len);
     assertok((S = load_stream(&sl, 0)) != NULL);
     assertok(sl.cons != NULL);
-    asserteq(sl.cons->marker_id, 0); /* 0 = absent, not offset + 0 */
-    asserteq(sl.cons->other_id, 0);
+    /* 0 = absent: the constraint keeps its own name, not offset + 0 */
+    asserteq(sl.cons->marker.u.id, sl.cons->sym.u.id);
+    asserteq(sl.cons->marker.u.type, AM_EXTERNAL);
+    asserteq(sl.cons->other.u.id, sl.cons->sym.u.id);
+    asserteq(sl.cons->other.u.type, AM_EXTERNAL);
     asserteq(am_add(sl.cons), AM_OK);
     am_delsolver(S);
 }
@@ -1376,7 +1379,8 @@ TEST(dump_reports_symbol_outside_the_map) {
     stream_init(&sl, stream, len);
     assertok((S = load_stream(&sl, 0)) != NULL);
     assertok(sl.cons != NULL);
-    asserteq(sl.cons->marker_id, 0);
+    asserteq(sl.cons->marker.u.id, sl.cons->sym.u.id);
+    asserteq(sl.cons->marker.u.type, AM_EXTERNAL);
 
     memset(&db, 0, sizeof(db));
     db.base.var_name = dump_buf_varname;
@@ -1669,6 +1673,98 @@ TEST(failed_add_does_not_strand_a_queued_row) {
     am_updatevars(S);
     assertnear(v[1], 7, 1e-4);
 
+    am_delsolver(S);
+}
+
+TEST(edit_marker_is_named_by_its_variable) {
+    am_Solver *S = am_test_new_solver();
+    am_Num     v = 0;
+    am_Id      x;
+
+    assertok(S != NULL);
+    x = am_newvariable(S, &v);
+    asserteq(S->current, x);
+    assertok(am_addedit(S, x, AM_MEDIUM) == AM_OK);
+    assertok(am_hasedit(S, x));
+    /* the edit is the variable's role: only its second ERROR column is named */
+    asserteq(S->current, x + 1);
+    am_suggest(S, x, 3);
+    asserteq(S->current, x + 1); /* dragging takes no name */
+    am_delsolver(S);
+}
+
+TEST(constraint_marker_is_named_by_the_constraint) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         v = 0;
+    am_Id          x, cid;
+    am_Constraint *c;
+
+    assertok(S != NULL);
+    x = am_newvariable(S, &v);
+    c = am_newconstraint(S, AM_MEDIUM); /* soft inequality */
+    am_addterm(c, x, 1.0);
+    am_setrelation(c, AM_LESSEQUAL);
+    cid = c->sym.u.id;
+    assertok(cid != x && cid == x + 1); /* one source, one name per owner */
+    assertok(am_add(c) == AM_OK);
+    asserteq(c->marker.u.id, cid);
+    asserteq(c->marker.u.type, AM_SLACK);
+    asserteq(c->other.u.id, cid); /* same name, ERROR type: another column */
+    asserteq(c->other.u.type, AM_ERROR);
+    asserteq(S->current, cid); /* the inequality took no second name */
+
+    am_remove(c);
+    am_resetconstraint(c);
+    am_addterm(c, x, 1.0);
+    am_setrelation(c, AM_EQUAL);
+    assertok(am_add(c) == AM_OK);
+    asserteq(c->marker.u.id, cid);
+    asserteq(c->marker.u.type, AM_ERROR);
+    assertok(c->other.u.id != cid && c->other.u.id > cid);
+    asserteq(c->other.u.type, AM_ERROR);
+    am_delsolver(S);
+}
+
+TEST(artificial_variable_uses_the_reserved_id) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         v = 0;
+    am_Size        before;
+    am_Constraint *c;
+
+    assertok(S != NULL);
+    c = am_newconstraint(S, AM_REQUIRED);
+    am_addconstant(c, 5.0); /* 5 <= 0: no pivotable subject, needs artificial */
+    am_setrelation(c, AM_LESSEQUAL);
+    before = S->current;
+    asserteq(am_add(c), AM_UNBOUND);
+    asserteq(S->current, before); /* AM_ID_MAX is reserved: no name taken */
+    asserteq(S->infeasible_rows.u.id, 0);
+    asserteq(am_newvariable(S, &v), before + 1); /* and no id is skipped */
+    am_delsolver(S);
+}
+
+TEST(cached_suggest_is_dropped_after_another_edit_pivots) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         v0 = 0, v1 = 0;
+    am_Id          x0, x1;
+    am_Constraint *c;
+
+    assertok(S != NULL);
+    am_autoupdate(S, 1);
+    x0 = am_newvariable(S, &v0);
+    x1 = am_newvariable(S, &v1);
+    am_suggest(S, x0, -6);
+    c = am_newconstraint(S, AM_STRONG);
+    am_addterm(c, x1, -2);
+    am_addterm(c, x0, 1);
+    am_setrelation(c, AM_LESSEQUAL);
+    assertok(am_add(c) == AM_OK);
+    am_addedit(S, x1, AM_MEDIUM);
+    am_suggest(S, x0, -1);
+    am_suggest(S, x1, 48);
+    am_suggest(S, x0, -15);
+    assertok(v0 == -15.f && v1 == 48.f);
+    assertok(S->infeasible_rows.u.id == 0);
     am_delsolver(S);
 }
 

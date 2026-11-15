@@ -22,7 +22,7 @@
 
 #include "amoeba_test.h"
 
-#define TEST_BUFSIZE 16384
+#define TEST_BUFSIZE 32768
 
 typedef struct MyDumper {
     am_Dumper base;
@@ -1064,6 +1064,59 @@ TEST(load_failure_releases_the_solver) {
     assertok(am_load(am_test_allocf, NULL, &sl.base, 0) == NULL);
     asserteq(sl.calls, 1); /* it ran, then the stream ran out */
     asserteq(allmem, 0);   /* the half-built solver was released */
+}
+
+TEST(names_start_above_the_stream_after_load) {
+    am_Num         v[3] = {0, 0, 0};
+    am_Solver     *S, *S2;
+    am_Id          id[3];
+    am_Constraint *c;
+    am_Size        name;
+    char           buf[TEST_BUFSIZE];
+    size_t         len = 0;
+    MyDumper       md;
+    MyLoader       ml;
+    int            i;
+
+    S = am_test_new_solver();
+    assertok(S != NULL);
+    for (i = 0; i < 3; ++i) id[i] = am_newvariable(S, &v[i]);
+    c = am_newconstraint(S, AM_MEDIUM); /* soft equality: two error columns */
+    assertok(am_addterm(c, id[0], 2) == AM_OK);
+    assertok(am_addterm(c, id[1], 1) == AM_OK);
+    assertok(am_addconstant(c, 5) == AM_OK);
+    assertok(am_setrelation(c, AM_EQUAL) == AM_OK);
+    assertok(am_add(c) == AM_OK);
+
+    memset(&md, 0, sizeof(md));
+    md.base.var_name = dump_varname;
+    md.base.cons_name = dump_consname;
+    md.base.writer = dump_writer;
+    md.p = buf, md.len = &len;
+    assertok(am_dump(S, &md.base) == AM_OK && len > 0);
+
+    memset(&ml, 0, sizeof(ml));
+    ml.base.load_var = load_var;
+    ml.base.load_cons = load_cons;
+    ml.base.reader = load_reader;
+    ml.p = buf, ml.len = len;
+    assertok((S2 = am_load(am_test_allocf, NULL, &ml.base, 0)) != NULL);
+
+    /* every id the stream assigned is below the next name the solver issues */
+    assertok(ml.cons[0] != NULL);
+    for (i = 0; i < 3; ++i) assertok(ml.ids[i] < S2->current);
+    assertok(ml.cons[0]->marker.u.id < S2->current);
+    assertok(ml.cons[0]->other.u.id < S2->current);
+    asserteq(ml.cons[0]->marker.u.type, AM_ERROR);
+    asserteq(ml.cons[0]->other.u.type, AM_ERROR);
+
+    /* an edit on a loaded variable keeps its marker id and names one column */
+    name = S2->current;
+    assertok(am_addedit(S2, ml.ids[1], AM_MEDIUM) == AM_OK);
+    asserteq(S2->current, name + 1);
+
+    am_delsolver(S2);
+    am_delsolver(S);
 }
 
 #include "dump_test.gen.inc"

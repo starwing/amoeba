@@ -14,6 +14,7 @@
 - **P1（恢复与健壮性）**：A3、A5、B1、B2、B4、B5、B7。
 - **P2（能力与质量）**：C3–C6。
 - **P3（清理）**：A4。
+- **两步实施（2026-11-15 拍板）**：E2（dump/load 去 id）。
 - **提案（未批准）**：D 节的可视化 Demo。
 
 ## 1. 核心待做表（正确性与 load）
@@ -291,7 +292,20 @@ M0-M1 建议先在 Lua 原型里验证（一天内就能看到拖动重算），
 3. **交付形态**：先出 native 桌面 demo，还是一开始就 `emscripten` 出 web/wasm？
    （建议：native 优先，wasm 是 M4 的打包问题，不影响架构。）
 
-## 7. 相关
+## 7. dump/load 不再写符号 id（两步实施的第二步，2026-11-15 用户拍板）
+
+> 两步各自单独审批、单独提交；第一步（一个名字来源的 id 分配 + 对偶 pivot 的精确失效）已提交，
+> 见 [notes/changes.md](notes/changes.md)。计划与取舍见
+> [notes/bug-unsat-rollback.md](notes/bug-unsat-rollback.md) §2.9。
+
+- 内容：顶层从 5 元改为 4 元 `[vars, constraints, rows, objective]`，删掉 `total` 和符号表；
+  变量按流顺序递增领 id、约束按流顺序各领 1 个（soft 等式再领后一个），因此流里不再写任何
+  id；行里的符号引用改成「变量下标 / 约束下标 + marker-or-other」。
+- 依赖：第一步的 id 规划（已提交）。
+- 验收：同一套矩阵全绿；真 dump 往返后 `am_Id` 布局符合规划；手搓流测试按新格式改写。
+- 与 A3 / A5 的关系：E2 会再改一次顶层结构，A3/A5 的流 bump 应与 E2 合并成一次。
+
+## 8. 相关
 
 - 已提交 / 已否决 / 已决定不做：见 [notes/changes.md](notes/changes.md)。
 - 当前状态：`git status` / `git log`；本文件不记录状态。

@@ -350,7 +350,11 @@ local dx = D:var "dx"
 local dc = D:constraint():add(dx):add(10):relation "ge"
 D:add(dc)
 errors("delete a used variable", function() return dx:delete() end)
+check(tostring(dc):find("(added:", 1, true) ~= nil,
+      "an added constraint shows its marker")
 D:remove(dc)
+check(tostring(dc):find("(added:", 1, true) == nil,
+      "a removed constraint must not claim to be added")
 dc:delete()
 dx:delete()
 errors("deleted variable value", function() return dx:value() end)

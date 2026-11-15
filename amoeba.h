@@ -165,7 +165,7 @@ AM_NS_END
 #include <stdlib.h>
 #include <string.h>
 
-#define AM_ID_MAX (~0u >> 2) /* largest valid symbol id */
+#define AM_ID_MAX (~0u >> 2) /* largest id value, reserved for artificials */
 
 #define AM_EXTERNAL (0)
 #define AM_SLACK    (1)
@@ -270,10 +270,8 @@ struct am_Constraint {
     void      *ud;         /* caller data, never touched by the library */
     am_Row     expression; /* terms and constant as configured */
     am_Symbol  sym;        /* AM_EXTERNAL for pool cons, AM_DUMMY for suggest */
-    am_Symbol  marker;     /* slack/error symbol, id 0 = not in solver */
-    am_Symbol  other;      /* second error symbol, id 0 = none */
-    unsigned   marker_id;  /* symbol id reserved for marker */
-    unsigned   other_id : AM_UNSIGNED_BITS - 2; /* id reserved for other */
+    am_Symbol  marker;     /* slack/error symbol, AM_EXTERNAL = not in solver */
+    am_Symbol  other;      /* second error symbol, AM_EXTERNAL = none */
     unsigned   relation : 2; /* AM_LESSEQUAL, AM_EQUAL or AM_GREATEREQUAL */
     am_Num     strength;     /* AM_REQUIRED or a soft strength */
     am_Solver *S;            /* owning solver */
@@ -297,8 +295,7 @@ struct am_Solver {
     am_Arena   arena;           /* storage for loaded row tables */
     am_Size    auto_update;     /* 1 = update bound values after each change */
     am_Size    age;             /* tableau generation, bumps on every change */
-    am_Size    current;         /* last symbol id handed out */
-    am_Size    current_cons;    /* last constraint symbol id handed out */
+    am_Size    current;         /* last name handed out (one per owner) */
     am_Symbol  infeasible_rows; /* rows with a negative constant */
     am_Symbol  dirty_vars;      /* vars whose value changed, to be written */
     am_MemPool conspool;        /* pool of am_Constraint */
@@ -376,19 +373,14 @@ static int amN_approx(am_Num a, am_Num b)
 static am_Symbol amS_var(am_Id id)
 { am_Symbol sym = {0}; if (id <= AM_ID_MAX) sym.u.id = id; return sym; }
 
+static unsigned amS_new(am_Solver *S)
+{ unsigned  id = ++S->current; if (id >= AM_ID_MAX) abort(); return id; }
+
 static am_Symbol amS_null(void) { am_Symbol null = {0}; return null; }
 /* clang-format on */
 
 static int amN_nearzero(am_Num a) { return amN_approx(a, 0.f); }
 static int amN_negative(am_Num a) { return !amN_nearzero(a) && a < 0.f; }
-
-static am_Symbol amS_new(am_Solver *S, int type) {
-    am_Symbol sym;
-    unsigned  id = ++S->current;
-    if (id > AM_ID_MAX) abort(); /* id runs out */
-    assert(type >= AM_EXTERNAL && type <= AM_DUMMY);
-    return (sym.u.id = id, sym.u.type = type), sym;
-}
 
 /* hash table */
 
@@ -556,7 +548,8 @@ static int amC_init(am_Solver *S, am_Symbol sym, am_Constraint *c) {
     am_Constraint **ce = (am_Constraint **)amH_set(S, &S->constraints, sym);
     amC(ce != NULL);
     *ce = c, memset(c, 0, sizeof(*c)), c->S = S;
-    return (c->sym = sym), amR_init(&(*ce)->expression), AM_OK;
+    c->sym = sym, c->marker.u.id = c->other.u.id = sym.u.id; /* owner's name */
+    return amR_init(&(*ce)->expression), AM_OK;
 }
 
 static int amC_addterm(am_Constraint *c, am_Id var, am_Num value) {
@@ -582,7 +575,7 @@ static am_Suggest *amC_newedit(am_Solver *S, am_Id var, am_Num strength) {
                                    am_AllocSuggest);
     if (*s == NULL) return amH_del(&S->suggests, s), (am_Suggest *)NULL;
     memset(*s, 0, sizeof(**s));
-    sym.u.id = ++S->current_cons, sym.u.type = AM_DUMMY; /* local cons */
+    sym.u.id = var, sym.u.type = AM_DUMMY; /* the edit is the variable's role */
     (*s)->edit_value = (r = amR_get(S, amS_var(var))) ? r->constant : 0.f;
     if (!amV_isdummy(ve->next)) (*s)->edit_value = *ve->pvalue;
     amC_init(S, sym, &(*s)->constraint);
@@ -721,22 +714,17 @@ static am_Row amA_makerow(am_Solver *S, am_Constraint *c) {
         amA_mergerow(S, &r, it.key, *amH_val(am_Num, it));
     }
     if (c->relation != AM_EQUAL) {
-        c->marker.u.id = c->marker_id, c->marker.u.type = AM_SLACK;
-        amR_addvar(S, &r, c->marker, -1.0f);
+        c->marker.u.type = AM_SLACK, amR_addvar(S, &r, c->marker, -1.0f);
         if (c->strength < AM_REQUIRED) {
-            c->other.u.id = c->other_id, c->other.u.type = AM_ERROR;
-            amR_addvar(S, &r, c->other, 1.0f);
+            c->other.u.type = AM_ERROR, amR_addvar(S, &r, c->other, 1.0f);
             amR_addvar(S, &S->objective, c->other, c->strength);
         }
-    } else if (c->strength >= AM_REQUIRED) {
-        c->marker.u.id = c->marker_id, c->marker.u.type = AM_DUMMY;
-        amR_addvar(S, &r, c->marker, 1.0f);
-    } else {
-        c->marker.u.id = c->marker_id, c->marker.u.type = AM_ERROR;
-        c->other.u.id = c->other_id, c->other.u.type = AM_ERROR;
-        amR_addvar(S, &r, c->marker, -1.0f);
-        amR_addvar(S, &r, c->other, 1.0f);
+    } else if (c->strength >= AM_REQUIRED)
+        c->marker.u.type = AM_DUMMY, amR_addvar(S, &r, c->marker, 1.0f);
+    else {
+        c->marker.u.type = AM_ERROR, amR_addvar(S, &r, c->marker, -1.0f);
         amR_addvar(S, &S->objective, c->marker, c->strength);
+        c->other.u.type = AM_ERROR, amR_addvar(S, &r, c->other, 1.0f);
         amR_addvar(S, &S->objective, c->other, c->strength);
     }
     if (r.constant < 0.f) amR_mul(&r, -1.0f);
@@ -744,12 +732,12 @@ static am_Row amA_makerow(am_Solver *S, am_Constraint *c) {
 }
 
 static int amA_addartificial(am_Solver *S, am_Row *r, am_Constraint *c) {
-    am_Symbol   a = amS_new(S, AM_SLACK);
     am_Iterator it;
     am_Row      tmp;
     am_Num     *term;
     int         ret;
-    --S->current; /* artificial variable will be removed */
+    am_Symbol   a = {0};
+    a.u.id = AM_ID_MAX, a.u.type = AM_SLACK; /* reserved, not an owner's name */
     amR_init(&tmp), amR_addrow(S, &tmp, r, 1.0f);
     amA_putrow(S, a, r), amA_optimize(S, &tmp);
     ret = amN_nearzero(tmp.constant) ? AM_OK : AM_UNBOUND;
@@ -812,7 +800,7 @@ static void amA_removeerrors(am_Solver *S, am_Constraint *c) {
     if (amV_iserror(c->other))
         amA_mergerow(S, &S->objective, c->other, -c->strength);
     if (S->objective.terms.count == 0) S->objective.constant = 0.f;
-    c->marker = c->other = amS_null();
+    c->marker.u.type = c->other.u.type = AM_EXTERNAL;
 }
 
 static am_Symbol amA_leavingrow(am_Solver *S, am_Symbol marker) {
@@ -879,32 +867,39 @@ static int amA_editdelta(am_Solver *S, am_Suggest *s, am_Num delta) {
     return 1;
 }
 
-static void amA_dualoptimize(am_Solver *S) {
-    while (S->infeasible_rows.u.id != 0) {
-        am_Symbol   enter = amS_null(), leave;
-        am_Num      ratio, min_ratio = AM_NUM_MAX;
-        am_Row      tmp, *r = amR_get(S, S->infeasible_rows);
-        am_Iterator it;
-        assert(r != NULL);
-        leave = S->infeasible_rows;
-        S->infeasible_rows = r->infeasible_next;
-        r->infeasible_next = amS_null();
-        if (!amN_negative(r->constant)) continue;
-        it = amH_iter(&r->terms);
-        while (amH_next(&it)) {
-            am_Num  term = *amH_val(am_Num, it);
-            am_Num *objterm;
-            if (amV_isdummy(it.key) || term <= 0.f) continue;
-            objterm = (am_Num *)amH_get(&S->objective.terms, it.key);
-            ratio = objterm ? *objterm / term : 0.f;
-            if (min_ratio > ratio) min_ratio = ratio, enter = it.key;
-        }
-        assert(enter.u.id != 0);
-        amA_takerow(S, leave, &tmp);
-        amA_solvefor(S, &tmp, enter, leave);
-        amA_substitute(S, enter, &tmp);
-        amA_putrow(S, enter, &tmp);
+static void amA_invalidateedits(am_Solver *S, const am_Row *r) {
+    am_Iterator it = amH_iter(&r->terms);
+    while (amH_next(&it)) {
+        am_Suggest **se;
+        if (!amV_iserror(it.key)) continue;
+        se = (am_Suggest **)amH_get(&S->suggests, amS_var(it.key.u.id));
+        if (!se) continue;
+        assert((*se)->constraint.marker.u.id == it.key.u.id), (*se)->age = 0;
     }
+}
+
+static void amA_dualoptimize(am_Solver *S) {
+    am_Symbol   leave, enter = amS_null();
+    am_Num      ratio, min_ratio = AM_NUM_MAX;
+    am_Row      tmp, *r = amR_get(S, S->infeasible_rows);
+    am_Iterator it;
+    assert(r != NULL);
+    leave = S->infeasible_rows, S->infeasible_rows = r->infeasible_next;
+    r->infeasible_next = amS_null();
+    if (!amN_negative(r->constant)) return;
+    it = amH_iter(&r->terms);
+    while (amH_next(&it)) {
+        am_Num *objterm, term = *amH_val(am_Num, it);
+        if (amV_isdummy(it.key) || term <= 0.f) continue;
+        objterm = (am_Num *)amH_get(&S->objective.terms, it.key);
+        ratio = objterm ? *objterm / term : 0.f;
+        if (min_ratio > ratio) min_ratio = ratio, enter = it.key;
+    }
+    assert(enter.u.id != 0);
+    amA_takerow(S, leave, &tmp);
+    amA_solvefor(S, &tmp, enter, leave), amA_invalidateedits(S, &tmp);
+    amA_substitute(S, enter, &tmp);
+    amA_putrow(S, enter, &tmp);
 }
 
 /* dump */
@@ -1057,19 +1052,18 @@ static int amD_constraints(am_Dump *X) {
     am_Size          i;
     amE(amD_count(X, S->constraints.count));
     for (i = 0; i < S->constraints.count; ++i) {
-        am_Name         name = NULL;
-        am_Constraint **ce;
+        am_Name        name = NULL;
+        am_Constraint *c, **ce;
         ce = (am_Constraint **)amH_get(&S->constraints, X->cons[i]);
-        assert(ce != NULL);
+        assert(ce != NULL && *ce != NULL), c = *ce;
         amE(amD_count(X, 6)); /* [name, strength, marker, other, op, row] */
-        if (X->dumper->cons_name)
-            name = X->dumper->cons_name(X->dumper, i, (*ce));
+        if (X->dumper->cons_name) name = X->dumper->cons_name(X->dumper, i, c);
         amE(amD_string(X, name));
-        amE(amD_float(X, (*ce)->strength));
-        amE(amD_sym(X, (*ce)->marker));
-        amE(amD_sym(X, (*ce)->other));
-        amE(amD_uint32(X, (*ce)->relation));
-        amE(amD_row(X, &(*ce)->expression));
+        amE(amD_float(X, c->strength));
+        amE(amD_sym(X, amV_isexternal(c->marker) ? amS_null() : c->marker));
+        amE(amD_sym(X, amV_isexternal(c->other) ? amS_null() : c->other));
+        amE(amD_uint32(X, c->relation));
+        amE(amD_row(X, &c->expression));
     }
     return AM_OK;
 }
@@ -1295,13 +1289,13 @@ static int amL_var(am_Load *X, am_Size i) {
     return (*pvalue = 0.f), AM_OK;
 }
 
-static int amL_marker(am_Load *X, am_Symbol *sym, unsigned *id) {
+static int amL_marker(am_Load *X, am_Symbol *sym) {
     am_Size value;
     amE(amL_uint32(X, &value));
     amC(value == 0 || (value >> 2) < X->total); /* 0 = absent */
     sym->u.type = value & 3;
-    if (sym->u.type == 0) return (*id = 0, sym->u.id = 0), AM_OK;
-    return (*id = X->offset + (value >> 2), sym->u.id = *id), AM_OK;
+    if (sym->u.type == 0) return AM_OK; /* absent: keep the owner's name */
+    return (sym->u.id = X->offset + (value >> 2)), AM_OK;
 }
 
 static int amL_constraint(am_Load *X, am_Size i) {
@@ -1315,9 +1309,8 @@ static int amL_constraint(am_Load *X, am_Size i) {
     amE(amL_float(X, &strength));
     amC(c = am_newconstraint(X->S, strength));
     if (X->loader->load_cons) X->loader->load_cons(X->loader, X->s, i, c);
-    amE(amL_marker(X, &c->marker, &c->marker_id));
-    amE(amL_marker(X, &c->other, &value));
-    c->other_id = value;
+    amE(amL_marker(X, &c->marker));
+    amE(amL_marker(X, &c->other));
     amE(amL_uint32(X, &value));
     amC(value <= AM_GREATEREQUAL); /* 0 = never configured */
     c->relation = value;
@@ -1363,10 +1356,11 @@ static int amL_body(am_Load *X) {
     amC(count <= X->total);    /* ids are offset+i, keep them in total */
     for (i = 0; i < count; ++i) amE(amL_var(X, i));
     amE(amL_count(X, &count)); /* constraints */
+    amC(count <= AM_ID_MAX - 1 - X->S->current);
     for (i = 0; i < count; ++i) amE(amL_constraint(X, i));
     amE(amL_rows(X));
     amE(amL_row(X, &X->S->objective));
-    return X->S->current = X->offset + X->total, AM_OK;
+    return AM_OK;
 }
 
 /* APIs */
@@ -1379,7 +1373,7 @@ AM_API int am_hasedit(const am_Solver *S, am_Id var)
 { return S ? amH_get(&S->suggests, amS_var(var)) != NULL : 0; }
 
 AM_API int am_hasconstraint(const am_Constraint *c)
-{ return c != NULL && c->marker.u.id != 0; }
+{ return c != NULL && !amV_isexternal(c->marker); }
 
 AM_API am_Num am_constant(const am_Constraint *c)
 { return c ? c->expression.constant : 0; }
@@ -1433,8 +1427,10 @@ AM_API void am_resetsolver(am_Solver *S) {
     if (S == NULL) return;
     am_clearedits(S);
     it = amH_iter(&S->constraints);
-    while (amH_next(&it))
-        c = *amH_val(am_Constraint *, it), c->marker = c->other = amS_null();
+    while (amH_next(&it)) {
+        c = *amH_val(am_Constraint *, it);
+        c->marker.u.type = c->other.u.type = AM_EXTERNAL;
+    }
     it = amH_iter(&S->rows);
     while (amH_next(&it)) amR_free(S, amH_val(am_Row, it));
     amH_reset(&S->rows), amR_reset(&S->objective);
@@ -1486,10 +1482,10 @@ AM_API void am_updatevars(am_Solver *S) {
 }
 
 AM_API am_Id am_newvariable(am_Solver *S, am_Num *pvalue) {
-    am_Symbol sym;
+    am_Symbol sym = {0};
     am_Var   *ve;
     if (S == NULL || pvalue == NULL) return 0;
-    sym = amS_new(S, AM_EXTERNAL);
+    sym.u.id = amS_new(S);
     if ((ve = (am_Var *)amH_set(S, &S->vars, sym)) == NULL) return 0;
     memset(ve, 0, sizeof(*ve)), ve->pvalue = pvalue, ve->refcount = 1;
     return sym.u.id;
@@ -1541,7 +1537,8 @@ AM_API void am_suggest(am_Solver *S, am_Id var, am_Num value) {
     s = ps ? *ps : amC_newedit(S, var, AM_MEDIUM);
     if (s == NULL) return; /* unknown var: nothing to suggest */
     delta = value - s->edit_value, s->edit_value = value;
-    amA_editdelta(S, s, delta), amA_dualoptimize(S);
+    amA_editdelta(S, s, delta);
+    while (S->infeasible_rows.u.id != 0) amA_dualoptimize(S);
     if (S->auto_update) am_updatevars(S);
 }
 
@@ -1560,7 +1557,7 @@ AM_API am_Constraint *am_newconstraint(am_Solver *S, am_Num strength) {
     int            r;
     if (S == NULL || amN_negative(strength)) return NULL;
     if (!(c = (am_Constraint *)amS_getcons(S))) return NULL;
-    sym.u.id = ++S->current_cons, r = amC_init(S, sym, c);
+    sym.u.id = amS_new(S), r = amC_init(S, sym, c);
     c->strength = amN_nearzero(strength) ? AM_REQUIRED : strength;
     if (r != AM_OK) amS_putcons(S, c), c = NULL;
     return c;
@@ -1608,21 +1605,21 @@ AM_API am_Constraint *am_constraints(const am_Solver *S, am_Constraint *c) {
 
 AM_API int am_addterm(am_Constraint *c, am_Id var, am_Num f) {
     if (c == NULL || var == 0) return AM_PARAM;
-    amC(c->marker.u.id == 0);
+    amC(amV_isexternal(c->marker));
     return amC_addterm(c, var, c->relation == AM_GREATEREQUAL ? -f : f);
 }
 
 AM_API int am_setrelation(am_Constraint *c, int relation) {
     if (c == NULL) return AM_PARAM;
     if (relation < AM_LESSEQUAL || relation > AM_GREATEREQUAL) return AM_PARAM;
-    amC(c->marker.u.id == 0 && c->relation == 0);
+    amC(amV_isexternal(c->marker) && c->relation == 0);
     if (relation != AM_GREATEREQUAL) amR_mul(&c->expression, -1.0f);
     return (c->relation = relation), AM_OK;
 }
 
 AM_API int am_addconstant(am_Constraint *c, am_Num constant) {
     if (c == NULL) return AM_PARAM;
-    amC(c->marker.u.id == 0);
+    amC(amV_isexternal(c->marker));
     if (c->relation == AM_GREATEREQUAL) constant = -constant;
     return (c->expression.constant += constant), AM_OK;
 }
@@ -1651,7 +1648,7 @@ AM_API int am_setstrength(am_Constraint *c, am_Num strength) {
 AM_API int am_merge(am_Constraint *c, const am_Constraint *o, am_Num coef) {
     am_Iterator it;
     if (c == NULL || o == NULL || c->S != o->S) return AM_PARAM;
-    amC(c->marker.u.id == 0);
+    amC(amV_isexternal(c->marker));
     if (c->relation == AM_GREATEREQUAL) coef = -coef;
     c->expression.constant += o->expression.constant * coef;
     it = amH_iter(&o->expression.terms);
@@ -1663,13 +1660,12 @@ AM_API int am_merge(am_Constraint *c, const am_Constraint *o, am_Num coef) {
 AM_API int am_add(am_Constraint *c) {
     am_Solver *S = c ? c->S : NULL;
     int        ret;
-    am_Symbol  sym;
     am_Row     r;
     if (S == NULL) return AM_PARAM;
-    amC(c->marker.u.id == 0);
-    if (c->marker_id == 0) c->marker_id = ((sym = amS_new(S, 0)), sym.u.id);
-    if (c->other_id == 0 && c->strength < AM_REQUIRED)
-        c->other_id = ((sym = amS_new(S, 0)), sym.u.id);
+    amC(amV_isexternal(c->marker));
+    if (c->strength < AM_REQUIRED && c->relation == AM_EQUAL
+        && c->other.u.id == c->sym.u.id)
+        c->other.u.id = amS_new(S); /* a soft equality needs its own name */
     r = amA_makerow(S, c);
     if ((ret = amA_tryaddrow(S, &r, c)) != AM_OK)
         amA_removeerrors(S, c);
@@ -1685,7 +1681,7 @@ AM_API void am_remove(am_Constraint *c) {
     am_Solver *S;
     am_Symbol  marker;
     am_Row     tmp;
-    if (c == NULL || c->marker.u.id == 0) return;
+    if (c == NULL || amV_isexternal(c->marker)) return;
     S = c->S, marker = c->marker;
     amA_removeerrors(S, c);
     if (amA_takerow(S, marker, &tmp) != AM_OK) {
@@ -1716,7 +1712,7 @@ AM_API am_Num am_error(const am_Constraint *c) {
     am_Solver *S = c ? c->S : NULL;
     am_Row    *r;
     am_Num     err = 0;
-    if (c == NULL || c->marker.u.id == 0) return 0;
+    if (c == NULL || amV_isexternal(c->marker)) return 0;
     if (amV_iserror(c->marker) && (r = amR_get(S, c->marker)))
         err += r->constant;
     if (amV_iserror(c->other) && (r = amR_get(S, c->other))) err += r->constant;
@@ -1756,6 +1752,7 @@ AM_API am_Solver *am_load(am_Allocf *a, void *ud, am_Loader *l, size_t maxmem) {
     if (total > 0x3FFFFFFF - X.offset) return amL_fail(S);
     S->maxmem = (maxmem ? maxmem : AM_MAX_LOADMEM);
     X.total = total, X.arena_max = S->maxmem ? S->maxmem : (size_t)-1;
+    S->current = X.offset + X.total - 1; /* next name is above the stream */
     if (amL_body(&X) != AM_OK) return amL_fail(S);
     return (S->maxmem = 0), S;
 }

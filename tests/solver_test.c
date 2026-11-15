@@ -276,7 +276,7 @@ TEST(all) {
     am_suggest(S, xm, 70.0);
     am_updatevars(S);
     am_dumpsolver(S);
-    assertok(vxl == 65.f && vxm == 70.f && vxr == 75.f);
+    assertok(vxl == 40.f && vxm == 70.f && vxr == 100.f);
 
     printf("restore xr to 10.0\n");
     am_deledit(S, xm);

@@ -497,7 +497,7 @@ static int Lcons_tostring(lua_State *L) {
         luaL_addstring(&B, " <= 0.0]");
     else
         luaL_addstring(&B, " >= 0.0]");
-    if (cons->marker.u.id != 0) {
+    if (am_hasconstraint(cons)) {
         luaL_addstring(&B, "(added:");
         aml_dumpkey(&B, 2, cons->marker);
         luaL_addchar(&B, '-');
