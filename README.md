@@ -321,6 +321,10 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
 - `void am_resetsolver(am_Solver *solver);`
 
   Remove all constraints from solver, all variables and constraints created are keeped.
+  The tableau is dropped, so no variable has a row any more, but the value bindings
+  are **not** refreshed: `*pvalue` keeps whatever value it had before the reset.
+  The caller owns them from then on; `am_updatevars()` only consumes the dirty
+  list, it does not re-settle the whole tableau.
 
 - `void am_delsolver(am_Solver *solver);`
 
@@ -329,6 +333,11 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
 - `void am_updatevars(am_Solver *solver);`
 
   Refresh variables' value into it's constrainted value.
+  Only variables whose value may have changed since the last refresh are queued,
+  and only queued bindings are written.  `am_add()` and a successful
+  `am_setstrength()` queue everything their solve moved (see `am_add()` below);
+  `am_remove()` writes a leaving binding immediately, and `am_load()` settles
+  every binding itself.  `am_resetsolver()` queues nothing.
   You could use `am_autoupdate()` to update all variables automatically when solver changes.
   A `NULL` solver does nothing.
 
@@ -484,7 +493,10 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
 
 - `int am_add(am_Constraint *cons);`
 
-  Add constraint into the solver it's created from.
+  Add constraint into the solver it's created from.  A successful add publishes
+  the solution it computed: with auto update on the bindings are current when the
+  call returns, with it off the next `am_updatevars()` writes them.  A failed add
+  changes no binding.
 
 - `void am_remove(am_Constraint *cons);`
 

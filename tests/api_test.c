@@ -1768,4 +1768,141 @@ TEST(cached_suggest_is_dropped_after_another_edit_pivots) {
     am_delsolver(S);
 }
 
+/* ---------------------------------------------------------------------- */
+/* am_add() must publish the solution it computes.  The pivot subject is an
+ * external variable that becomes basic, so its value changes from 0 to the
+ * row constant; nothing marked that change dirty and the binding kept its old
+ * value until an unrelated operation moved the variable again (BUG A). */
+
+static void assert_bindings_are_current(const am_Solver *S) {
+    am_Iterator it = amH_iter(&S->vars);
+    while (amH_next(&it)) {
+        am_Var *ve = amH_val(am_Var, it);
+        am_Row *r = amR_get(S, amS_var(it.key.u.id));
+        am_Num  want = r ? r->constant : 0.f;
+        if (fabs((double)*ve->pvalue - (double)want) > 1e-4) {
+            test_log("FAIL %s:%d: var %u binding %g, tableau %g\n", __FILE__,
+                     __LINE__, it.key.u.id, (double)*ve->pvalue, (double)want);
+            abort();
+        }
+    }
+}
+
+TEST(add_publishes_the_variable_it_pivots_in) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         l = 0, r = 0;
+    am_Id          vl, vr;
+    am_Constraint *link, *bound;
+
+    assertok(S != NULL);
+    am_autoupdate(S, 1);
+    vl = am_newvariable(S, &l);
+    vr = am_newvariable(S, &r);
+
+    /* r - l == 120 */
+    link = am_newconstraint(S, AM_REQUIRED);
+    am_addterm(link, vr, -1.f), am_addterm(link, vl, 1.f);
+    am_addconstant(link, 120.f), am_setrelation(link, AM_EQUAL);
+    asserteq(am_add(link), AM_OK);
+
+    /* l >= 20: merging the r-l row pivots r in; its binding used to stay 0 */
+    bound = am_newconstraint(S, AM_REQUIRED);
+    am_addterm(bound, vl, 1.f), am_addconstant(bound, -20.f);
+    am_setrelation(bound, AM_GREATEREQUAL);
+    asserteq(am_add(bound), AM_OK);
+
+    am_updatevars(S); /* nothing is left to publish */
+    assertnear(r, l + 120.f, 1e-4);
+    assertok(l >= 20.f - 1e-4);
+    assert_bindings_are_current(S);
+    am_delsolver(S);
+}
+
+/* The same read path on a layout-shaped model: four builtins plus one user
+ * constraint, where the merged row brings `right` into the basis. */
+TEST(add_publishes_every_layout_binding) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         v[6]; /* left, top, width, height, right, bottom */
+    am_Id          id[6];
+    am_Constraint *c;
+    int            i;
+
+    assertok(S != NULL);
+    am_autoupdate(S, 1);
+    for (i = 0; i < 6; ++i) v[i] = 0, id[i] = am_newvariable(S, &v[i]);
+
+    c = am_newconstraint(S, AM_REQUIRED); /* right == left + width */
+    am_addterm(c, id[4], 1.f), am_addterm(c, id[0], -1.f);
+    am_addterm(c, id[2], -1.f), am_setrelation(c, AM_EQUAL);
+    asserteq(am_add(c), AM_OK);
+
+    c = am_newconstraint(S, AM_REQUIRED); /* bottom == top + height */
+    am_addterm(c, id[5], 1.f), am_addterm(c, id[1], -1.f);
+    am_addterm(c, id[3], -1.f), am_setrelation(c, AM_EQUAL);
+    asserteq(am_add(c), AM_OK);
+
+    c = am_newconstraint(S, AM_REQUIRED); /* width >= 0 */
+    am_addterm(c, id[2], 1.f), am_setrelation(c, AM_GREATEREQUAL);
+    asserteq(am_add(c), AM_OK);
+
+    c = am_newconstraint(S, AM_REQUIRED); /* height >= 0 */
+    am_addterm(c, id[3], 1.f), am_setrelation(c, AM_GREATEREQUAL);
+    asserteq(am_add(c), AM_OK);
+
+    c = am_newconstraint(S, AM_REQUIRED); /* left >= 10 */
+    am_addterm(c, id[0], 1.f), am_addconstant(c, -10.f);
+    am_setrelation(c, AM_GREATEREQUAL);
+    asserteq(am_add(c), AM_OK);
+
+    am_updatevars(S);
+    assertnear(v[4], v[0] + v[2], 1e-4); /* right == left + width */
+    assertnear(v[5], v[1] + v[3], 1e-4); /* bottom == top + height */
+    assertok(v[0] >= 10.f - 1e-4);
+    assert_bindings_are_current(S);
+    am_delsolver(S);
+}
+
+/* The objective must never hold an EXTERNAL symbol.  When the leaving row is
+ * external, no non-external row holds the removed marker, so the marker's
+ * objective coefficient is exactly its strength and the cost removal leaves
+ * exactly 0; the float residual used to be substituted into the objective
+ * together with the external row and leaked the variable into it. */
+
+static int objective_has_external(const am_Solver *S) {
+    am_Iterator it = amH_iter(&S->objective.terms);
+    while (amH_next(&it))
+        if (amV_isexternal(it.key)) return 1;
+    return 0;
+}
+
+TEST(remove_keeps_the_objective_free_of_external_symbols) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         v = 0;
+    am_Id          x;
+    am_Constraint *a, *b;
+
+    assertok(S != NULL);
+    am_autoupdate(S, 1);
+    x = am_newvariable(S, &v);
+    /* two strong soft equalities on the same variable: removing them lets x
+     * leave the basis, and the marker's residual is the float noise */
+    a = am_newconstraint(S, AM_STRONG); /* 2x == 8 */
+    am_addterm(a, x, -2.f), am_addconstant(a, 8.f);
+    am_setrelation(a, AM_EQUAL);
+    asserteq(am_add(a), AM_OK);
+    b = am_newconstraint(S, AM_STRONG); /* -3x == 13 */
+    am_addterm(b, x, 3.f), am_addconstant(b, 13.f);
+    am_setrelation(b, AM_EQUAL);
+    asserteq(am_add(b), AM_OK);
+    asserteq(objective_has_external(S), 0);
+
+    am_remove(a);
+    asserteq(objective_has_external(S), 0);
+    am_remove(b);
+    asserteq(objective_has_external(S), 0);
+    asserteq(S->rows.count, 0);
+    assertnear(v, 0.f, 1e-4);
+    am_delsolver(S);
+}
+
 #include "api_test.gen.inc"

@@ -649,6 +649,7 @@ static int amA_putrow(am_Solver *S, am_Symbol sym, const am_Row *src) {
     assert(amR_get(S, sym) == NULL);
     r = (am_Row *)amH_set(S, &S->rows, sym);
     assert(r != NULL), r->infeasible_next = amS_null();
+    if (amV_isexternal(sym)) amA_markdirty(S, sym);
     return (r->constant = src->constant, r->terms = src->terms), AM_OK;
 }
 
@@ -1687,7 +1688,9 @@ AM_API void am_remove(am_Constraint *c) {
     if (amA_takerow(S, marker, &tmp) != AM_OK) {
         am_Symbol leave = amA_leavingrow(S, marker);
         am_Var   *ve;
+        am_Num   *term = (am_Num *)amH_get(&S->objective.terms, marker);
         assert(leave.u.id != 0);
+        if (amV_isexternal(leave) && term) amH_del(&S->objective.terms, term);
         amA_takerow(S, leave, &tmp);
         amA_solvefor(S, &tmp, marker, leave);
         amA_substitute(S, marker, &tmp);
