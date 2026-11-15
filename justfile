@@ -21,6 +21,7 @@
 #   just test-lua-luajit  same, against LuaJIT 2.1
 #   just test-lua-double  same, with -DAM_USE_DOUBLE
 #   just cov-lua          lcov line coverage of amoeba.h + lua_amoeba.c from test.lua
+#   just fuzz             random-operation fuzz, one process per seed (ASan/UBSan)
 #   just clean            remove every build artifact
 
 set windows-shell := ["cmd.exe", "/C"]
@@ -35,7 +36,33 @@ LUA     := env("LUA", "lua")
 # everything clang-format owns (vendored nanobench.h is deliberately excluded)
 FORMAT_FILES := "amoeba.h lua_amoeba.c tests/tests.h tests/amoeba_test.h \
     tests/solver_test.c tests/dump_test.c tests/api_test.c \
-    enaml_like_benchmark.cpp yoga_benchmark.cpp yogaone.cpp"
+    fuzz/fuzz.c enaml_like_benchmark.cpp yoga_benchmark.cpp yogaone.cpp"
+
+FUZZ      := "fuzz/fuzz.c"
+FUZZ_BIN  := "fuzz/build/fuzz"
+FUZZ_WARN := "-Wall -Wextra -Werror -pedantic -Wno-variadic-macros"
+
+# random-operation fuzz: one process per seed, so a crash names the seed.
+[unix]
+fuzz first="1" last="100" flags="":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    mkdir -p fuzz/build
+    {{CC}} -std=c89 {{FUZZ_WARN}} -I. -g -O0 \
+        -fsanitize=address,undefined -fno-sanitize-recover=undefined \
+        {{flags}} -o '{{FUZZ_BIN}}' '{{FUZZ}}'
+    fail=0
+    for ((seed = {{first}}; seed <= {{last}}; ++seed)); do
+        if ! './{{FUZZ_BIN}}' "$seed"; then
+            echo "FAIL seed=$seed"
+            fail=1
+        fi
+    done
+    if [ "$fail" -ne 0 ]; then
+        echo "fuzz: at least one seed failed"
+        exit 1
+    fi
+    echo "fuzz: seeds {{first}}..{{last}} passed"
 
 default:
     @just --list
@@ -105,7 +132,12 @@ format-check:
 # cleanup
 
 [unix]
-clean: (tests::clean)
+clean: (tests::clean) (clean-fuzz)
+
+[unix]
+[private]
+clean-fuzz:
+    rm -rf fuzz/build
 
 [unix]
 clean-cov: (tests::clean-cov)
@@ -117,6 +149,10 @@ clean-cov: (tests::clean-cov)
 [windows]
 check:
     @echo "the test recipes need a POSIX shell; see TODO.md (MSVC port)" && exit /b 2
+
+[windows]
+fuzz:
+    @echo "the fuzz recipe needs a POSIX shell" && exit /b 2
 
 [windows]
 format:

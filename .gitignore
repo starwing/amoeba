@@ -28,6 +28,7 @@ archive/*
 
 # --- 测试/覆盖率产物 ---
 tests/build/
+fuzz/build/
 tests/*.gen.inc
 dump.data
 *.gcda

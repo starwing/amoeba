@@ -114,6 +114,7 @@ just check-double    # AM_USE_DOUBLE
 just check-c89       # strict C89 compile check (no run)
 just check-cpp03     # strict C++03 compile check (no run)
 just test dump       # one suite; just test dump dumpload one test
+just fuzz            # random-op fuzz, one process per seed
 just cov             # lcov report
 just format          # clang-format the tree
 ```
