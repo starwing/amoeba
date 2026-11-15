@@ -1905,4 +1905,31 @@ TEST(remove_keeps_the_objective_free_of_external_symbols) {
     am_delsolver(S);
 }
 
+TEST(remove_drops_the_second_error_column) {
+    static unsigned char stream[1024];
+    am_Solver           *S = am_test_new_solver();
+    am_Num               v = 0;
+    am_Id                x;
+    am_Constraint       *c;
+    dump_buf             db;
+
+    assertok(S != NULL);
+    x = am_newvariable(S, &v);
+    /* a soft inequality plus an edit: the marker substitution cancels the other
+     * error column only up to rounding, which leaves it in the objective */
+    c = am_newconstraint(S, AM_STRONG); /* 3x + 2 >= 0 */
+    am_addterm(c, x, 3.f), am_addconstant(c, 2.f);
+    am_setrelation(c, AM_GREATEREQUAL);
+    asserteq(am_add(c), AM_OK);
+    asserteq(am_addedit(S, x, AM_MEDIUM), AM_OK);
+    am_remove(c);
+
+    memset(&db, 0, sizeof(db));
+    db.base.var_name = dump_buf_varname;
+    db.base.writer = dump_buf_writer;
+    db.p = stream;
+    asserteq(am_dump(S, &db.base), AM_OK); /* no ownerless column is left */
+    am_delsolver(S);
+}
+
 #include "api_test.gen.inc"

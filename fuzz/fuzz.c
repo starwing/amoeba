@@ -142,16 +142,36 @@ static const char *reader(am_Loader *l, size_t *plen) {
 
 /* ---- invariant checks ---- */
 
+static int owned(am_Solver *S, am_Symbol sym) {
+    am_Iterator it;
+    if (amV_isexternal(sym)) return amV_get(S, sym.u.id) != NULL;
+    it = amH_iter(&S->constraints);
+    while (amH_next(&it)) {
+        am_Constraint *c = *amH_val(am_Constraint *, it);
+        if (!amV_isexternal(c->marker) && c->marker.bits == sym.bits) return 1;
+        if (!amV_isexternal(c->other) && c->other.bits == sym.bits) return 1;
+    }
+    return 0;
+}
+
 static void check_rest(am_Solver *S, unsigned seed, int step) {
     am_Iterator it;
     if (S->infeasible_rows.u.id != 0)
         fail("the infeasible-row work list is not empty", seed, step);
     it = amH_iter(&S->rows);
     while (amH_next(&it)) {
-        am_Row *r = amH_val(am_Row, it);
+        am_Row     *r = amH_val(am_Row, it);
+        am_Iterator t = amH_iter(&r->terms);
+        if (!owned(S, it.key)) fail("a row has no owner", seed, step);
         if (!amV_isexternal(it.key) && amN_negative(r->constant))
             fail("a non-external row has a negative constant", seed, step);
+        while (amH_next(&t))
+            if (!owned(S, t.key)) fail("a row term has no owner", seed, step);
     }
+    it = amH_iter(&S->objective.terms);
+    while (amH_next(&it))
+        if (!owned(S, it.key))
+            fail("an objective term has no owner", seed, step);
     it = amH_iter(&S->suggests);
     while (amH_next(&it)) {
         am_Suggest **sp = amH_val(am_Suggest *, it);

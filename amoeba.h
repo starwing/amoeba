@@ -1680,16 +1680,16 @@ AM_API int am_add(am_Constraint *c) {
 
 AM_API void am_remove(am_Constraint *c) {
     am_Solver *S;
-    am_Symbol  marker;
+    am_Symbol  marker, other, leave;
+    am_Num    *term;
     am_Row     tmp;
     if (c == NULL || amV_isexternal(c->marker)) return;
-    S = c->S, marker = c->marker;
+    S = c->S, marker = c->marker, other = c->other;
     amA_removeerrors(S, c);
     if (amA_takerow(S, marker, &tmp) != AM_OK) {
-        am_Symbol leave = amA_leavingrow(S, marker);
-        am_Var   *ve;
-        am_Num   *term = (am_Num *)amH_get(&S->objective.terms, marker);
-        assert(leave.u.id != 0);
+        am_Var *ve;
+        leave = amA_leavingrow(S, marker), assert(leave.u.id != 0);
+        term = (am_Num *)amH_get(&S->objective.terms, marker);
         if (amV_isexternal(leave) && term) amH_del(&S->objective.terms, term);
         amA_takerow(S, leave, &tmp);
         amA_solvefor(S, &tmp, marker, leave);
@@ -1698,6 +1698,8 @@ AM_API void am_remove(am_Constraint *c) {
             *ve->pvalue = 0.f;
     }
     amR_free(S, &tmp);
+    term = (am_Num *)amH_get(&S->objective.terms, other);
+    if (amV_iserror(other) && term) amH_del(&S->objective.terms, term);
     amA_optimize(S, &S->objective), S->age += 1;
     if (S->auto_update) am_updatevars(S);
 }
