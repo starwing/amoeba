@@ -14,13 +14,13 @@ static void *END = NULL;
 
 static void am_dumpkey(am_Symbol sym) {
     int ch = 'v';
-    switch (sym.type) {
+    switch (sym.u.type) {
     case AM_EXTERNAL: ch = 'v'; break;
     case AM_SLACK: ch = 's'; break;
     case AM_ERROR: ch = 'e'; break;
     case AM_DUMMY: ch = 'd'; break;
     }
-    printf("%c%d", ch, (int)sym.id);
+    printf("%c%d", ch, (int)sym.u.id);
 }
 
 /* Iterating a table reads am_Table fields directly: tests may inspect the
@@ -36,7 +36,7 @@ static void am_dumprow(const am_Row *row) {
     for (i = 0; i < t->size; ++i) {
         am_Symbol key = t->keys[i].sym;
         am_Num    multiplier;
-        if (key.id == 0) continue;
+        if (key.u.id == 0) continue;
         multiplier = *(const am_Num *)am_test_slot(t, i);
         printf(" %c ", multiplier > 0.0 ? '+' : '-');
         if (multiplier < 0.0) multiplier = -multiplier;
@@ -56,7 +56,7 @@ static void am_dumpsolver(am_Solver *S) {
     printf("rows(%d):\n", S->rows.count);
     for (i = 0; i < t->size; ++i) {
         am_Symbol key = t->keys[i].sym;
-        if (key.id == 0) continue;
+        if (key.u.id == 0) continue;
         printf("%d. ", ++idx);
         am_dumpkey(key);
         printf(" = ");
@@ -161,8 +161,8 @@ TEST(all) {
     am_addterm(c1, xl, 1.0);
     am_addterm(c1, xr, 1.0);
     ret = am_add(c1);
-    printf("c1: marker=%d other=%d\n", c1->marker.id, c1->other.id);
-    assertok(c1->marker.type == AM_DUMMY && c1->other.type == AM_EXTERNAL);
+    printf("c1: marker=%d other=%d\n", c1->marker.u.id, c1->other.u.id);
+    assertok(c1->marker.u.type == AM_DUMMY && c1->other.u.type == AM_EXTERNAL);
     assertok(ret == AM_OK);
     am_dumpsolver(S);
 
@@ -173,8 +173,8 @@ TEST(all) {
     am_setrelation(c2, AM_LESSEQUAL);
     am_addterm(c2, xr, 1.0);
     ret = am_add(c2);
-    printf("c2: marker=%d other=%d\n", c2->marker.id, c2->other.id);
-    assertok(c2->marker.type == AM_SLACK && c2->other.type == AM_EXTERNAL);
+    printf("c2: marker=%d other=%d\n", c2->marker.u.id, c2->other.u.id);
+    assertok(c2->marker.u.type == AM_SLACK && c2->other.u.type == AM_EXTERNAL);
     assertok(ret == AM_OK);
     am_dumpsolver(S);
 
@@ -184,8 +184,8 @@ TEST(all) {
     am_setrelation(c3, AM_LESSEQUAL);
     am_addconstant(c3, 100.0);
     ret = am_add(c3);
-    printf("c3: marker=%d other=%d\n", c3->marker.id, c3->other.id);
-    assertok(c3->marker.type == AM_SLACK && c3->other.type == AM_EXTERNAL);
+    printf("c3: marker=%d other=%d\n", c3->marker.u.id, c3->other.u.id);
+    assertok(c3->marker.u.type == AM_SLACK && c3->other.u.type == AM_EXTERNAL);
     assertok(ret == AM_OK);
     am_dumpsolver(S);
 
@@ -195,8 +195,8 @@ TEST(all) {
     am_setrelation(c4, AM_GREATEREQUAL);
     am_addconstant(c4, 0.0);
     ret = am_add(c4);
-    printf("c4: marker=%d other=%d\n", c4->marker.id, c4->other.id);
-    assertok(c4->marker.type == AM_SLACK && c4->other.type == AM_EXTERNAL);
+    printf("c4: marker=%d other=%d\n", c4->marker.u.id, c4->other.u.id);
+    assertok(c4->marker.u.type == AM_SLACK && c4->other.u.type == AM_EXTERNAL);
     assertok(ret == AM_OK);
     am_dumpsolver(S);
 
@@ -254,6 +254,8 @@ TEST(all) {
     printf("xl: %f, xm: %f, xr: %f\n", vxl, vxm, vxr);
 
     assertok(am_hasedit(S, xm));
+    /* id 0 is not a variable, even with edits live */
+    assertok(!am_hasedit(S, 0));
     am_clearedits(S);
 
     printf("suggest to 0.0\n");
@@ -597,7 +599,7 @@ TEST(strength) {
 
 TEST(suggest) {
 #if 1
-    /* This should be valid but fails the (enter.id != 0) assertion in am_dual_optimize() */
+    /* This should be valid but fails the (enter.u.id != 0) assertion in am_dual_optimize() */
     am_Num strength1 = AM_REQUIRED;
     am_Num strength2 = AM_REQUIRED;
     am_Num width = 76;
@@ -869,7 +871,7 @@ TEST(cycling) {
  * dummy; a dummy is never pivotable, so the dual then found no entering
  * column.
  *
- * Regression: this all-AM_OK sequence aborted on assert(enter.id != 0) in
+ * Regression: this all-AM_OK sequence aborted on assert(enter.u.id != 0) in
  * debug builds and never returned (clang) or crashed (gcc) in release. */
 TEST(dual_optimize_keeps_symbol_types) {
     am_Solver     *S = am_test_new_solver();
@@ -918,7 +920,7 @@ TEST(dual_optimize_keeps_symbol_types) {
     am_suggest(S, x3, 90); /* the dual walks two entries here */
     am_updatevars(S);
 
-    asserteq(S->infeasible_rows.id, 0);
+    asserteq(S->infeasible_rows.u.id, 0);
     assertok(-2 * v1 - 2 * v2 <= -60 + 1e-3);
     assertok(v1 <= 100 + 1e-3);
     assertok(-2 * v3 - 2 * v2 >= 40 - 1e-3);

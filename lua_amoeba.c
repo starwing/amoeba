@@ -218,17 +218,17 @@ static int aml_dumpkey(luaL_Buffer *B, int idx, am_Symbol sym) {
     lua_State *L = B->L;
     aml_Var   *lvar;
     int        ch = 'v';
-    lua_rawgeti(L, idx, sym.id);
+    lua_rawgeti(L, idx, sym.u.id);
     lvar = (aml_Var *)luaL_testudata(L, -1, AML_VAR_TYPE);
     lua_pop(L, 1);
     if (lvar) return luaL_addstring(B, lvar->name), 0;
-    switch (sym.type) {
+    switch (sym.u.type) {
     case AM_EXTERNAL: ch = 'v'; break;
     case AM_SLACK: ch = 's'; break;
     case AM_ERROR: ch = 'e'; break;
     case AM_DUMMY: ch = 'd'; break;
     }
-    lua_pushfstring(L, "%c%d", ch, sym.id);
+    lua_pushfstring(L, "%c%d", ch, sym.u.id);
     return luaL_addvalue(B), 1;
 }
 
@@ -244,7 +244,7 @@ static void aml_dumprow(luaL_Buffer *B, int idx, am_Row *row, am_Num sign) {
     for (i = 0; i < row->terms.size; ++i) {
         am_Symbol key = row->terms.keys[i].sym;
         am_Num    coef;
-        if (key.id == 0) continue;
+        if (key.u.id == 0) continue;
         coef = *aml_slot(&row->terms, i) * sign;
         lua_pushfstring(L, " %c ", coef > 0.0f ? '+' : '-'), luaL_addvalue(B);
         if (coef < 0.0f) coef = -coef;
@@ -497,7 +497,7 @@ static int Lcons_tostring(lua_State *L) {
         luaL_addstring(&B, " <= 0.0]");
     else
         luaL_addstring(&B, " >= 0.0]");
-    if (cons->marker.id != 0) {
+    if (cons->marker.u.id != 0) {
         luaL_addstring(&B, "(added:");
         aml_dumpkey(&B, 2, cons->marker);
         luaL_addchar(&B, '-');
@@ -778,7 +778,7 @@ static int Ltostring(lua_State *L) {
         luaL_addvalue(&B);
         for (i = 0; i < S->rows.size; ++i) {
             am_Symbol key = S->rows.keys[i].sym;
-            if (key.id == 0) continue;
+            if (key.u.id == 0) continue;
             lua_pushfstring(L, "\n    %d. ", ++idx);
             luaL_addvalue(&B);
             aml_dumpkey(&B, 2, key);
@@ -834,7 +834,7 @@ static int Lconstraints(lua_State *L) {
         lua_remove(L, -2);
         if (luaL_testudata(L, -1, AML_CONS_TYPE) == NULL)
             return luaL_error(L, "constraint %d has no handle",
-                              (int)cons->sym.id);
+                              (int)cons->sym.u.id);
         lua_rawseti(L, -2, ++n);
     }
     return 1;

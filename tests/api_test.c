@@ -152,7 +152,7 @@ TEST(negative_strength_is_rejected) {
  *
  * Regression: am_setstrength() merged the marker into the objective as well,
  * so a downgrade gave the slack a negative weight.  amA_optimize() then had a
- * direction it could follow for ever and hit assert(leave.id != 0). */
+ * direction it could follow for ever and hit assert(leave.u.id != 0). */
 TEST(setstrength_soft_inequality_downgrade_is_safe) {
     am_Solver     *S = am_test_new_solver();
     am_Num         x = 0;
@@ -1446,7 +1446,7 @@ TEST(add_unsat_with_soft_keeps_solver_usable) {
     am_setrelation(eq, AM_EQUAL);
     asserteq(am_add(eq), AM_UNBOUND);
     assertok(!am_hasconstraint(eq));
-    asserteq(S->infeasible_rows.id, 0); /* no work left behind */
+    asserteq(S->infeasible_rows.u.id, 0); /* no work left behind */
     am_updatevars(S);
     assertnear(x, 14.25, 1e-4); /* the old solution is untouched */
 
@@ -1457,7 +1457,7 @@ TEST(add_unsat_with_soft_keeps_solver_usable) {
     asserteq(am_add(eq), AM_OK);
     am_updatevars(S);
     assertnear(x, 30, 1e-4);
-    asserteq(S->infeasible_rows.id, 0);
+    asserteq(S->infeasible_rows.u.id, 0);
 
     am_delsolver(S);
 }
@@ -1493,7 +1493,7 @@ TEST(reset_after_unsat_add_leaves_a_clean_solver) {
     asserteq(am_add(eq), AM_UNBOUND);
 
     am_resetsolver(S);
-    asserteq(S->infeasible_rows.id, 0); /* the list goes with the rows */
+    asserteq(S->infeasible_rows.u.id, 0); /* the list goes with the rows */
 
     soft = am_newconstraint(S, AM_STRONG); /* the solver still works */
     am_addterm(soft, vx, 1.f);
@@ -1504,7 +1504,7 @@ TEST(reset_after_unsat_add_leaves_a_clean_solver) {
     am_suggest(S, vx, 100);
     am_updatevars(S);
     assertnear(x, 10, 1e-4); /* the strong x == 10 still wins */
-    asserteq(S->infeasible_rows.id, 0);
+    asserteq(S->infeasible_rows.u.id, 0);
 
     am_delsolver(S);
 }
@@ -1514,7 +1514,7 @@ TEST(reset_after_unsat_add_leaves_a_clean_solver) {
  *
  * Regression: the strong row's 1e6 term cancels in the objective and leaves a
  * tiny negative cost on a column that no row can block.  amA_optimize() then
- * found no leaving row: debug tripped assert(leave.id != 0), release spun. */
+ * found no leaving row: debug tripped assert(leave.u.id != 0), release spun. */
 TEST(remove_edit_after_strong_row_keeps_solver_usable) {
     am_Solver     *S = am_test_new_solver();
     am_Num         x = 0;
@@ -1545,7 +1545,7 @@ TEST(remove_edit_after_strong_row_keeps_solver_usable) {
     am_clearedits(S);
     am_updatevars(S);
     assertnear(x, 2, 1e-4); /* only 3*x <= 6 is left */
-    asserteq(S->infeasible_rows.id, 0);
+    asserteq(S->infeasible_rows.u.id, 0);
 
     am_delsolver(S);
 }
@@ -1613,12 +1613,12 @@ TEST(flushed_row_can_be_queued_again) {
     am_addconstant(c, -4);
     am_setrelation(c, AM_EQUAL);
     asserteq(am_add(c), AM_UNBOUND);
-    asserteq(S->infeasible_rows.id, 0); /* the failed add flushed the queue */
+    asserteq(S->infeasible_rows.u.id, 0); /* the failed add flushed the queue */
 
     am_suggest(S, x[3], 30);
     am_updatevars(S);
     assertnear(v[3], 30, 1e-4); /* the edit's error row was repaired */
-    asserteq(S->infeasible_rows.id, 0);
+    asserteq(S->infeasible_rows.u.id, 0);
 
     am_delsolver(S);
 }
@@ -1656,7 +1656,7 @@ TEST(failed_add_does_not_strand_a_queued_row) {
     am_addconstant(c, -3);
     am_setrelation(c, AM_EQUAL);
     asserteq(am_add(c), AM_UNBOUND);
-    asserteq(S->infeasible_rows.id, 0); /* every id still names a row */
+    asserteq(S->infeasible_rows.u.id, 0); /* every id still names a row */
 
     am_updatevars(S);
     assertnear(v[0] - v[4], -5, 1e-3); /* the old solution is intact */
