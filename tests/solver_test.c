@@ -65,6 +65,42 @@ static void am_dumpsolver(am_Solver *S) {
     printf("-------------------------------\n");
 }
 
+/* A row stores a constraint's marker and other as one equation, so their
+ * equation coefficients must be exact opposites: am_remove() relies on the
+ * substitution cancelling the other column to a bitwise zero. */
+static am_Num am_test_term(const am_Table *t, am_Symbol sym) {
+    am_Size i;
+    for (i = 0; i < t->size; ++i)
+        if (t->keys[i].sym.bits == sym.bits)
+            return *(const am_Num *)am_test_slot(t, i);
+    return 0;
+}
+
+static int am_test_pairs_opposite(const am_Solver *S) {
+    am_Size i, j;
+    for (i = 0; i < S->constraints.size; ++i) {
+        am_Constraint *c;
+        if (S->constraints.keys[i].sym.u.id == 0) continue;
+        c = *(am_Constraint *const *)am_test_slot(&S->constraints, i);
+        if (c->marker.u.type == AM_EXTERNAL || c->other.u.type == AM_EXTERNAL)
+            continue;
+        for (j = 0; j < S->rows.size; ++j) {
+            const am_Row *r;
+            am_Symbol     key = S->rows.keys[j].sym;
+            am_Num        m, o;
+            if (key.u.id == 0) continue;
+            r = (const am_Row *)am_test_slot(&S->rows, j);
+            m = key.bits == c->marker.bits
+                      ? 1.f
+                      : -am_test_term(&r->terms, c->marker);
+            o = key.bits == c->other.bits ? 1.f
+                                          : -am_test_term(&r->terms, c->other);
+            if (m + o != 0) return 0;
+        }
+    }
+    return 1;
+}
+
 static am_Constraint *new_constraint(am_Solver *in_solver, double in_strength,
                                      am_Id in_term1, double in_factor1,
                                      int in_relation, double in_constant, ...) {
@@ -795,6 +831,52 @@ TEST(leavingrow) {
     assertnear(x, 3, 1e-4);
     assertnear(y, 0, 1e-4);
 
+    am_delsolver(S);
+}
+
+/* One ulp of drift between a marker and its other surfaced as the ownerless
+ * term of fuzz seed 1025; this random sequence breaks the pair on the pre-fix
+ * pivot.  The two unadded constraints only pin the symbol ids. */
+TEST(add_keeps_the_marker_pair_opposite) {
+    am_Solver     *S;
+    am_Num         x = 0, y = 0, z = 0, w = 0;
+    am_Id          v0, v1, v2, v3;
+    am_Constraint *c, *req, *med;
+
+    S = am_test_new_solver();
+    v0 = am_newvariable(S, &x), v1 = am_newvariable(S, &y);
+    v2 = am_newvariable(S, &z), v3 = am_newvariable(S, &w);
+
+    c = am_newconstraint(S, AM_STRONG);
+    assertok(am_addterm(c, v3, -3) == AM_OK);
+    assertok(am_addterm(c, v3, 0) == AM_OK);
+    assertok(am_addconstant(c, 20) == AM_OK);
+    assertok(am_setrelation(c, AM_GREATEREQUAL) == AM_OK);
+
+    am_suggest(S, v2, 12);
+
+    c = am_newconstraint(S, AM_MEDIUM);
+    assertok(am_addterm(c, v0, -3) == AM_OK);
+    assertok(am_addconstant(c, 8) == AM_OK);
+    assertok(am_setrelation(c, AM_GREATEREQUAL) == AM_OK);
+    assertok(am_addedit(S, v0, AM_STRONG) == AM_OK);
+
+    req = am_newconstraint(S, AM_REQUIRED);
+    assertok(am_addterm(req, v1, -1) == AM_OK);
+    assertok(am_addterm(req, v1, -3) == AM_OK);
+    assertok(am_addterm(req, v0, -2) == AM_OK);
+    assertok(am_addconstant(req, -20) == AM_OK);
+    assertok(am_setrelation(req, AM_GREATEREQUAL) == AM_OK);
+
+    med = am_newconstraint(S, AM_MEDIUM);
+    assertok(am_addterm(med, v0, 3) == AM_OK);
+    assertok(am_addterm(med, v1, -3) == AM_OK);
+    assertok(am_addconstant(med, -7) == AM_OK);
+    assertok(am_setrelation(med, AM_GREATEREQUAL) == AM_OK);
+    assertok(am_add(med) == AM_OK);
+    assertok(am_add(req) == AM_OK);
+
+    assertok(am_test_pairs_opposite(S));
     am_delsolver(S);
 }
 

@@ -17,14 +17,14 @@
 # else
 #   define AM_STATIC static
 # endif
-#endif
+#endif /* AM_STATIC */
 
 #ifdef AM_STATIC_API
 # ifndef AM_IMPLEMENTATION
 #  define AM_IMPLEMENTATION
 # endif
 # define AM_API AM_STATIC
-#endif
+#endif /* AM_STATIC_API */
 
 #if !defined(AM_API) && defined(_WIN32)
 # ifdef AM_IMPLEMENTATION
@@ -32,11 +32,11 @@
 # else
 #  define AM_API __declspec(dllimport)
 # endif
-#endif
+#endif /* AM_API */
 
 #ifndef AM_API
 # define AM_API extern
-#endif
+#endif /* AM_API */
 
 #define AM_OK          (0)  /* No error */
 #define AM_PARAM       (-1) /* Invalid parameter */
@@ -197,18 +197,12 @@ AM_NS_END
 # define AM_DEBUG(...) ((void)0)
 #endif /* AM_DEBUG */
 
-#define amC(cond)                                                              \
-    do {                                                                       \
-        if (!(cond))                                                           \
-            return AM_DEBUG(__FILE__ ":%d: " #cond "\n", __LINE__), AM_FAILED; \
-    } while (0)
-#define amE(expr)                                                              \
-    do {                                                                       \
-        int r_;                                                                \
-        if ((r_ = (expr)) != AM_OK)                                            \
-            return AM_DEBUG(__FILE__ ":%d: " #expr " err %d\n", __LINE__, r_), \
-                   r_;                                                         \
-    } while (0)
+/* clang-format off */
+#define amC(cond) do { if (!(cond)) return \
+    AM_DEBUG(__FILE__ ":%d: " #cond "\n", __LINE__), AM_FAILED; } while (0)
+#define amE(expr) do { int r_; if ((r_ = (expr)) != AM_OK) return \
+    AM_DEBUG(__FILE__ ":%d: " #expr " err %d\n", __LINE__, r_), r_; } while (0)
+/* clang-format on */
 
 AM_NS_BEGIN
 
@@ -503,18 +497,29 @@ static void amH_del(am_Table *t, const void *value) {
 
 /* expression (row) */
 
+#define amR_get(S, sym) (am_Row *)amH_get(&(S)->rows, sym)
+
+/* clang-format off */
+static void amR_init(am_Row *r)
+{ memset(r, 0, sizeof(*r)), amH_init(&r->terms, sizeof(am_Num)); }
+
+static void amR_add(am_Row *r, am_Num c)
+{ r->constant += c; if (amN_nearzero(r->constant)) r->constant = 0.f; }
+/* clang-format on */
+
 static void amR_reset(am_Row *r) { r->constant = 0.f, amH_reset(&r->terms); }
 static void amR_free(am_Solver *S, am_Row *r) { amH_free(S, &r->terms); }
 
-static void amR_init(am_Row *r) {
-    r->infeasible_next = amS_null(), r->constant = 0.f;
-    amH_init(&r->terms, sizeof(am_Num));
-}
-
 static void amR_mul(am_Row *r, am_Num f) {
     am_Iterator it = amH_iter(&r->terms);
-    r->constant *= f;
+    if (r->constant *= f, amN_nearzero(r->constant)) r->constant = 0.f;
     while (amH_next(&it)) *amH_val(am_Num, it) *= f;
+}
+
+static void amR_div(am_Row *r, am_Num f) {
+    am_Iterator it = amH_iter(&r->terms);
+    if (r->constant /= f, amN_nearzero(r->constant)) r->constant = 0.f;
+    while (amH_next(&it)) *amH_val(am_Num, it) /= f;
 }
 
 static int amR_addvar(am_Solver *S, am_Row *r, am_Symbol sym, am_Num value) {
@@ -529,20 +534,25 @@ static int amR_addvar(am_Solver *S, am_Row *r, am_Symbol sym, am_Num value) {
     return amH_del(&r->terms, term), -1;
 }
 
+static int amR_delvar(am_Row *r, am_Symbol sym) {
+    am_Num *term = (am_Num *)amH_get(&r->terms, sym);
+    return term ? (amH_del(&r->terms, term), 1) : 0;
+}
+
 static void amR_addrow(am_Solver *S, am_Row *r, const am_Row *o, am_Num f) {
     am_Iterator it = amH_iter(&o->terms);
-    r->constant += o->constant * f;
+    amR_add(r, o->constant * f);
     while (amH_next(&it)) amR_addvar(S, r, it.key, *amH_val(am_Num, it) * f);
+}
+
+static void amR_elim(am_Solver *S, am_Row *d, am_Symbol out, const am_Row *r) {
+    am_Num *term = (am_Num *)amH_get(&d->terms, out);
+    if (term) amH_del(&d->terms, term), amR_addrow(S, d, r, *term);
 }
 
 /* variables & constraints */
 
-#define amR_get(S, sym) (am_Row *)amH_get(&(S)->rows, sym)
-
-/* clang-format off */
-static am_Var *amV_get(const am_Solver *S, am_Id var)
-{ return S ? (am_Var *)amH_get(&S->vars, amS_var(var)) : NULL; }
-/* clang-format on */
+#define amV_get(S, v) ((S) ? (am_Var *)amH_get(&(S)->vars, amS_var(v)) : NULL)
 
 static int amC_init(am_Solver *S, am_Symbol sym, am_Constraint *c) {
     am_Constraint **ce = (am_Constraint **)amH_set(S, &S->constraints, sym);
@@ -557,8 +567,7 @@ static int amC_addterm(am_Constraint *c, am_Id var, am_Num value) {
     am_Var   *ve;
     amC((ve = (am_Var *)amH_get(&c->S->vars, amS_var(var))) != NULL);
     sym.u.id = var;
-    ve->refcount += amR_addvar(c->S, &c->expression, sym, value);
-    return AM_OK;
+    return ve->refcount += amR_addvar(c->S, &c->expression, sym, value), AM_OK;
 }
 
 static am_Suggest *amC_newedit(am_Solver *S, am_Id var, am_Num strength) {
@@ -602,17 +611,11 @@ static int amA_takerow(am_Solver *S, am_Symbol sym, am_Row *dst) {
 }
 
 static void amA_solvefor(am_Solver *S, am_Row *r, am_Symbol en, am_Symbol lv) {
-    am_Num *term = (am_Num *)amH_get(&r->terms, en);
-    am_Num  reciprocal = 1.0f / *term;
-    assert(en.bits != lv.bits && !amN_nearzero(*term));
+    am_Num *term = (am_Num *)amH_get(&r->terms, en), f = *term;
+    assert(en.bits != lv.bits && !amN_nearzero(f));
     amH_del(&r->terms, term);
-    if (!amN_approx(reciprocal, -1.0f)) amR_mul(r, -reciprocal);
-    if (lv.u.id != 0) amR_addvar(S, r, lv, reciprocal);
-}
-
-static void amA_elim(am_Solver *S, am_Row *d, am_Symbol out, const am_Row *r) {
-    am_Num *term = (am_Num *)amH_get(&d->terms, out);
-    if (term) amH_del(&d->terms, term), amR_addrow(S, d, r, *term);
+    if (f != -1.0f) amR_div(r, -f); /* a/a is exact; a * (1/a) is not */
+    if (lv.u.id != 0) amR_addvar(S, r, lv, 1.0f / f);
 }
 
 static void amA_markdirty(am_Solver *S, am_Symbol var) {
@@ -624,6 +627,7 @@ static void amA_markdirty(am_Solver *S, am_Symbol var) {
 }
 
 static int amA_infeasible(am_Solver *S, am_Symbol sym, am_Row *r) {
+    if (amV_isexternal(sym)) return amA_markdirty(S, sym), 0;
     if (!amV_isexternal(r->infeasible_next)) return 1; /* already queued */
     if (!amN_negative(r->constant)) return 0;
     r->infeasible_next = S->infeasible_rows;
@@ -635,13 +639,9 @@ static void amA_substitute(am_Solver *S, am_Symbol var, am_Row *expr) {
     am_Iterator it = amH_iter(&S->rows);
     while (amH_next(&it)) {
         am_Row *r = amH_val(am_Row, it);
-        amA_elim(S, r, var, expr);
-        if (amV_isexternal(it.key))
-            amA_markdirty(S, it.key);
-        else
-            amA_infeasible(S, it.key, r);
+        amR_elim(S, r, var, expr), amA_infeasible(S, it.key, r);
     }
-    amA_elim(S, &S->objective, var, expr);
+    amR_elim(S, &S->objective, var, expr);
 }
 
 static int amA_putrow(am_Solver *S, am_Symbol sym, const am_Row *src) {
@@ -664,11 +664,26 @@ static void amA_flushinfeasible(am_Solver *S) {
     S->infeasible_rows = amS_null();
 }
 
+static am_Symbol amA_findleave(am_Solver *S, am_Symbol enter) {
+    am_Num     *term, ratio, min = AM_NUM_MAX;
+    am_Symbol   leave = amS_null();
+    am_Iterator it = amH_iter(&S->rows);
+    while (amH_next(&it)) {
+        am_Row *r = amH_val(am_Row, it);
+        if (amV_isexternal(it.key)) continue;
+        term = (am_Num *)amH_get(&r->terms, enter);
+        if (term == NULL || *term > 0.f) continue;
+        ratio = -r->constant / *term;
+        if (ratio < min || (amN_approx(ratio, min) && it.key.u.id < leave.u.id))
+            min = ratio, leave = it.key;
+    }
+    return leave;
+}
+
 static void amA_optimize(am_Solver *S, am_Row *obj) {
     amA_flushinfeasible(S);
     for (;;) {
         am_Symbol   enter = amS_null(), leave = amS_null();
-        am_Num      ratio, min = AM_NUM_MAX, *term;
         am_Iterator it = amH_iter(&obj->terms);
         am_Row      tmp;
         assert(S->infeasible_rows.u.id == 0);
@@ -676,26 +691,15 @@ static void amA_optimize(am_Solver *S, am_Row *obj) {
             if (!amV_isdummy(it.key) && amN_negative(*amH_val(am_Num, it)))
                 break;
         if (it.key.u.id == 0) return;
-        enter = it.key, it = amH_iter(&S->rows);
-        while (amH_next(&it)) {
-            am_Row *r = amH_val(am_Row, it);
-            if (amV_isexternal(it.key)) continue;
-            term = (am_Num *)amH_get(&r->terms, enter);
-            if (term == NULL || *term > 0.f) continue;
-            ratio = -r->constant / *term;
-            if (ratio < min
-                || (amN_approx(ratio, min) && it.key.u.id < leave.u.id))
-                min = ratio, leave = it.key;
-        }
+        enter = it.key, leave = amA_findleave(S, enter);
         if (leave.u.id == 0) { /* feasible means bounded, so this is noise */
-            am_Num *z = (am_Num *)amH_get(&obj->terms, enter);
-            assert(z != NULL), amH_del(&obj->terms, z);
+            amR_delvar(obj, enter);
             continue;
         }
         amA_takerow(S, leave, &tmp);
         amA_solvefor(S, &tmp, enter, leave);
         amA_substitute(S, enter, &tmp);
-        if (obj != &S->objective) amA_elim(S, obj, enter, &tmp);
+        if (obj != &S->objective) amR_elim(S, obj, enter, &tmp);
         amA_putrow(S, enter, &tmp);
     }
 }
@@ -735,7 +739,6 @@ static am_Row amA_makerow(am_Solver *S, am_Constraint *c) {
 static int amA_addartificial(am_Solver *S, am_Row *r, am_Constraint *c) {
     am_Iterator it;
     am_Row      tmp;
-    am_Num     *term;
     int         ret;
     am_Symbol   a = {0};
     a.u.id = AM_ID_MAX, a.u.type = AM_SLACK; /* reserved, not an owner's name */
@@ -756,14 +759,8 @@ static int amA_addartificial(am_Solver *S, am_Row *r, am_Constraint *c) {
         amA_putrow(S, enter, &tmp);
     }
     it = amH_iter(&S->rows);
-    while (amH_next(&it)) {
-        am_Row *r = amH_val(am_Row, it);
-        am_Num *term = (am_Num *)amH_get(&r->terms, a);
-        if (term) amH_del(&r->terms, term);
-    }
-    term = (am_Num *)amH_get(&S->objective.terms, a);
-    if (term) amH_del(&S->objective.terms, term);
-    return ret;
+    while (amH_next(&it)) r = amH_val(am_Row, it), amR_delvar(r, a);
+    return amR_delvar(&S->objective, a), ret;
 }
 
 static int amA_tryaddrow(am_Solver *S, am_Row *r, am_Constraint *c) {
@@ -831,13 +828,10 @@ static void amA_cachedsuggest(am_Solver *S, am_Suggest *s, am_Num delta) {
     int         pure = 1;
     while (amH_next(&it)) {
         am_Row *r = amR_get(S, it.key);
-        am_Num *term;
-        assert(r != NULL), term = (am_Num *)amH_get(&r->terms, marker);
-        assert(term != NULL), r->constant += *term * delta;
-        if (amV_isexternal(it.key))
-            amA_markdirty(S, it.key);
-        else if (amA_infeasible(S, it.key, r))
-            pure = 0;
+        am_Num *t;
+        assert(r != NULL), t = (am_Num *)amH_get(&r->terms, marker);
+        assert(t != NULL), amR_add(r, *t * delta);
+        if (amA_infeasible(S, it.key, r)) pure = 0;
     }
     if (!pure) s->age = 0;
 }
@@ -848,21 +842,17 @@ static int amA_editdelta(am_Solver *S, am_Suggest *s, am_Num delta) {
     am_Row        *r;
     int            pure = 1;
     if ((r = amR_get(S, c->marker)) != NULL)
-        return r->constant -= delta, amA_infeasible(S, c->marker, r), 0;
+        return amR_add(r, -delta), amA_infeasible(S, c->marker, r), 0;
     if ((r = amR_get(S, c->other)) != NULL)
-        return r->constant += delta, amA_infeasible(S, c->other, r), 0;
+        return amR_add(r, delta), amA_infeasible(S, c->other, r), 0;
     if (s->age == S->age) return amA_cachedsuggest(S, s, delta), 0;
     amH_reset(&s->dirtyset);
     while (amH_next(&it)) {
-        am_Row *r = amH_val(am_Row, it);
-        am_Num *term = (am_Num *)amH_get(&r->terms, c->marker);
+        am_Row *dr = amH_val(am_Row, it);
+        am_Num *term = (am_Num *)amH_get(&dr->terms, c->marker);
         if (term == NULL) continue;
-        r->constant += *term * delta;
-        amH_set(S, &s->dirtyset, it.key);
-        if (amV_isexternal(it.key))
-            amA_markdirty(S, it.key);
-        else if (amA_infeasible(S, it.key, r))
-            pure = 0;
+        amR_add(dr, *term * delta), amH_set(S, &s->dirtyset, it.key);
+        if (amA_infeasible(S, it.key, dr)) pure = 0;
     }
     if (pure) s->age = S->age;
     return 1;
@@ -1470,13 +1460,12 @@ AM_API void am_updatevars(am_Solver *S) {
     while (S->dirty_vars.u.id != 0) {
         am_Symbol var = S->dirty_vars; /* link type is the queued sentinel */
         am_Var   *ve = (am_Var *)amH_get(&S->vars, amS_var(var.u.id));
-        am_Row   *r;
         assert(ve != NULL), S->dirty_vars = ve->next, ve->next = amS_null();
         if (ve->refcount == 1)
             am_deledit(S, var.u.id), amH_del(&S->vars, ve);
         else {
-            *ve->pvalue = (r = amR_get(S, amS_var(var.u.id))) ? r->constant
-                                                              : 0.f;
+            am_Row *r = amR_get(S, amS_var(var.u.id));
+            *ve->pvalue = r ? r->constant : 0.f;
             ve->refcount -= 1;
         }
     }
@@ -1535,8 +1524,7 @@ AM_API void am_suggest(am_Solver *S, am_Id var, am_Num value) {
     am_Num       delta;
     if (S == NULL || var == 0) return;
     ps = (am_Suggest **)amH_get(&S->suggests, amS_var(var));
-    s = ps ? *ps : amC_newedit(S, var, AM_MEDIUM);
-    if (s == NULL) return; /* unknown var: nothing to suggest */
+    if (!(s = ps ? *ps : amC_newedit(S, var, AM_MEDIUM))) return;
     delta = value - s->edit_value, s->edit_value = value;
     amA_editdelta(S, s, delta);
     while (S->infeasible_rows.u.id != 0) amA_dualoptimize(S);
@@ -1622,7 +1610,7 @@ AM_API int am_addconstant(am_Constraint *c, am_Num constant) {
     if (c == NULL) return AM_PARAM;
     amC(amV_isexternal(c->marker));
     if (c->relation == AM_GREATEREQUAL) constant = -constant;
-    return (c->expression.constant += constant), AM_OK;
+    return amR_add(&c->expression, constant), AM_OK;
 }
 
 AM_API int am_setstrength(am_Constraint *c, am_Num strength) {
@@ -1651,7 +1639,7 @@ AM_API int am_merge(am_Constraint *c, const am_Constraint *o, am_Num coef) {
     if (c == NULL || o == NULL || c->S != o->S) return AM_PARAM;
     amC(amV_isexternal(c->marker));
     if (c->relation == AM_GREATEREQUAL) coef = -coef;
-    c->expression.constant += o->expression.constant * coef;
+    amR_add(&c->expression, o->expression.constant * coef);
     it = amH_iter(&o->expression.terms);
     while (amH_next(&it))
         amE(amC_addterm(c, it.key.u.id, *amH_val(am_Num, it) * coef));
@@ -1669,19 +1657,15 @@ AM_API int am_add(am_Constraint *c) {
         c->other.u.id = amS_new(S); /* a soft equality needs its own name */
     r = amA_makerow(S, c);
     if ((ret = amA_tryaddrow(S, &r, c)) != AM_OK)
-        amA_removeerrors(S, c);
-    else {
-        amA_optimize(S, &S->objective);
-        if (S->auto_update) am_updatevars(S);
-        S->age += 1;
-    }
-    return assert(S->infeasible_rows.u.id == 0), ret;
+        return amA_removeerrors(S, c), ret;
+    amA_optimize(S, &S->objective);
+    if (S->auto_update) am_updatevars(S);
+    return S->age += 1, assert(S->infeasible_rows.u.id == 0), AM_OK;
 }
 
 AM_API void am_remove(am_Constraint *c) {
     am_Solver *S;
     am_Symbol  marker, other, leave;
-    am_Num    *term;
     am_Row     tmp;
     if (c == NULL || amV_isexternal(c->marker)) return;
     S = c->S, marker = c->marker, other = c->other;
@@ -1689,8 +1673,7 @@ AM_API void am_remove(am_Constraint *c) {
     if (amA_takerow(S, marker, &tmp) != AM_OK) {
         am_Var *ve;
         leave = amA_leavingrow(S, marker), assert(leave.u.id != 0);
-        term = (am_Num *)amH_get(&S->objective.terms, marker);
-        if (amV_isexternal(leave) && term) amH_del(&S->objective.terms, term);
+        if (amV_isexternal(leave)) amR_delvar(&S->objective, marker);
         amA_takerow(S, leave, &tmp);
         amA_solvefor(S, &tmp, marker, leave);
         amA_substitute(S, marker, &tmp);
@@ -1698,8 +1681,7 @@ AM_API void am_remove(am_Constraint *c) {
             *ve->pvalue = 0.f;
     }
     amR_free(S, &tmp);
-    term = (am_Num *)amH_get(&S->objective.terms, other);
-    if (amV_iserror(other) && term) amH_del(&S->objective.terms, term);
+    if (amV_iserror(other)) amR_delvar(&S->objective, other);
     amA_optimize(S, &S->objective), S->age += 1;
     if (S->auto_update) am_updatevars(S);
 }

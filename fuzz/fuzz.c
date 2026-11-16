@@ -154,6 +154,30 @@ static int owned(am_Solver *S, am_Symbol sym) {
     return 0;
 }
 
+/* A constraint's marker and other enter the tableau as one equation, so every
+ * row must hold them with exactly opposite coefficients; that exact zero is
+ * what lets am_remove() retire both columns. */
+static void check_pairs(am_Solver *S, unsigned seed, int step) {
+    am_Iterator it = amH_iter(&S->constraints);
+    while (amH_next(&it)) {
+        am_Constraint *c = *amH_val(am_Constraint *, it);
+        am_Iterator    rt;
+        if (amV_isexternal(c->marker) || amV_isexternal(c->other)) continue;
+        rt = amH_iter(&S->rows);
+        while (amH_next(&rt)) {
+            am_Row *r = amH_val(am_Row, rt);
+            am_Num *tm = (am_Num *)amH_get(&r->terms, c->marker);
+            am_Num *to = (am_Num *)amH_get(&r->terms, c->other);
+            am_Num  m, o;
+            m = rt.key.bits == c->marker.bits ? 1.f : (tm ? -*tm : 0.f);
+            o = rt.key.bits == c->other.bits ? 1.f : (to ? -*to : 0.f);
+            if (m + o != 0.f)
+                fail("a constraint's error pair is not exactly opposite", seed,
+                     step);
+        }
+    }
+}
+
 static void check_rest(am_Solver *S, unsigned seed, int step) {
     am_Iterator it;
     if (S->infeasible_rows.u.id != 0)
@@ -172,6 +196,7 @@ static void check_rest(am_Solver *S, unsigned seed, int step) {
     while (amH_next(&it))
         if (!owned(S, it.key))
             fail("an objective term has no owner", seed, step);
+    check_pairs(S, seed, step);
     it = amH_iter(&S->suggests);
     while (amH_next(&it)) {
         am_Suggest **sp = amH_val(am_Suggest *, it);

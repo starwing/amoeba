@@ -482,7 +482,10 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
 
 - `int am_addconstant(am_Constraint *cons, am_Num constant);`
 
-  Add a constant without variable into constraint as a term.
+  Add a constant without variable into constraint as a term.  A constant the
+  solver treats as numerical zero is stored as `0` (below `AM_NUM_EPS`: 1e-4
+  in the default `float` build, 1e-6 with `AM_USE_DOUBLE`); `am_constant()`
+  reports the stored value.
 
 - `int am_setstrength(am_Constraint *cons, am_Num strength);`
 
@@ -524,6 +527,8 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
   The constant of the constraint's expression, in the same stored form
   `am_terms()` uses (see `am_setrelation()`): a constant written after the
   relation keeps its sign, one written before it is negated with the terms.
+  A value within the solver's epsilon of zero (see `am_addconstant()`) reads
+  back as `0`.
 
 - `am_Num am_strength(const am_Constraint *cons);`
 
