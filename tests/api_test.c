@@ -1676,6 +1676,110 @@ TEST(failed_add_does_not_strand_a_queued_row) {
     am_delsolver(S);
 }
 
+/* The hidden constraint an edit installs; reading fields is fine for tests. */
+static am_Num edit_strength(am_Solver *S, am_Id var) {
+    am_Suggest **se = (am_Suggest **)amH_get(&S->suggests, amS_var(var));
+    assertok(se != NULL && *se != NULL);
+    return (*se)->constraint.strength;
+}
+
+/* am_addedit() must not turn a near-zero strength into a REQUIRED edit.
+ *
+ * Regression: amC_newedit() normalized anything below AM_NUM_EPS to
+ * AM_REQUIRED, so am_addedit(x, 0) created a hidden required equality with no
+ * error column.  With x pinned by another required equality the next
+ * am_suggest() queued that required dummy row and amA_dualoptimize() found no
+ * enterable column: assert(enter.u.id != 0). */
+TEST(addedit_near_zero_is_a_strong_soft_edit) {
+    static const am_Num near[3] = {0.f, 1e-9f, -1e-9f};
+    am_Solver          *S = am_test_new_solver();
+    am_Num              v[3] = {0, 0, 0};
+    am_Id               x[3];
+    int                 i;
+
+    for (i = 0; i < 3; ++i) {
+        x[i] = am_newvariable(S, &v[i]);
+        asserteq(am_addedit(S, x[i], near[i]), AM_OK);
+        assertok(am_hasedit(S, x[i]));
+        assertok(edit_strength(S, x[i]) == AM_STRONG); /* not AM_REQUIRED */
+        am_suggest(S, x[i], 50);
+        am_updatevars(S);
+        assertnear(v[i], 50, 1e-4);
+    }
+    asserteq(S->infeasible_rows.u.id, 0);
+    am_delsolver(S);
+}
+
+/* The zero-strength edit of a pinned variable loses to the required value
+ * instead of queueing a required dummy row (assert(enter.u.id != 0)). */
+TEST(addedit_zero_keeps_a_required_pin) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         x = 0;
+    am_Id          vx = am_newvariable(S, &x);
+    am_Constraint *req = am_newconstraint(S, AM_REQUIRED);
+
+    am_addterm(req, vx, 1.f), am_setrelation(req, AM_EQUAL);
+    am_addconstant(req, 10.f);
+    asserteq(am_add(req), AM_OK);
+    asserteq(am_addedit(S, vx, 0), AM_OK);
+    am_suggest(S, vx, 50);
+    am_updatevars(S);
+    assertnear(x, 10, 1e-4); /* the required equality still decides */
+    asserteq(S->infeasible_rows.u.id, 0);
+    am_delsolver(S);
+}
+
+/* A zero-strength edit must not move a variable out of a required equality
+ * shared with another variable.
+ *
+ * Regression: the REQUIRED edit's `other` was EXTERNAL, so amA_editdelta()
+ * took the "other row" fast path and bumped x's own basic row: x == y broke
+ * silently (x = 50, y = 0). */
+TEST(addedit_zero_keeps_another_required_equality) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         x = 0, y = 0;
+    am_Id          vx = am_newvariable(S, &x);
+    am_Id          vy = am_newvariable(S, &y);
+    am_Constraint *req = am_newconstraint(S, AM_REQUIRED);
+
+    am_addterm(req, vx, 1.f), am_addterm(req, vy, -1.f);
+    am_setrelation(req, AM_EQUAL);
+    asserteq(am_add(req), AM_OK);
+    asserteq(am_addedit(S, vx, 0), AM_OK);
+    am_suggest(S, vx, 50);
+    am_updatevars(S);
+    assertnear(x, 50, 1e-4);
+    assertnear(y, 50, 1e-4); /* x == y still holds */
+    asserteq(S->infeasible_rows.u.id, 0);
+    am_delsolver(S);
+}
+
+/* am_addedit(0) on an existing edit rewights it to AM_STRONG; it must not
+ * remove and re-add it at REQUIRED strength. */
+TEST(addedit_zero_rewights_an_existing_edit) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         x = 0;
+    am_Id          vx = am_newvariable(S, &x);
+    am_Constraint *req = am_newconstraint(S, AM_REQUIRED);
+
+    am_addterm(req, vx, 1.f), am_setrelation(req, AM_EQUAL);
+    am_addconstant(req, 10.f);
+    asserteq(am_add(req), AM_OK);
+
+    asserteq(am_addedit(S, vx, AM_WEAK), AM_OK);
+    am_suggest(S, vx, 50); /* the weak edit loses to the required 10 */
+    am_updatevars(S);
+    assertnear(x, 10, 1e-4);
+
+    asserteq(am_addedit(S, vx, 0), AM_OK);
+    assertok(edit_strength(S, vx) == AM_STRONG);
+    am_suggest(S, vx, 60);
+    am_updatevars(S);
+    assertnear(x, 10, 1e-4);
+    asserteq(S->infeasible_rows.u.id, 0);
+    am_delsolver(S);
+}
+
 TEST(edit_marker_is_named_by_its_variable) {
     am_Solver *S = am_test_new_solver();
     am_Num     v = 0;

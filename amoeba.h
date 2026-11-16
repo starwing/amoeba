@@ -577,18 +577,17 @@ static am_Suggest *amC_newedit(am_Solver *S, am_Id var, am_Num strength) {
     am_Var      *ve;
     int          ret;
     if (S == NULL || var == 0 || amN_negative(strength)) return NULL;
+    assert(!amN_nearzero(strength) && strength <= AM_STRONG);
     if ((ve = (am_Var *)amH_get(&S->vars, amS_var(var))) == NULL) return NULL;
     s = (am_Suggest **)amH_set(S, &S->suggests, amS_var(var));
     if (s == NULL) return NULL;
-    *s = (am_Suggest *)amM_realloc(S, NULL, sizeof(am_Suggest), 0,
-                                   am_AllocSuggest);
+    *s = (am_Suggest *)amM_realloc(S, NULL, sizeof(**s), 0, am_AllocSuggest);
     if (*s == NULL) return amH_del(&S->suggests, s), (am_Suggest *)NULL;
     memset(*s, 0, sizeof(**s));
     sym.u.id = var, sym.u.type = AM_DUMMY; /* the edit is the variable's role */
     (*s)->edit_value = (r = amR_get(S, amS_var(var))) ? r->constant : 0.f;
     if (!amV_isdummy(ve->next)) (*s)->edit_value = *ve->pvalue;
-    amC_init(S, sym, &(*s)->constraint);
-    (*s)->constraint.strength = amN_nearzero(strength) ? AM_REQUIRED : strength;
+    amC_init(S, sym, &(*s)->constraint), (*s)->constraint.strength = strength;
     am_setrelation(&(*s)->constraint, AM_EQUAL);
     am_addterm(&(*s)->constraint, var, 1.0f);
     am_addconstant(&(*s)->constraint, -(*s)->edit_value);
@@ -1505,7 +1504,7 @@ AM_API am_Id am_vars(const am_Solver *S, am_Id var) {
 AM_API int am_addedit(am_Solver *S, am_Id var, am_Num strength) {
     am_Suggest **s;
     if (S == NULL || var == 0 || amN_negative(strength)) return AM_PARAM;
-    if (strength >= AM_STRONG) strength = AM_STRONG;
+    if (amN_nearzero(strength) || strength >= AM_STRONG) strength = AM_STRONG;
     s = (am_Suggest **)amH_get(&S->suggests, amS_var(var));
     if (s) return assert(*s), am_setstrength(&(*s)->constraint, strength);
     amC(amC_newedit(S, var, strength));
