@@ -494,4 +494,4 @@ int main() {
     return 0;
 }
 
-// cc: flags+='-ggdb -O3 -DNDEBUG'
+// cc: flags+='-ggdb -O3 -DNDEBUG -I..'

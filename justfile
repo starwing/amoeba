@@ -17,6 +17,10 @@
 #   just uncovered        lines of amoeba.h no test ever executed
 #   just format           clang-format the whole tree in place
 #   just format-check     fail if the tree is not formatted
+#   just bench            pure-C GUI layout benchmark (-O2)
+#   just bench-yoga       the same scene in Yoga (needs YOGA_SRC)
+#   just bench-enaml      the historical enaml pair (amoeba + Yoga)
+#   just layout [w] [h]   dump the GUI layout boxes for a window size
 #   just test-lua         build the Lua binding + run test.lua (Lua 5.x)
 #   just test-lua-luajit  same, against LuaJIT 2.1
 #   just test-lua-double  same, with -DAM_USE_DOUBLE
@@ -36,11 +40,14 @@ LUA     := env("LUA", "lua")
 # everything clang-format owns (vendored nanobench.h is deliberately excluded)
 FORMAT_FILES := "amoeba.h lua_amoeba.c tests/tests.h tests/amoeba_test.h \
     tests/solver_test.c tests/dump_test.c tests/api_test.c \
-    fuzz/fuzz.c enaml_like_benchmark.cpp yoga_benchmark.cpp yogaone.cpp"
+    fuzz/fuzz.c bench/gui_layout_benchmark.c bench/gui_layout_scene.h \
+    bench/yoga_gui_benchmark.cpp bench/yoga_benchmark.cpp bench/yogaone.cpp"
 
 FUZZ      := "fuzz/fuzz.c"
 FUZZ_BIN  := "fuzz/build/fuzz"
 FUZZ_WARN := "-Wall -Wextra -Werror -pedantic -Wno-variadic-macros"
+BENCH_BIN := "tests/build/gui_layout_benchmark"
+YOGA_SRC  := env("YOGA_SRC", home_directory() / "Work" / "Sources" / "yoga")
 
 # random-operation fuzz: one process per seed, so a crash names the seed.
 [unix]
@@ -66,6 +73,60 @@ fuzz first="1" last="100" flags="":
 
 default:
     @just --list
+
+# pure-C GUI layout benchmark: build -O2 and run build/suggest/dump/load
+[unix]
+bench:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p tests/build
+    {{CC}} -std=c89 -O2 -DNDEBUG {{FUZZ_WARN}} -I. -Ibench \
+        bench/gui_layout_benchmark.c -o '{{BENCH_BIN}}'
+    './{{BENCH_BIN}}' --bench
+
+# historical enaml pair: amoeba then Yoga, built and run together
+[unix]
+bench-enaml:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p tests/build
+    # the load branch spells the am_Type entries am_T*; alias them here
+    enum_flags=""
+    if grep -q 'am_TConstraint' amoeba.h; then
+        enum_flags="-Dam_AllocConstraint=am_TConstraint"
+        enum_flags="$enum_flags -Dam_AllocHash=am_THash"
+    fi
+    {{CXX}} -O2 -std=c++17 -DNDEBUG -I. -Ibench $enum_flags \
+        bench/enaml_like_benchmark.cpp -o tests/build/enaml_like_benchmark
+    {{CXX}} -O2 -std=c++20 -DNDEBUG -Ibench -I '{{YOGA_SRC}}' \
+        bench/yoga_benchmark.cpp bench/yogaone.cpp \
+        -o tests/build/yoga_benchmark
+    echo "=== enaml_like_benchmark (amoeba) ==="
+    './tests/build/enaml_like_benchmark'
+    echo "=== yoga_benchmark (Yoga) ==="
+    './tests/build/yoga_benchmark'
+
+# Yoga port of the same scene; needs the Yoga source tree
+[unix]
+bench-yoga:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p tests/build
+    {{CXX}} -O2 -std=c++20 -DNDEBUG -Wall -Wextra -Werror -pedantic \
+        -I. -Ibench -I '{{YOGA_SRC}}' bench/yoga_gui_benchmark.cpp \
+        bench/yogaone.cpp -o tests/build/yoga_gui_benchmark
+    './tests/build/yoga_gui_benchmark'
+
+# dump the GUI layout boxes at a window size: just layout 2748 1263
+[unix]
+layout width="2748" height="1263" out="tests/build/layout.txt":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p tests/build
+    {{CC}} -std=c89 -O2 -DNDEBUG {{FUZZ_WARN}} -I. -Ibench \
+        bench/gui_layout_benchmark.c -o '{{BENCH_BIN}}'
+    './{{BENCH_BIN}}' -w {{width}} -h {{height}} > '{{out}}'
+    echo "wrote {{out}}"
 
 # ---------------------------------------------------------------------------
 # checks (implemented in tests/justfile)

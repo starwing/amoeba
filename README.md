@@ -125,6 +125,37 @@ the tests).  Code style is defined by `.clang-format` (clang-format >= 19).
 See [notes/](notes/) for implementation notes and [TODO.md](TODO.md) for the
 roadmap.
 
+## Benchmarks
+
+`just bench` runs a GUI layout scene in pure C; `just bench-yoga` builds the
+same tree with [Yoga](https://github.com/facebook/yoga) (point `YOGA_SRC` at a
+Yoga source tree, default `~/Work/Sources/yoga`) for comparison.  The scene is
+the DeepSeek Harness window: 272 text/container boxes and 1104 constraints,
+driven by six resize edits (window width/height, both sidecar widths, the
+transcript text insets) and three scroll edits for the two-layer lists.  Text
+sizes are intrinsic inputs, so both engines measure layout, not shaping.
+
+Measured on an Apple Silicon machine with `-O2`; the Yoga port needs 288
+nodes (a few flex spacers are structural):
+
+| operation | amoeba | Yoga |
+|---|---:|---:|
+| build + one suggest | 2.35 ms | 134 us |
+| dump | 201 us | -- |
+| load | 190 us | -- |
+| load + one suggest | 357 us | 134 us (build + suggest) |
+| warm suggest (9 edits) | 4.0 us | 49 us |
+
+Cassowary pays the constraint compilation once per build, which is ~17x
+slower than Yoga for build + one suggest, but an incremental suggest is ~12x
+faster.  A dump/load round skips the rebuild: `load + one suggest` is 2.7x
+slower than Yoga's `build + suggest` at this commit, and that gap is the load
+optimization target.  Numbers drift with the machine; the shape is the point.
+
+`just layout 2748 1263` dumps every box as `kind x y w h clip name`;
+`misc/render_layout.py` renders that dump as a PNG and can overlay the
+reference screenshot.
+
 ## Lua binding
 
 `lua_amoeba.c` embeds the library into Lua.  The binding's contract -- supported
