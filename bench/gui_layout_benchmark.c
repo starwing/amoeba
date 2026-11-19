@@ -22,7 +22,9 @@
  * kind is B (container), T (text) or I (icon); clip-group is 0 for the
  * page and 1/2/3 for the left list, transcript and file list viewports.
  * misc/render_layout.py turns that dump into a PNG.  --bench measures
- * build, suggest, dump and load instead.
+ * build, suggest, dump and load instead; --split adds per-phase timings and
+ * the allocation count between load and the first suggest, --loadonly the
+ * load alone.
  */
 
 #define AM_IMPLEMENTATION
@@ -1002,19 +1004,17 @@ static void bench_load(void *p) {
     am_delsolver(S);
 }
 
-static double bench_now(void) {
-    return (double)clock() / (double)CLOCKS_PER_SEC;
-}
+static double ui_now(void) { return (double)clock() / (double)CLOCKS_PER_SEC; }
 
 static void bench_run(const char *name, void (*fn)(void *), void *ctx) {
     double t0, dt;
     long   n = 0;
     fn(ctx);
-    t0 = bench_now();
+    t0 = ui_now();
     do {
         fn(ctx);
         ++n;
-        dt = bench_now() - t0;
+        dt = ui_now() - t0;
     } while (dt < 0.20);
     printf("%-24s %10.1f ns/op  (%ld iters)\n", name, dt * 1e9 / n, n);
 }
@@ -1032,7 +1032,7 @@ static void bench_init(UIBench *b, UIDumpBench *d, UILoadBench *l) {
     layout_build(b->L, &s);
 }
 
-static void bench_io(UIBench *b, UIDumpBench *d, UILoadBench *l) {
+static void dump_init(UIBench *b, UIDumpBench *d) {
     d->L = b->L;
     d->buf.p = NULL;
     d->buf.n = d->buf.cap = 0;
@@ -1042,9 +1042,9 @@ static void bench_io(UIBench *b, UIDumpBench *d, UILoadBench *l) {
     d->dump.buf = &d->buf;
     d->dump.L = b->L;
     bench_dump(d);
-    printf("dump: %lu bytes for %d boxes\n", (unsigned long)d->buf.n,
-           b->L->nbox);
-    bench_run("dump", bench_dump, d);
+}
+
+static void load_init(UILoadBench *l, UIDumpBench *d) {
     l->buf = &d->buf;
     memset(l->load.edit, 0, sizeof(l->load.edit));
     l->load.base.reader = ui_load_read;
@@ -1054,6 +1054,14 @@ static void bench_io(UIBench *b, UIDumpBench *d, UILoadBench *l) {
     l->sizes = ui_sizes;
     l->n = (int)(sizeof(ui_sizes) / sizeof(ui_sizes[0]));
     l->i = 1;
+}
+
+static void bench_io(UIBench *b, UIDumpBench *d, UILoadBench *l) {
+    dump_init(b, d);
+    printf("dump: %lu bytes for %d boxes\n", (unsigned long)d->buf.n,
+           b->L->nbox);
+    bench_run("dump", bench_dump, d);
+    load_init(l, d);
     bench_run("load", bench_load, l);
     bench_run("load+suggest", bench_load_suggest, l);
 }
@@ -1075,10 +1083,178 @@ static void run_bench(void) {
     if (bench_sink < 0) printf("sink %f\n", (double)bench_sink);
 }
 
+/* ---- --split / --loadonly: time and count one load in pieces ---- */
+
+typedef struct {
+    unsigned nalloc;
+    size_t   live, peak;
+} UIMem;
+
+static UIMem ui_mem;
+
+static void *ui_count_alloc(void **pud, void *p, size_t ns, size_t os,
+                            am_Type t) {
+    void *np;
+    (void)pud, (void)t;
+    if (ns == 0) {
+        ui_mem.live -= os, free(p);
+        return NULL;
+    }
+    np = realloc(p, ns);
+    assert(np != NULL);
+    ui_mem.nalloc += 1, ui_mem.live += ns - os;
+    if (ui_mem.live > ui_mem.peak) ui_mem.peak = ui_mem.live;
+    return np;
+}
+
+typedef struct {
+    double   load, first, rest, upd, del, total, sum;
+    unsigned allocs, wake;
+    size_t   live, peak;
+} UISplit;
+
+static double split_sum(am_Solver *S) {
+    am_Id  v = 0;
+    double sum = 0;
+    int    i = 0;
+    /* a value-only checksum: the loaded tableau must reproduce the numbers */
+    while ((v = am_vars(S, v)) != 0)
+        sum += (double)*am_varvalue(S, v, NULL) * (double)(++i);
+    return sum;
+}
+
+static void split_suggest(UILoadBench *l, am_Solver *S, UISplit *t) {
+    unsigned start = ui_mem.nalloc;
+    int      j;
+    for (j = 0; j < ED_COUNT; ++j) {
+        double a = ui_now();
+        am_suggest(S, l->load.edit[j], ui_editv(&l->sizes[1], j));
+        a = (ui_now() - a) * 1e9;
+        if (j == 0)
+            t->first = a, t->wake = ui_mem.nalloc - start;
+        else
+            t->rest += a;
+    }
+}
+
+static void split_round(UILoadBench *l, UIDumpBench *d, UISplit *t) {
+    am_Solver *S;
+    double     a;
+    memset(&ui_mem, 0, sizeof(ui_mem));
+    l->load.used = 0, l->load.buf = d->buf.p, l->load.len = d->buf.n;
+    a = ui_now();
+    S = am_load(ui_count_alloc, NULL, &l->load.base, 0);
+    t->load = (ui_now() - a) * 1e9;
+    assert(S != NULL);
+    t->allocs = ui_mem.nalloc, t->live = ui_mem.live;
+    split_suggest(l, S, t);
+    a = ui_now(), am_updatevars(S), t->upd = (ui_now() - a) * 1e9;
+    t->sum = split_sum(S);
+    a = ui_now(), am_delsolver(S), t->del = (ui_now() - a) * 1e9;
+    t->peak = ui_mem.peak;
+    t->total = t->load + t->first + t->rest + t->upd;
+    assert(ui_mem.live == 0);
+}
+
+static void split_keep(UISplit *best, const UISplit *t) {
+    if (t->load < best->load) best->load = t->load;
+    if (t->first < best->first) best->first = t->first;
+    if (t->rest < best->rest) best->rest = t->rest;
+    if (t->upd < best->upd) best->upd = t->upd;
+    if (t->del < best->del) best->del = t->del;
+    if (t->total < best->total) best->total = t->total;
+    best->sum = t->sum;
+    best->allocs = t->allocs, best->wake = t->wake;
+    best->live = t->live, best->peak = t->peak;
+}
+
+static void split_print(const UISplit *t) {
+    printf("  load           %8.1f ns   allocs %u   live %lu\n", t->load,
+           t->allocs, (unsigned long)t->live);
+    /* "wake" is the allocations from load return through the first suggest */
+    printf("  first suggest  %8.1f ns   wake allocs %u\n", t->first, t->wake);
+    printf("  rest 8 suggest %8.1f ns\n", t->rest);
+    printf("  updatevars     %8.1f ns\n", t->upd);
+    printf("  del            %8.1f ns\n", t->del);
+    printf("  load+first     %8.1f ns   peak %lu   sum %.9f\n", t->total,
+           (unsigned long)t->peak, t->sum);
+}
+
+static void bench_split(UIDumpBench *d, UILoadBench *l) {
+    UISplit best;
+    int     r;
+    best.load = best.first = best.rest = 1e18;
+    best.upd = best.del = best.total = 1e18;
+    for (r = 0; r < 402; ++r) {
+        UISplit t;
+        memset(&t, 0, sizeof(t));
+        split_round(l, d, &t);
+        if (r < 201) continue; /* the first half warms the cpu */
+        split_keep(&best, &t);
+    }
+    split_print(&best);
+}
+
+static void run_split(void) {
+    UIBench     b;
+    UIDumpBench d;
+    UILoadBench l;
+    bench_init(&b, &d, &l);
+    dump_init(&b, &d);
+    printf("dump: %lu bytes for %d boxes\n", (unsigned long)d.buf.n, b.L->nbox);
+    bench_run("dump", bench_dump, &d);
+    load_init(&l, &d);
+    bench_split(&d, &l);
+    layout_free(b.L);
+    free(d.buf.p);
+    free(b.tmp);
+    free(b.L);
+}
+
+static double load_ns(UILoadBench *l) {
+    am_Solver *S;
+    double     a;
+    l->load.used = 0, l->load.buf = l->buf->p, l->load.len = l->buf->n;
+    a = ui_now();
+    S = am_load(NULL, NULL, &l->load.base, 0);
+    a = (ui_now() - a) * 1e9;
+    assert(S != NULL);
+    am_delsolver(S);
+    return a;
+}
+
+static void run_loadonly(void) {
+    UIBench     b;
+    UIDumpBench d;
+    UILoadBench l;
+    double      best = 1e18;
+    int         i;
+    bench_init(&b, &d, &l);
+    dump_init(&b, &d);
+    load_init(&l, &d);
+    for (i = 0; i < 501; ++i) {
+        double a = load_ns(&l);
+        if (i >= 300 && a < best) best = a;
+    }
+    printf("loadonly        %8.1f ns\n", best);
+    layout_free(b.L);
+    free(d.buf.p);
+    free(b.tmp);
+    free(b.L);
+}
+
 static int ui_opt(int argc, char **argv, int *i, UISize *s, int *bench) {
     const char *a = argv[*i];
     if (!strcmp(a, "--bench")) {
         *bench = 1;
+        return 1;
+    }
+    if (!strcmp(a, "--split")) {
+        *bench = 2;
+        return 1;
+    }
+    if (!strcmp(a, "--loadonly")) {
+        *bench = 3;
         return 1;
     }
     if (*i + 1 >= argc) return 0;
@@ -1115,7 +1291,8 @@ static int ui_args(int argc, char **argv, UISize *s, int *bench) {
         if (ui_opt(argc, argv, &i, s, bench)) continue;
         fprintf(stderr,
                 "usage: %s [-w W] [-h H] [-l left] [-r right]"
-                " [-tl text_left] [-tr text_right] [--bench]\n",
+                " [-tl text_left] [-tr text_right] [--bench] [--split]"
+                " [--loadonly]\n",
                 argv[0]);
         return 2;
     }
@@ -1127,7 +1304,9 @@ int main(int argc, char **argv) {
     UISize  s;
     int     bench;
     if (ui_args(argc, argv, &s, &bench) != 0) return 2;
-    if (bench) return run_bench(), 0;
+    if (bench == 1) return run_bench(), 0;
+    if (bench == 2) return run_split(), 0;
+    if (bench == 3) return run_loadonly(), 0;
     layout_build(&L, &s);
     layout_print(&L);
     layout_free(&L);
