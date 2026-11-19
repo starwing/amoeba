@@ -562,6 +562,13 @@ static int amC_init(am_Solver *S, am_Symbol sym, am_Constraint *c) {
     return amR_init(&(*ce)->expression), AM_OK;
 }
 
+static void amC_setup(am_Solver *S, am_Constraint *c) {
+    int soft = (c->strength < AM_REQUIRED), eq = (c->relation == AM_EQUAL);
+    c->marker.u.type = !eq ? AM_SLACK : (soft ? AM_ERROR : AM_DUMMY);
+    c->other.u.type = soft ? AM_ERROR : AM_EXTERNAL;
+    if (soft && eq && c->other.u.id == c->sym.u.id) c->other.u.id = amS_new(S);
+}
+
 static int amC_addterm(am_Constraint *c, am_Id var, am_Num value) {
     am_Symbol sym = {0};
     am_Var   *ve;
@@ -717,18 +724,11 @@ static am_Row amA_makerow(am_Solver *S, am_Constraint *c) {
         amA_markdirty(S, it.key);
         amA_mergerow(S, &r, it.key, *amH_val(am_Num, it));
     }
-    if (c->relation != AM_EQUAL) {
-        c->marker.u.type = AM_SLACK, amR_addvar(S, &r, c->marker, -1.0f);
-        if (c->strength < AM_REQUIRED) {
-            c->other.u.type = AM_ERROR, amR_addvar(S, &r, c->other, 1.0f);
-            amR_addvar(S, &S->objective, c->other, c->strength);
-        }
-    } else if (c->strength >= AM_REQUIRED)
-        c->marker.u.type = AM_DUMMY, amR_addvar(S, &r, c->marker, 1.0f);
-    else {
-        c->marker.u.type = AM_ERROR, amR_addvar(S, &r, c->marker, -1.0f);
-        amR_addvar(S, &S->objective, c->marker, c->strength);
-        c->other.u.type = AM_ERROR, amR_addvar(S, &r, c->other, 1.0f);
+    amR_addvar(S, &r, c->marker, -1.0f);
+    if (c->strength < AM_REQUIRED) {
+        if (c->relation == AM_EQUAL)
+            amR_addvar(S, &S->objective, c->marker, c->strength);
+        amR_addvar(S, &r, c->other, 1.0f);
         amR_addvar(S, &S->objective, c->other, c->strength);
     }
     if (r.constant < 0.f) amR_mul(&r, -1.0f);
@@ -1651,9 +1651,7 @@ AM_API int am_add(am_Constraint *c) {
     am_Row     r;
     if (S == NULL) return AM_PARAM;
     amC(amV_isexternal(c->marker));
-    if (c->strength < AM_REQUIRED && c->relation == AM_EQUAL
-        && c->other.u.id == c->sym.u.id)
-        c->other.u.id = amS_new(S); /* a soft equality needs its own name */
+    amC_setup(S, c);
     r = amA_makerow(S, c);
     if ((ret = amA_tryaddrow(S, &r, c)) != AM_OK)
         return amA_removeerrors(S, c), ret;

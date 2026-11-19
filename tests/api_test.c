@@ -1829,6 +1829,43 @@ TEST(constraint_marker_is_named_by_the_constraint) {
     am_delsolver(S);
 }
 
+/* The marker/other roles follow from the relation and the strength alone, and
+ * are decided before the row is built.  A REQUIRED equality must still hold
+ * exactly (the soft equality must not drag y to 100, and an inequality would
+ * leave y free), and the soft one still costs its distance times its strength.
+ */
+TEST(equality_roles_keep_the_solution) {
+    am_Solver     *S = am_test_new_solver();
+    am_Num         x = 0, y = 0;
+    am_Id          vx, vy;
+    am_Constraint *sum, *pin, *soft;
+
+    vx = am_newvariable(S, &x), vy = am_newvariable(S, &y);
+    sum = am_newconstraint(S, AM_REQUIRED);
+    pin = am_newconstraint(S, AM_REQUIRED);
+    soft = am_newconstraint(S, AM_MEDIUM);
+    am_addterm(sum, vx, 1.f), am_addterm(sum, vy, 1.f);
+    am_setrelation(sum, AM_EQUAL), am_addconstant(sum, 5.f);
+    am_addterm(pin, vx, 1.f), am_setrelation(pin, AM_EQUAL);
+    am_addconstant(pin, 1.f);
+    am_addterm(soft, vy, 1.f), am_setrelation(soft, AM_EQUAL);
+    am_addconstant(soft, 100.f);
+    asserteq(am_add(sum), AM_OK);
+    asserteq(am_add(pin), AM_OK);
+    asserteq(am_add(soft), AM_OK);
+
+    am_updatevars(S);
+    assertnear(x, 1, 1e-4);               /* the pin holds */
+    assertnear(y, 4, 1e-4);               /* so does x + y == 5 */
+    assertnear(am_error(soft), 96, 1e-4); /* y is 96 short of the medium 100 */
+    asserteq(sum->marker.u.type, AM_DUMMY);
+    asserteq(sum->other.u.type, AM_EXTERNAL);
+    asserteq(soft->marker.u.type, AM_ERROR);
+    asserteq(soft->other.u.type, AM_ERROR);
+    assertok(soft->other.u.id != soft->marker.u.id);
+    am_delsolver(S);
+}
+
 TEST(artificial_variable_uses_the_reserved_id) {
     am_Solver     *S = am_test_new_solver();
     am_Num         v = 0;
