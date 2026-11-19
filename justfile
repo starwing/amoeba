@@ -18,6 +18,7 @@
 #   just format           clang-format the whole tree in place
 #   just format-check     fail if the tree is not formatted
 #   just bench            pure-C GUI layout benchmark (-O2)
+#   just orb-bench        just bench, pinned on one core in the Linux VM (orb)
 #   just bench-yoga       the same scene in Yoga (needs YOGA_SRC)
 #   just bench-enaml      the historical enaml pair (amoeba + Yoga)
 #   just layout [w] [h]   dump the GUI layout boxes for a window size
@@ -40,13 +41,15 @@ LUA     := env("LUA", "lua")
 # everything clang-format owns (vendored nanobench.h is deliberately excluded)
 FORMAT_FILES := "amoeba.h lua_amoeba.c tests/tests.h tests/amoeba_test.h \
     tests/solver_test.c tests/dump_test.c tests/api_test.c \
-    fuzz/fuzz.c bench/gui_layout_benchmark.c bench/gui_layout_scene.h \
-    bench/yoga_gui_benchmark.cpp bench/yoga_benchmark.cpp bench/yogaone.cpp"
+    fuzz/fuzz.c bench/bench_clock.h bench/gui_layout_benchmark.c \
+    bench/gui_layout_scene.h bench/yoga_gui_benchmark.cpp \
+    bench/yoga_benchmark.cpp bench/yogaone.cpp"
 
 FUZZ      := "fuzz/fuzz.c"
 FUZZ_BIN  := "fuzz/build/fuzz"
 FUZZ_WARN := "-Wall -Wextra -Werror -pedantic -Wno-variadic-macros"
 BENCH_BIN := "tests/build/gui_layout_benchmark"
+ORB_CPU   := env("ORB_CPU", "0")
 YOGA_SRC  := env("YOGA_SRC", home_directory() / "Work" / "Sources" / "yoga")
 
 # random-operation fuzz: one process per seed, so a crash names the seed.
@@ -83,6 +86,16 @@ bench:
     {{CC}} -std=c89 -O2 -DNDEBUG {{FUZZ_WARN}} -I. -Ibench \
         bench/gui_layout_benchmark.c -o '{{BENCH_BIN}}'
     './{{BENCH_BIN}}' --bench
+
+# same benchmark inside the OrbStack Linux VM: one pinned core, no macOS jitter
+[unix]
+orb-bench *args='--bench':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p tests/build
+    orb cc -std=c89 -O2 -DNDEBUG -I. -Ibench \
+        bench/gui_layout_benchmark.c -o 'tests/build/orb_bench'
+    orb taskset -c {{ORB_CPU}} './tests/build/orb_bench' {{args}}
 
 # historical enaml pair: amoeba then Yoga, built and run together
 [unix]

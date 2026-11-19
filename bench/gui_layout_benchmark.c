@@ -25,8 +25,13 @@
  * build, suggest, dump and load instead.
  */
 
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+# define _POSIX_C_SOURCE 199309L /* clock_gettime */
+#endif
+
 #define AM_IMPLEMENTATION
 #include "amoeba.h"
+#include "bench_clock.h"
 #include "gui_layout_scene.h"
 
 #include <assert.h>
@@ -34,6 +39,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#ifdef __APPLE__
+# include <mach/mach_time.h>
+#endif
 
 #define UI_MAXBOX  320
 #define UI_MAXTERM 8
@@ -1002,19 +1011,30 @@ static void bench_load(void *p) {
     am_delsolver(S);
 }
 
-static double bench_now(void) {
-    return (double)clock() / (double)CLOCKS_PER_SEC;
+static double bench_wall(void) {
+#ifdef _WIN32
+    return bench_cpu(); /* QPC is the only high-res timer on Win32 */
+#elif defined(__APPLE__)
+    static mach_timebase_info_data_t tb = {0, 0};
+    if (!tb.denom) mach_timebase_info(&tb);
+    return (double)mach_absolute_time() * (double)tb.numer / (double)tb.denom
+         * 1e-9;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+#endif
 }
 
 static void bench_run(const char *name, void (*fn)(void *), void *ctx) {
     double t0, dt;
     long   n = 0;
     fn(ctx);
-    t0 = bench_now();
+    t0 = bench_cpu();
     do {
         fn(ctx);
         ++n;
-        dt = bench_now() - t0;
+        dt = bench_cpu() - t0;
     } while (dt < 0.20);
     printf("%-24s %10.1f ns/op  (%ld iters)\n", name, dt * 1e9 / n, n);
 }
@@ -1094,8 +1114,6 @@ typedef struct {
     double load, first, rest, upd, del, total, sum;
 } UISplit;
 
-static double ui_now(void) { return (double)clock() / (double)CLOCKS_PER_SEC; }
-
 /* a value-only checksum: the loaded tableau must reproduce the same numbers */
 static double split_sum(am_Solver *S) {
     am_Id  v = 0;
@@ -1109,9 +1127,9 @@ static double split_sum(am_Solver *S) {
 static void split_suggest(UILoadBench *l, am_Solver *S, UISplit *t) {
     int j;
     for (j = 0; j < ED_COUNT; ++j) {
-        double a = ui_now();
+        double a = bench_wall();
         am_suggest(S, l->load.edit[j], ui_editv(&ui_sizes[1], j));
-        a = (ui_now() - a) * 1e9;
+        a = (bench_wall() - a) * 1e9;
         if (j == 0)
             t->first = a;
         else
@@ -1126,16 +1144,16 @@ static void split_round(UILoadBench *l, UIDumpBench *d, UISplit *t,
     double     a;
     memset(&ui_mem, 0, sizeof(ui_mem));
     l->load.used = 0, l->load.buf = d->buf.p, l->load.len = d->buf.n;
-    a = ui_now();
+    a = bench_wall();
     S = am_load(ui_count_alloc, NULL, &l->load.base, 0);
-    t->load = (ui_now() - a) * 1e9;
+    t->load = (bench_wall() - a) * 1e9;
     assert(S != NULL);
     *pnalloc = ui_mem.nalloc, *plive = ui_mem.live;
     split_suggest(l, S, t);
     *pwake = ui_mem.nalloc - *pnalloc;
-    a = ui_now(), am_updatevars(S), t->upd = (ui_now() - a) * 1e9;
+    a = bench_wall(), am_updatevars(S), t->upd = (bench_wall() - a) * 1e9;
     t->sum = split_sum(S);
-    a = ui_now(), am_delsolver(S), t->del = (ui_now() - a) * 1e9;
+    a = bench_wall(), am_delsolver(S), t->del = (bench_wall() - a) * 1e9;
     *ppeak = ui_mem.peak;
     t->total = t->load + t->first + t->rest + t->upd;
     assert(ui_mem.live == 0);
@@ -1222,9 +1240,9 @@ static double load_ns(UILoadBench *l, UIDumpBench *d) {
     am_Solver *S;
     double     a;
     l->load.used = 0, l->load.buf = d->buf.p, l->load.len = d->buf.n;
-    a = ui_now();
+    a = bench_wall();
     S = am_load(NULL, NULL, &l->load.base, 0);
-    a = (ui_now() - a) * 1e9;
+    a = (bench_wall() - a) * 1e9;
     assert(S != NULL);
     am_delsolver(S);
     return a;

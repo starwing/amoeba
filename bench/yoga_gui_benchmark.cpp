@@ -12,15 +12,19 @@
  *       bench/yoga_gui_benchmark.cpp bench/yogaone.cpp -o yoga_gui_benchmark
  */
 
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+# define _POSIX_C_SOURCE 199309L /* clock_gettime */
+#endif
+
 #include <yoga/Yoga.h>
 
+#include "bench_clock.h"
 #include "gui_layout_scene.h"
 
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <ctime>
 
 static int             g_nodes;
 static volatile double g_sink;
@@ -533,17 +537,15 @@ static void bench_suggest(void *p) {
     c->i = (c->i + 1) % c->n;
 }
 
-static double now(void) { return (double)clock() / (double)CLOCKS_PER_SEC; }
-
 static void run(const char *name, void (*fn)(void *), void *ctx) {
     double t0, dt;
     long   n = 0;
     fn(ctx);
-    t0 = now();
+    t0 = bench_cpu();
     do {
         fn(ctx);
         ++n;
-        dt = now() - t0;
+        dt = bench_cpu() - t0;
     } while (dt < 0.20);
     std::printf("%-24s %12.1f ns/op  (%ld iters)\n", name, dt * 1e9 / n, n);
 }
