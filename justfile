@@ -3,16 +3,16 @@
 # The test suite lives in tests/ and is imported as a module, so both spellings
 # work:
 #
-#   just check          ==  just tests check
+#   just test           ==  just tests test
 #
-#   just check            build + run every suite (ASan/UBSan, -O0)
-#   just check-release    same suites at -O2, no sanitizers
-#   just check-uninit     same suites with -ftrivial-auto-var-init=pattern
+#   just test             build + run every suite (ASan/UBSan, -O0)
+#   just test dump        one suite; just test dump <name-prefix> one test
+#   just test-release     same suites at -O2, no sanitizers
+#   just test-uninit      same suites with -ftrivial-auto-var-init=pattern
 #                         (a test that reads uninitialised memory fails here)
-#   just check-double     AM_USE_DOUBLE build + run
-#   just check-c89        strict Clean C compile check (no run)
-#   just check-cpp03      strict C++03 compile check (no run)
-#   just test dump        one suite; just test dump roundtrip one test
+#   just test-double      AM_USE_DOUBLE build + run
+#   just test-c89         strict Clean C compile check (no run)
+#   just test-cpp03       strict C++03 compile check (no run)
 #   just cov              lcov line coverage for amoeba.h
 #   just uncovered        lines of amoeba.h no test ever executed
 #   just format           clang-format the whole tree in place
@@ -142,32 +142,29 @@ layout width="2748" height="1263" out="tests/build/layout.txt":
     echo "wrote {{out}}"
 
 # ---------------------------------------------------------------------------
-# checks (implemented in tests/justfile)
+# tests (implemented in tests/justfile)
 
-# whole suite: build + run every test under ASan/UBSan
-check: (tests::check)
-
-# same suites at -O2 without sanitizers
-check-release: (tests::check-release)
-
-# same suites with every automatic variable poisoned (clang only)
-check-uninit: (tests::check-uninit)
-
-# am_Num = double build + run
-check-double: (tests::check-double)
-
-# strict C89 compile check (no run)
-check-c89: (tests::check-c89)
-
-# strict C++03 compile check (no run): amoeba.h is Clean C
-check-cpp03: (tests::check-cpp03)
-
-# one suite: just test dump [name-prefix]
+# no suite: every suite, ASan/UBSan; one suite: just test dump [name-prefix]
 [unix]
-test suite="solver" *args="":
+test suite="" *args="":
     #!/usr/bin/env bash
     set -euo pipefail
     exec just --justfile tests/justfile test '{{suite}}' {{args}}
+
+# same suites at -O2 without sanitizers
+test-release: (tests::test-release)
+
+# same suites with every automatic variable poisoned (clang only)
+test-uninit: (tests::test-uninit)
+
+# am_Num = double build + run
+test-double: (tests::test-double)
+
+# strict C89 compile check (no run)
+test-c89: (tests::test-c89)
+
+# strict C++03 compile check (no run): amoeba.h is Clean C
+test-cpp03: (tests::test-cpp03)
 
 # Lua binding: build lua_amoeba.c + run test.lua (LuaJIT / AM_USE_DOUBLE variants)
 [unix]
@@ -221,7 +218,7 @@ clean-cov: (tests::clean-cov)
 # tracked in TODO.md.  Keep a clear failure instead of a silent one.
 
 [windows]
-check:
+test:
     @echo "the test recipes need a POSIX shell; see TODO.md (MSVC port)" && exit /b 2
 
 [windows]

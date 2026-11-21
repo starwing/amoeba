@@ -1,10 +1,10 @@
 # amoeba test suite (C89, no external test framework).
 #
-# Normally driven from the repo root: `just check`, `just test dump`, `just cov`.
+# Normally driven from the repo root: `just test`, `just test dump`, `just cov`.
 # This file can also be used directly:
 #
+#   just --justfile tests/justfile test               # everything, ASan
 #   just --justfile tests/justfile test dump          # one suite
-#   just --justfile tests/justfile check              # everything, ASan
 #
 # Test sources live in tests/<suite>.c; misc/gen_entries.lua turns the
 # TEST(name) functions into the entries table + main() (tests/<suite>.gen.inc,
@@ -36,7 +36,7 @@ SAN  := "-g -O0 -fsanitize=address,undefined -fno-sanitize-recover=undefined"
 
 SUITES := "solver_test dump_test api_test"
 
-default: check
+default: all
 
 # ---------------------------------------------------------------------------
 # builds
@@ -98,36 +98,37 @@ verify tags:
     echo "all suites passed"
 
 # ---------------------------------------------------------------------------
-# checks
+# tests
 
 # build + run every suite under ASan/UBSan
 [unix]
-check: (build "debug" "") (run "debug") (verify "debug")
-
-# alias kept for muscle memory: sanitizers are the default
-[unix]
-check-asan: check
+[private]
+all: (build "debug" "") (run "debug") (verify "debug")
 
 # -O2, no sanitizers: catches tests that only pass in a debug build
 [unix]
-check-release: (build "release" "-O2") (run "release") (verify "release")
+test-release: (build "release" "-O2") (run "release") (verify "release")
 
 # poison every automatic variable with 0xAA: a test (or library helper) that
 # reads uninitialised memory behaves deterministically and fails here
 [unix]
-check-uninit: (build "uninit" "-O1 -ftrivial-auto-var-init=pattern") \
+test-uninit: (build "uninit" "-O1 -ftrivial-auto-var-init=pattern") \
     (run "uninit") (verify "uninit")
 
 # am_Num = double
 [unix]
-check-double: (build "double" "-DAM_USE_DOUBLE") (run "double") \
+test-double: (build "double" "-DAM_USE_DOUBLE") (run "double") \
     (verify "double")
 
-# one suite, one process per test: just test dump, just test dump roundtrip
+# no name: every suite; one suite, one process per test:
+# just test dump, just test dump <name-prefix>
 [unix]
-test name *args='':
+test name='' *args='':
     #!/usr/bin/env bash
     set -euo pipefail
+    if [ -z '{{name}}' ]; then
+        exec just --justfile '{{SRC}}/justfile' all
+    fi
     suite='{{name}}'
     case "$suite" in
         *_test) ;;
@@ -145,7 +146,7 @@ test name *args='':
 # Clean C: the common subset of C89 and C++.  Compiles the suites and the
 # header itself; -pedantic-errors makes any extension a failure.
 [unix]
-check-c89:
+test-c89:
     #!/usr/bin/env bash
     set -uo pipefail
     fail=0
@@ -165,7 +166,7 @@ check-c89:
 
 # C++03: amoeba.h is usable from C++, so the suites must build there too.
 [unix]
-check-cpp03:
+test-cpp03:
     #!/usr/bin/env bash
     set -uo pipefail
     fail=0
@@ -342,7 +343,7 @@ clean:
     rm -f '{{SRC}}'/*.gen.inc
 
 [windows]
-check:
+test:
     @echo "the test recipes need a POSIX shell; see TODO.md (MSVC port)" && exit /b 2
 
 [windows]

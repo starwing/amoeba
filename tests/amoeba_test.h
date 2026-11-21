@@ -27,6 +27,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* aggregate zero-init that is warning-free in both C89 and C++03 */
+#ifdef __cplusplus
+# define AM_ZERO \
+    {            \
+    }
+#else
+# define AM_ZERO {0}
+#endif
+
 /* ---- logging --------------------------------------------------------- */
 
 static void am_test_debugf(const char *fmt, ...) {
@@ -39,8 +48,8 @@ static void am_test_debugf(const char *fmt, ...) {
 /* AM_DEBUG must be defined before amoeba.h's implementation. */
 #define AM_DEBUG am_test_debugf
 
-/* 1-byte write buffer: forces the dump writer's flush/refill path. */
-#define AM_BUF_LEN 1
+/* the smallest staging buffer the writer supports (AM_STATIC_ASSERT) */
+#define AM_BUF_LEN 16
 
 #define AM_IMPLEMENTATION
 #include "amoeba.h"

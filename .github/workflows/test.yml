@@ -1,6 +1,6 @@
 # CI for amoeba.
 #
-# The suites are driven by just (`just check`, `just check-release`, ...); see
+# The suites are driven by just (`just test`, `just test-release`, ...); see
 # justfile and tests/justfile.  Every check builds the generated entry tables
 # with misc/gen_entries.lua, so Lua is a build dependency of the tests.
 
@@ -34,19 +34,19 @@ jobs:
       - uses: extractions/setup-just@v2
 
       - name: Build + run every suite (ASan/UBSan)
-        run: just check
+        run: just test
 
       - name: Optimised build (-O2, no sanitizers)
-        run: just check-release
+        run: just test-release
 
       - name: Double precision
-        run: just check-double
+        run: just test-double
 
       - name: Clean C (C89) compile check
-        run: just check-c89
+        run: just test-c89
 
       - name: C++03 compile check
-        run: just check-cpp03
+        run: just test-cpp03
 
       - name: Lua binding
         run: just test-lua
