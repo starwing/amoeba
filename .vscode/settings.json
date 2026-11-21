@@ -1,0 +1,9 @@
+{
+    "C_Cpp.exclusionPolicy": "checkFilesAndFolders",
+    "C_Cpp.files.exclude": {
+        "archive/": true,
+        "notes/": true,
+        "**/.vscode": true,
+        "**/.vs": true
+    }
+}
