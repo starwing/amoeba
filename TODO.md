@@ -52,7 +52,7 @@
     `meta = ["amoeba", 1, solver_blob]`。
   - `am_Dumper` / `am_Loader` 末尾各加一个 `metadata` 回调，按 solver / var / constraint
     逐对象提供 blob；loader 侧用交付式 `int (*)(am_Loader*, int, const char*, size_t)`。
-  - `am_Type` 的枚举值 `am_Alloc*` 改名 `am_T*`，新增 `am_TVar`；`am_Allocf` 保留原名。
+  - `am_Allocf` 保留原名；`am_Type` 的枚举值已改名为 `am_T*`（`c92fac8`）。
   - 5 元旧流仍可读；新 writer 恒写 6 元。
 - 不做：对篡改流的语义校验（dump 只当本地缓存/存档）；edit 序列化（见 C3）。
 - 依赖：A3；D 节 Demo 的前置。

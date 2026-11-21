@@ -72,12 +72,12 @@ typedef struct am_Constraint am_Constraint;
 typedef unsigned am_Id;
 
 typedef enum am_Type {
-    am_AllocSolver = 1,
-    am_AllocConstraint,
-    am_AllocSuggest,
-    am_AllocHash,
-    am_AllocDump,
-    am_AllocPool
+    am_TSolver = 1,
+    am_TConstraint,
+    am_TSuggest,
+    am_THash,
+    am_TDump,
+    am_TPool
 } am_Type;
 
 typedef void *am_Allocf(void **pud, void *p, size_t ns, size_t os, am_Type t);
@@ -306,7 +306,7 @@ static void amM_put(am_MemPool *pool, void *obj)
 static void *amM_realloc(am_Solver *S, void *p, size_t n, size_t o, am_Type t) {
     size_t grow = n > o ? n - o : 0;
     void  *np;
-    if (t == am_AllocSolver) return S->allocf(&S->ud, p, n, o, t);
+    if (t == am_TSolver) return S->allocf(&S->ud, p, n, o, t);
     /* equality fails so 0 can keep meaning "unlimited" */
     if (S->maxmem != 0 && grow >= S->maxmem) return NULL;
     np = S->allocf(&S->ud, p, n, o, t);
@@ -317,13 +317,13 @@ static void *amM_realloc(am_Solver *S, void *p, size_t n, size_t o, am_Type t) {
 
 static void amM_freearena(am_Solver *S, am_Arena *a) {
     if (!a->buf) return;
-    amM_realloc(S, a->buf, 0, a->size, am_AllocDump);
+    amM_realloc(S, a->buf, 0, a->size, am_TDump);
     a->buf = NULL, a->size = 0;
 }
 
 static void *amM_allocarena(am_Solver *S, am_Arena *a, size_t size) {
     assert(a->buf == NULL);
-    a->buf = amM_realloc(S, NULL, size, 0, am_AllocDump);
+    a->buf = amM_realloc(S, NULL, size, 0, am_TDump);
     if (a->buf) a->size = size;
     return a->buf;
 }
@@ -338,7 +338,7 @@ static void amM_free(am_Solver *S, am_MemPool *pool) {
     const size_t offset = AM_POOL_SIZE - sizeof(void *);
     while (pool->pages != NULL) {
         void *next = *(void **)((char *)pool->pages + offset);
-        amM_realloc(S, pool->pages, 0, AM_POOL_SIZE, am_AllocPool);
+        amM_realloc(S, pool->pages, 0, AM_POOL_SIZE, am_TPool);
         pool->pages = next;
     }
     amM_init(pool, pool->size);
@@ -349,7 +349,7 @@ static void *amM_get(am_Solver *S, am_MemPool *pool) {
     const size_t offset = AM_POOL_SIZE - sizeof(void *);
     char        *page, *end, *obj = (char *)pool->freed;
     if (obj != NULL) return (pool->freed = *(void **)obj), obj;
-    page = (char *)amM_realloc(S, NULL, AM_POOL_SIZE, 0, am_AllocPool);
+    page = (char *)amM_realloc(S, NULL, AM_POOL_SIZE, 0, am_TPool);
     if (page == NULL) return NULL;
     end = &page[offset], *(void **)end = pool->pages;
     pool->pages = page, page += size, end -= size;
@@ -408,7 +408,7 @@ static int amH_next(am_Iterator *it) {
 static void amH_free(am_Solver *S, am_Table *t) {
     size_t hsize = t->size * (sizeof(am_Key) + t->value_size);
     if (hsize == 0) return;
-    if (!t->arena) amM_realloc(S, t->keys, 0, hsize, am_AllocHash);
+    if (!t->arena) amM_realloc(S, t->keys, 0, hsize, am_THash);
     amH_init(t, t->value_size);
 }
 
@@ -437,7 +437,7 @@ static int amH_alloc(am_Table *t, am_Solver *S, size_t req, size_t vsz) {
     am_Key *keys;
     amC(req <= (~(am_Size)0 >> 1));
     size = amH_calcsize((am_Size)req), objs = size * (sizeof(am_Key) + vsz);
-    keys = (am_Key *)amM_realloc(S, NULL, objs, 0, am_AllocHash);
+    keys = (am_Key *)amM_realloc(S, NULL, objs, 0, am_THash);
     amC(keys != NULL);
     return amH_attach(t, keys, size, vsz), AM_OK;
 }
@@ -581,7 +581,7 @@ static am_Suggest *amC_newedit(am_Solver *S, am_Id var, am_Num strength) {
     if ((ve = (am_Var *)amH_get(&S->vars, amS_var(var))) == NULL) return NULL;
     s = (am_Suggest **)amH_set(S, &S->suggests, amS_var(var));
     if (s == NULL) return NULL;
-    *s = (am_Suggest *)amM_realloc(S, NULL, sizeof(**s), 0, am_AllocSuggest);
+    *s = (am_Suggest *)amM_realloc(S, NULL, sizeof(**s), 0, am_TSuggest);
     if (*s == NULL) return amH_del(&S->suggests, s), (am_Suggest *)NULL;
     memset(*s, 0, sizeof(**s));
     sym.u.id = var, sym.u.type = AM_DUMMY; /* the edit is the variable's role */
@@ -597,7 +597,7 @@ static am_Suggest *amC_newedit(am_Solver *S, am_Id var, am_Num strength) {
 
 static void amC_freesuggest(am_Solver *S, am_Suggest *s) {
     amH_free(S, &s->dirtyset), am_delconstraint(&s->constraint);
-    amM_realloc(S, s, 0, sizeof(am_Suggest), am_AllocSuggest);
+    amM_realloc(S, s, 0, sizeof(am_Suggest), am_TSuggest);
 }
 
 /* Cassowary algorithm */
@@ -1388,18 +1388,18 @@ static void *amS_defallocf(void **pud, void *p, size_t n, size_t o, am_Type t) {
 
 static void *amS_getcons(am_Solver *S) {
     if (S->allocf == amS_defallocf) return amM_get(S, &S->conspool);
-    return amM_realloc(S, NULL, sizeof(am_Constraint), 0, am_AllocConstraint);
+    return amM_realloc(S, NULL, sizeof(am_Constraint), 0, am_TConstraint);
 }
 
 static int amS_putcons(am_Solver *S, am_Constraint *c) {
     if (S->allocf == amS_defallocf) return amM_put(&S->conspool, c), 1;
-    return amM_realloc(S, c, 0, sizeof(*c), am_AllocConstraint), 0;
+    return amM_realloc(S, c, 0, sizeof(*c), am_TConstraint), 0;
 }
 
 AM_API am_Solver *am_newsolver(am_Allocf *allocf, void *ud) {
     am_Solver *S;
     if (allocf == NULL) allocf = amS_defallocf;
-    S = (am_Solver *)allocf(&ud, NULL, sizeof(am_Solver), 0, am_AllocSolver);
+    S = (am_Solver *)allocf(&ud, NULL, sizeof(am_Solver), 0, am_TSolver);
     if (S == NULL) return NULL;
     memset(S, 0, sizeof(*S)), S->ud = ud, S->allocf = allocf;
     amR_init(&S->objective);
@@ -1440,7 +1440,7 @@ AM_API void am_delsolver(am_Solver *S) {
         am_Suggest *s = *amH_val(am_Suggest *, it);
         amH_free(S, &s->dirtyset);
         amH_free(S, &s->constraint.expression.terms);
-        amM_realloc(S, s, 0, sizeof(am_Suggest), am_AllocSuggest);
+        amM_realloc(S, s, 0, sizeof(am_Suggest), am_TSuggest);
     }
     it = amH_iter(&S->rows);
     while (amH_next(&it)) amR_free(S, amH_val(am_Row, it));
@@ -1451,7 +1451,7 @@ AM_API void am_delsolver(am_Solver *S) {
     amH_free(S, &S->rows);
     amM_free(S, &S->conspool);
     amM_freearena(S, &S->arena);
-    amM_realloc(S, S, 0, sizeof(am_Solver), am_AllocSolver);
+    amM_realloc(S, S, 0, sizeof(am_Solver), am_TSolver);
 }
 
 AM_API void am_updatevars(am_Solver *S) {
@@ -1715,13 +1715,13 @@ AM_API int am_dump(am_Solver *S, am_Dumper *dumper) {
     cons_alloc = sizeof(am_Symbol) * S->constraints.count;
     sym_alloc = sizeof(am_Symbol) * (cons_alloc * 2 + S->vars.count);
     memset(&X, 0, sizeof(X)), X.S = S, X.ret = AM_FAILED;
-    X.syms = (am_Symbol *)amM_realloc(S, NULL, sym_alloc, 0, am_AllocDump);
-    X.cons = (am_Symbol *)amM_realloc(S, NULL, cons_alloc, 0, am_AllocDump);
+    X.syms = (am_Symbol *)amM_realloc(S, NULL, sym_alloc, 0, am_TDump);
+    X.cons = (am_Symbol *)amM_realloc(S, NULL, cons_alloc, 0, am_TDump);
     ok = (!sym_alloc || X.syms) && (!cons_alloc || X.cons);
     if (ok && (X.ret = amD_collect(&X)) == AM_OK)
         X.dumper = dumper, X.p = X.buf, X.ret = amD_all(&X);
-    if (X.syms) amM_realloc(S, X.syms, 0, sym_alloc, am_AllocDump);
-    if (X.cons) amM_realloc(S, X.cons, 0, cons_alloc, am_AllocDump);
+    if (X.syms) amM_realloc(S, X.syms, 0, sym_alloc, am_TDump);
+    if (X.cons) amM_realloc(S, X.cons, 0, cons_alloc, am_TDump);
     return amH_free(S, &X.symmap), X.ret;
 }
 

@@ -313,7 +313,7 @@ static int fail_constraint_alloc;
 
 static void *clone_test_allocf(void **pud, void *p, size_t n, size_t o,
                                am_Type t) {
-    if (n != 0 && fail_constraint_alloc && t == am_AllocConstraint) return NULL;
+    if (n != 0 && fail_constraint_alloc && t == am_TConstraint) return NULL;
     return am_test_allocf(pud, p, n, o, t);
 }
 
