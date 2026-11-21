@@ -22,9 +22,7 @@
  * kind is B (container), T (text) or I (icon); clip-group is 0 for the
  * page and 1/2/3 for the left list, transcript and file list viewports.
  * misc/render_layout.py turns that dump into a PNG.  --bench measures
- * build, suggest, dump and load instead; --split adds per-phase timings and
- * the allocation count between load and the first suggest, --loadonly the
- * load alone.
+ * build, suggest, dump and load instead.
  */
 
 #define AM_IMPLEMENTATION
@@ -1004,17 +1002,19 @@ static void bench_load(void *p) {
     am_delsolver(S);
 }
 
-static double ui_now(void) { return (double)clock() / (double)CLOCKS_PER_SEC; }
+static double bench_now(void) {
+    return (double)clock() / (double)CLOCKS_PER_SEC;
+}
 
 static void bench_run(const char *name, void (*fn)(void *), void *ctx) {
     double t0, dt;
     long   n = 0;
     fn(ctx);
-    t0 = ui_now();
+    t0 = bench_now();
     do {
         fn(ctx);
         ++n;
-        dt = ui_now() - t0;
+        dt = bench_now() - t0;
     } while (dt < 0.20);
     printf("%-24s %10.1f ns/op  (%ld iters)\n", name, dt * 1e9 / n, n);
 }
@@ -1066,24 +1066,7 @@ static void bench_io(UIBench *b, UIDumpBench *d, UILoadBench *l) {
     bench_run("load+suggest", bench_load_suggest, l);
 }
 
-static void run_bench(void) {
-    UIBench     b;
-    UIDumpBench d;
-    UILoadBench l;
-    bench_init(&b, &d, &l);
-    printf("layout: %d boxes, %d constraints\n", b.L->nbox, b.L->ncons);
-    bench_run("build", bench_build, &b);
-    bench_run("build+suggest", bench_build_suggest, &b);
-    bench_run("suggest (9 edits)", bench_suggest, &b);
-    bench_io(&b, &d, &l);
-    layout_free(b.L);
-    free(d.buf.p);
-    free(b.tmp);
-    free(b.L);
-    if (bench_sink < 0) printf("sink %f\n", (double)bench_sink);
-}
-
-/* ---- --split / --loadonly: time and count one load in pieces ---- */
+/* ---- --split / --loadonly: the plan-e2v8 §1.2 protocol ---- */
 
 typedef struct {
     unsigned nalloc;
@@ -1108,36 +1091,37 @@ static void *ui_count_alloc(void **pud, void *p, size_t ns, size_t os,
 }
 
 typedef struct {
-    double   load, first, rest, upd, del, total, sum;
-    unsigned allocs, wake;
-    size_t   live, peak;
+    double load, first, rest, upd, del, total, sum;
 } UISplit;
 
+static double ui_now(void) { return (double)clock() / (double)CLOCKS_PER_SEC; }
+
+/* a value-only checksum: the loaded tableau must reproduce the same numbers */
 static double split_sum(am_Solver *S) {
     am_Id  v = 0;
     double sum = 0;
     int    i = 0;
-    /* a value-only checksum: the loaded tableau must reproduce the numbers */
     while ((v = am_vars(S, v)) != 0)
         sum += (double)*am_varvalue(S, v, NULL) * (double)(++i);
     return sum;
 }
 
 static void split_suggest(UILoadBench *l, am_Solver *S, UISplit *t) {
-    unsigned start = ui_mem.nalloc;
-    int      j;
+    int j;
     for (j = 0; j < ED_COUNT; ++j) {
         double a = ui_now();
-        am_suggest(S, l->load.edit[j], ui_editv(&l->sizes[1], j));
+        am_suggest(S, l->load.edit[j], ui_editv(&ui_sizes[1], j));
         a = (ui_now() - a) * 1e9;
         if (j == 0)
-            t->first = a, t->wake = ui_mem.nalloc - start;
+            t->first = a;
         else
             t->rest += a;
     }
 }
 
-static void split_round(UILoadBench *l, UIDumpBench *d, UISplit *t) {
+static void split_round(UILoadBench *l, UIDumpBench *d, UISplit *t,
+                        unsigned *pnalloc, unsigned *pwake, size_t *plive,
+                        size_t *ppeak) {
     am_Solver *S;
     double     a;
     memset(&ui_mem, 0, sizeof(ui_mem));
@@ -1146,12 +1130,13 @@ static void split_round(UILoadBench *l, UIDumpBench *d, UISplit *t) {
     S = am_load(ui_count_alloc, NULL, &l->load.base, 0);
     t->load = (ui_now() - a) * 1e9;
     assert(S != NULL);
-    t->allocs = ui_mem.nalloc, t->live = ui_mem.live;
+    *pnalloc = ui_mem.nalloc, *plive = ui_mem.live;
     split_suggest(l, S, t);
+    *pwake = ui_mem.nalloc - *pnalloc;
     a = ui_now(), am_updatevars(S), t->upd = (ui_now() - a) * 1e9;
     t->sum = split_sum(S);
     a = ui_now(), am_delsolver(S), t->del = (ui_now() - a) * 1e9;
-    t->peak = ui_mem.peak;
+    *ppeak = ui_mem.peak;
     t->total = t->load + t->first + t->rest + t->upd;
     assert(ui_mem.live == 0);
 }
@@ -1164,35 +1149,56 @@ static void split_keep(UISplit *best, const UISplit *t) {
     if (t->del < best->del) best->del = t->del;
     if (t->total < best->total) best->total = t->total;
     best->sum = t->sum;
-    best->allocs = t->allocs, best->wake = t->wake;
-    best->live = t->live, best->peak = t->peak;
 }
 
-static void split_print(const UISplit *t) {
+static void split_print(const UISplit *t, unsigned allocs, unsigned wake,
+                        size_t live, size_t peak) {
     printf("  load           %8.1f ns   allocs %u   live %lu\n", t->load,
-           t->allocs, (unsigned long)t->live);
-    /* "wake" is the allocations from load return through the first suggest */
-    printf("  first suggest  %8.1f ns   wake allocs %u\n", t->first, t->wake);
+           allocs, (unsigned long)live);
+    printf("  first suggest  %8.1f ns   wake allocs %u\n", t->first, wake);
     printf("  rest 8 suggest %8.1f ns\n", t->rest);
     printf("  updatevars     %8.1f ns\n", t->upd);
     printf("  del            %8.1f ns\n", t->del);
     printf("  load+first     %8.1f ns   peak %lu   sum %.9f\n", t->total,
-           (unsigned long)t->peak, t->sum);
+           (unsigned long)peak, t->sum);
 }
 
-static void bench_split(UIDumpBench *d, UILoadBench *l) {
-    UISplit best;
-    int     r;
+static void bench_split(UIBench *b, UIDumpBench *d, UILoadBench *l) {
+    UISplit  best;
+    unsigned allocs = 0, wake = 0;
+    size_t   live = 0, peak = 0;
+    int      r;
+    (void)b;
     best.load = best.first = best.rest = 1e18;
     best.upd = best.del = best.total = 1e18;
     for (r = 0; r < 402; ++r) {
-        UISplit t;
+        UISplit  t;
+        unsigned na, nw;
+        size_t   lv, pk;
         memset(&t, 0, sizeof(t));
-        split_round(l, d, &t);
+        split_round(l, d, &t, &na, &nw, &lv, &pk);
         if (r < 201) continue; /* the first half warms the cpu */
+        allocs = na, wake = nw, live = lv, peak = pk;
         split_keep(&best, &t);
     }
-    split_print(&best);
+    split_print(&best, allocs, wake, live, peak);
+}
+
+static void run_bench(void) {
+    UIBench     b;
+    UIDumpBench d;
+    UILoadBench l;
+    bench_init(&b, &d, &l);
+    printf("layout: %d boxes, %d constraints\n", b.L->nbox, b.L->ncons);
+    bench_run("build", bench_build, &b);
+    bench_run("build+suggest", bench_build_suggest, &b);
+    bench_run("suggest (9 edits)", bench_suggest, &b);
+    bench_io(&b, &d, &l);
+    layout_free(b.L);
+    free(d.buf.p);
+    free(b.tmp);
+    free(b.L);
+    if (bench_sink < 0) printf("sink %f\n", (double)bench_sink);
 }
 
 static void run_split(void) {
@@ -1204,17 +1210,18 @@ static void run_split(void) {
     printf("dump: %lu bytes for %d boxes\n", (unsigned long)d.buf.n, b.L->nbox);
     bench_run("dump", bench_dump, &d);
     load_init(&l, &d);
-    bench_split(&d, &l);
+    printf("cache filled at load\n");
+    bench_split(&b, &d, &l);
     layout_free(b.L);
     free(d.buf.p);
     free(b.tmp);
     free(b.L);
 }
 
-static double load_ns(UILoadBench *l) {
+static double load_ns(UILoadBench *l, UIDumpBench *d) {
     am_Solver *S;
     double     a;
-    l->load.used = 0, l->load.buf = l->buf->p, l->load.len = l->buf->n;
+    l->load.used = 0, l->load.buf = d->buf.p, l->load.len = d->buf.n;
     a = ui_now();
     S = am_load(NULL, NULL, &l->load.base, 0);
     a = (ui_now() - a) * 1e9;
@@ -1233,7 +1240,7 @@ static void run_loadonly(void) {
     dump_init(&b, &d);
     load_init(&l, &d);
     for (i = 0; i < 501; ++i) {
-        double a = load_ns(&l);
+        double a = load_ns(&l, &d);
         if (i >= 300 && a < best) best = a;
     }
     printf("loadonly        %8.1f ns\n", best);
