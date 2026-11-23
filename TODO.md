@@ -11,55 +11,23 @@
 
 ## 0. 优先级总览
 
-- **P1（恢复与健壮性）**：A3、A5、B1、B2、B4、B5、B7。
-- **P2（能力与质量）**：C3–C6。
+- **P1（恢复与健壮性）**：B1、B2、B4、B5、B7。
+- **P2（能力与质量）**：C4–C6。
 - **P3（清理）**：A4。
 - **两步实施（2026-11-15 拍板）**：E2（dump/load 去 id）。
 - **提案（未批准）**：D 节的可视化 Demo。
 
 ## 1. 核心待做表（正确性与 load）
 
-| ID | P | 问题 | 依赖 | 用例 |
-|---|---|---|---|---|
-| A3 | P1 | dump/load 没有 magic + 版本号 | 无 | 需新建（真 dump） |
-| A5 | P1 | dump/load 没有应用元数据 | A3 | 需新建（真 dump + 回调） |
+无。A3（版本头）已随 dump/load v5 落地；A5 的 metadata 回调方案已否决（应用元数据改为追加
+在流之后）；C3（dump 的 edit 副作用）已由 v5 的 edits 段解决。见
+[notes/changes.md](notes/changes.md)。
 
 ## 2. 背景与依赖（事实，不是顺序）
 
-- **根因分组**：`A3` 是流没有版本头；`A5` 是流里没有 app 自己的数据。
-- **依赖**：
-  - `A3`：无前置；继续用「真 dump + 只改目标字段」的策略。
-  - `A5`：依赖 A3；两者共用一次顶层格式 bump，A3 先落地或与 A5 同一批实现。
-- **A3/A5 的用例策略**：继续用 `am_dump()` 生成真流、只改目标字段；手搓流会和真实 writer
-  不一致。5 元 legacy 流用当前 writer 生成的固定 fixture（真实 dump），不手写。
+A3/A5/C3 已关闭，不再有依赖。E2（dump/load 去 id）见 §7。
 
-## 3. 重点条目（A3 / A5 / A4）
-
-### A3. dump/load 加 magic + 版本号
-
-- 现状：顶层是 5 元数组，没有版本信息；换布局会静默误读。
-- 候选设计（未落地；msgpack 合法性已验证）：顶层 6 元数组
-  `[["amoeba", 1], total, vars, constraints, rows, objective]`。分析见
-  [notes/dump-format.md](notes/dump-format.md) §8；上一版里实现过，后随旧提案一起 reset。
-- 前置：无；继续用真 dump + 只改目标字段的用例策略。
-
-### A5. dump/load 应用元数据（与 A3 同批）
-
-- 现状：dump 只通过 `var_name` / `cons_name` 带名字；load 后 app 拿不回自己的 doc，只能把
-  doc 另存成 JSON，或靠名字重建。
-- 方案（2026-11-13 用户拍板）：
-  - 顶层 6 元 `[meta, total, vars, constraints, rows, objective]`；
-    `meta = ["amoeba", 1, solver_blob]`。
-  - `am_Dumper` / `am_Loader` 末尾各加一个 `metadata` 回调，按 solver / var / constraint
-    逐对象提供 blob；loader 侧用交付式 `int (*)(am_Loader*, int, const char*, size_t)`。
-  - `am_Allocf` 保留原名；`am_Type` 的枚举值已改名为 `am_T*`（`c92fac8`）。
-  - 5 元旧流仍可读；新 writer 恒写 6 元。
-- 不做：对篡改流的语义校验（dump 只当本地缓存/存档）；edit 序列化（见 C3）。
-- 依赖：A3；D 节 Demo 的前置。
-- 验收：solver/var/cons 元数据往返；空元数据在没有回调时也能读写；非空元数据但没有 loader
-  回调时 `am_load()` 返回 `NULL`；5 元旧流可 load；`just check`、`check-double`、
-  `check-c89`、`test-lua` 全绿。
-- 详见 [notes/plan-a3-meta.md](notes/plan-a3-meta.md)。
+## 3. 重点条目（A4）
 
 ### A4. 工作区清理（需要用户确认后再删）
 
@@ -102,25 +70,7 @@
 - 做法：要么接受（现状，和 znet 一致），要么预生成并提交（省一个依赖，但多一步同步）。
 - 验收：随便选一个，并在 notes/testing.md 写清楚。
 
-## 5. 能力与质量（C3–C6）
-
-### C3. `am_dump` 的副作用
-
-- 现状：`am_dump()` 会 `am_clearedits()`（丢掉所有 suggest/edit）——已在
-  notes/dump-format.md §7 写明，但接口本身仍然有副作用。
-- **直接去掉 clear 不可行**：suggest 的隐藏约束已经在 `S->constraints` / `S->rows` 里，
-  格式里却没有 suggests 段，loader 也无法把某条约束认成 edit；不 clear 只会 dump 出一份
-  “带匿名隐藏约束”的表，edit_value、强度和变量绑定仍然丢，load 后还会多出普通约束。
-- 可行路线：
-  - **逻辑重放**：dump 前保存 `(var, strength, edit_value)`，clear 后写 base 流，再在流里加
-    edits 段；load 后 `am_addedit()` + `am_suggest()` 重放。实测可行，但 `am_dump()` 仍会
-    改 live solver（保存后界面会回弹），且重放不是逐位相等、强度会被夹到 `AM_STRONG`。
-  - **精确重建**：给 suggest 约束加流内标记，load 时构造 `am_Suggest` 并接管已读约束、
-    marker/other 与行；能保住 tableau，但侵入 dump/load 内部，且 `cons_name` 会看到隐藏约束。
-- 本期不做（见 [notes/plan-a3-meta.md](notes/plan-a3-meta.md) §8）；Demo 用「松手提交
-  nudge」或 doc 侧 replay，不在拖拽过程中 dump。
-- 验收：想清楚后写进 README；目前**至少不要**在拖拽过程中 dump。
-- （magic/版本号见 A3；应用元数据见 A5。）
+## 5. 能力与质量（C4–C6）
 
 ### C4. 数值
 
@@ -130,7 +80,6 @@
 
 ### C5. 性能
 
-- [ ] 把 `enaml_like_benchmark` 的基线数据写进 README（现在只有「比 kiwi 快」的定性说法）；
 - [ ] 加一个 `bench` CI job（阈值放宽，只防性能悬崖）；
 - [ ] `yoga_benchmark.cpp` 依赖外部 yoga，建议加个「未安装则跳过」的检测，别让 `make` 挂掉。
 
@@ -157,7 +106,8 @@
 
 目标不是做产品，而是**验证 amoeba 的表达能力与交互手感**，同时得到一个能对外展示的 demo。
 
-**前置**：A3 + A5（6 元流 + 元数据回调）。约束形态由 doc 保存，内省 API 只是可选的
+**前置**：v5 流（6 元顶层 `[meta, total, vars, cons, edits, scratch]`）；应用元数据追加在
+流之后。约束形态由 doc 保存，内省 API 只是可选的
 反查能力。
 
 ### D1. 需求拆解（功能清单）
@@ -282,7 +232,7 @@ M0-M1 建议先在 Lua 原型里验证（一天内就能看到拖动重算），
 | 求解失败后约束不可重试 | 编辑走「临时 solver 试算 + 回滚」（D3 决策 4）；失败后先 `am_remove()`/调整再重加 |
 | 拖动时抖动/震荡 | 强度分级：拖动变量 STRONG、nudge WEAK、真正布局约束 REQUIRED；必要时加「拖动期间锁定结构约束」 |
 | 坐标精度（像素 + float32） | 用**相对坐标/归一化坐标**存储，渲染时再乘缩放的画布尺寸；或直接开 `AM_USE_DOUBLE` |
-| `am_load` 读不可信文件不安全 | loader 只保证 load 期结构校验、`am_load()` 本身不 crash；非 dump 数据 load 后的正确性/后续 crash 不保证，A3 也没有 magic/version。**不要** load 不可信文件；文档用 JSON，二进制 dump 只作本地缓存 |
+| `am_load` 读不可信文件不安全 | loader 只保证 load 期结构校验、`am_load()` 本身不 crash；非 dump 数据 load 后的正确性/后续 crash 不保证；流有版本号（`meta` 的 5）但没有字节前缀 magic。**不要** load 不可信文件；文档用 JSON，二进制 dump 只作本地缓存 |
 | 约束越多越慢 | 先全量重建（< 200 条约束时够快，需用 M1 实测确认），再考虑增量 |
 
 ### D6. 开工前需要你拍板的三件事
@@ -303,7 +253,7 @@ M0-M1 建议先在 Lua 原型里验证（一天内就能看到拖动重算），
   id；行里的符号引用改成「变量下标 / 约束下标 + marker-or-other」。
 - 依赖：第一步的 id 规划（已提交）。
 - 验收：同一套矩阵全绿；真 dump 往返后 `am_Id` 布局符合规划；手搓流测试按新格式改写。
-- 与 A3 / A5 的关系：E2 会再改一次顶层结构，A3/A5 的流 bump 应与 E2 合并成一次。
+- 与 A3 的关系：A3 已落地（v5 流）；E2 若再改顶层结构，需要再 bump 一次版本号。
 
 ## 8. 相关
 

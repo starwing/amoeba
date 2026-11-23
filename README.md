@@ -14,11 +14,47 @@ Amoeba is a pure C implement of Cassowary algorithm. It:
 [3]: http://constraints.cs.washington.edu/solvers/uist97.html
 [4]: https://www.lua.org/license.html
 
+## Why Amoeba
+
+Amoeba is a Cassowary auto-layout engine that is faster than Facebook Yoga where
+a GUI actually spends its time: a warm round of edits is ~12x faster, and
+restoring a dumped solver and applying the first round is ~2.2x faster than
+rebuilding the Yoga tree and laying it out.  It is not a flexbox clone: the
+layout is an arbitrary set of linear constraints.
+
+The benchmark scene is the DeepSeek Harness window (272 boxes, 1104
+constraints), measured with `just bench` and `just bench-yoga` at `-O2` on an
+Apple M4:
+
+| operation | Amoeba | Yoga | |
+|---|---:|---:|---|
+| cold build | 2.2 ms | 83 us | 26x slower |
+| build + first edit | 1.9 ms | 130 us | 15x slower |
+| warm edit (9 suggestions) | 4.0 us | 47 us | **12x faster** |
+| load a dumped solver | 22 us | 83 us (build) | **3.8x faster** |
+| load + first edit | 59 us | 130 us (build + first edit) | **2.2x faster** |
+
+Cassowary pays for constraint compilation once, at build time: that one-time
+cost is why the cold build is slower.  The design turns it into a cache.
+`am_dump()` writes the solved tableau (135 KB here) in 44 us; `am_load()`
+restores it in 22 us.  The first call that needs the term tables materializes
+them in one pass with zero allocations, so restoring and applying the first
+edit is faster than Yoga's build + first edit.
+
+A suggest would otherwise scan every row to find the ones that contain the
+edited variable.  Each edit keeps a cache of exactly those rows, so a warm
+suggest walks only them (4.0 us for nine edits instead of 47 us).  Dump writes
+that cache as a hint; load validates and fills it, so the first suggest after
+load does not rescan either.
+
+Yoga still wins the one-time cold build (83 us vs 2.2 ms).  The win starts
+once a layout is built, which is the common case for a window that resizes,
+scrolls and edits.  Numbers drift with the machine; the shape is the point.
+
 Improvement relative to Kiwi:
 - Single header library that easy to distribution.
 - Lua binding vs. Python binding.
-- Suggest cache makes suggest performance much better than kiwi.
-- Dump/load support improves the performance of building solver.
+- A per-edit suggest cache and a zero-allocation wake (see above).
 
 ## How To Use
 
@@ -135,22 +171,10 @@ driven by six resize edits (window width/height, both sidecar widths, the
 transcript text insets) and three scroll edits for the two-layer lists.  Text
 sizes are intrinsic inputs, so both engines measure layout, not shaping.
 
-Measured on an Apple Silicon machine with `-O2`; the Yoga port needs 288
-nodes (a few flex spacers are structural):
-
-| operation | amoeba | Yoga |
-|---|---:|---:|
-| build + one suggest | 2.35 ms | 134 us |
-| dump | 201 us | -- |
-| load | 190 us | -- |
-| load + one suggest | 357 us | 134 us (build + suggest) |
-| warm suggest (9 edits) | 4.0 us | 49 us |
-
-Cassowary pays the constraint compilation once per build, which is ~17x
-slower than Yoga for build + one suggest, but an incremental suggest is ~12x
-faster.  A dump/load round skips the rebuild: `load + one suggest` is 2.7x
-slower than Yoga's `build + suggest` at this commit, and that gap is the load
-optimization target.  Numbers drift with the machine; the shape is the point.
+The Yoga port needs 288 nodes (a few flex spacers are structural).  The
+comparison is in [Why Amoeba](#why-amoeba), measured on an Apple Silicon
+machine with `-O2` on 2026-11-23; numbers drift with the machine, the shape is
+the point.
 
 `just layout 2748 1263` dumps every box as `kind x y w h clip name`;
 `misc/render_layout.py` renders that dump as a PNG and can overlay the
@@ -189,12 +213,13 @@ All functions below that returns `int` are returning error codes:
 Amoeba can store the whole state of a solver in binary data and load it back
 into a new solver (`am_load()`).
 
-`am_dump()` drops every suggest/edit (`am_clearedits()`): what gets dumped is the
-state after re-solving without them.  `am_load()` creates a clean solver and
-returns it, or `NULL` when the stream cannot be loaded.  A successful load
-writes every variable binding from the loaded tableau: a basic variable gets its
-row constant, a variable without a row gets 0.  `load_var()` still decides where
-each binding lives.
+`am_dump()` writes the whole solver state, including every suggest/edit: the
+edit's variable, strength and value are in the stream.  `am_load()` creates a
+clean solver and returns it, or `NULL` when the stream cannot be loaded.  The
+edits are rebuilt with their hidden equality constraints, so `am_hasedit()` is
+true immediately and `am_suggest()` continues from the dumped value.  Bindings
+are restored from the stream too: every variable gets its dumped value, and
+`load_var()` decides where that value lives.
 
 The loader can see the new solver before the body is parsed: if
 `am_Loader::solver` is set, it is called once, right after the stream header is
