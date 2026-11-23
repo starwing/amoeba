@@ -7,10 +7,12 @@
  * notes/invariant.md: the infeasible-row work list is empty, no non-external
  * row has a negative constant, and an edit's marker is the variable's own
  * ERROR column.  Every few steps the whole solver is round-tripped through
- * am_dump()/am_load(): the loaded solver must have the same shape and the
- * bindings its tableau implies, a truncated stream must not load, and a
- * re-dump/re-load must be stable.  Every fourth round trip replaces the
- * model's solver with the loaded copy, so later operations run on it.
+ * am_dump()/am_load(): the loaded solver must have the same shape, the same
+ * bindings, and the same number in every tableau row and the objective (so a
+ * bad coefficient or constant cannot hide behind an unchanged binding); a
+ * truncated stream must not load, and a re-dump/re-load must be stable.  Every
+ * fourth round trip replaces the model's solver with the loaded copy, so later
+ * operations run on it.
  *
  * The fuzz reads internal fields on purpose: it is a development tool, not a
  * test suite, and its checks are contract-level invariants rather than helper
@@ -21,6 +23,7 @@
 #define AM_IMPLEMENTATION
 #include "amoeba.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -70,6 +73,16 @@ static unsigned rnd(void) {
 
 static void fail(const char *what, unsigned seed, int step) {
     fprintf(stderr, "FAIL seed=%u step=%d: %s\n", seed, step, what);
+    exit(2);
+}
+
+static void failf(unsigned seed, int step, const char *fmt, ...) {
+    va_list ap;
+    fprintf(stderr, "FAIL seed=%u step=%d: ", seed, step);
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
     exit(2);
 }
 
@@ -142,6 +155,10 @@ static const char *reader(am_Loader *l, size_t *plen) {
 
 /* ---- invariant checks ---- */
 
+static const am_Num *termof(const am_Row *r, am_Symbol sym) {
+    return (const am_Num *)amH_get(&r->terms, sym);
+}
+
 static int owned(am_Solver *S, am_Symbol sym) {
     am_Iterator it;
     if (amV_isexternal(sym)) return amV_get(S, sym.u.id) != NULL;
@@ -165,10 +182,10 @@ static void check_pairs(am_Solver *S, unsigned seed, int step) {
         if (amV_isexternal(c->marker) || amV_isexternal(c->other)) continue;
         rt = amH_iter(&S->rows);
         while (amH_next(&rt)) {
-            am_Row *r = amH_val(am_Row, rt);
-            am_Num *tm = (am_Num *)amH_get(&r->terms, c->marker);
-            am_Num *to = (am_Num *)amH_get(&r->terms, c->other);
-            am_Num  m, o;
+            am_Row       *r = amH_val(am_Row, rt);
+            const am_Num *tm = termof(r, c->marker);
+            const am_Num *to = termof(r, c->other);
+            am_Num        m, o;
             m = rt.key.bits == c->marker.bits ? 1.f : (tm ? -*tm : 0.f);
             o = rt.key.bits == c->other.bits ? 1.f : (to ? -*to : 0.f);
             if (m + o != 0.f)
@@ -214,12 +231,120 @@ static void verify_bindings(am_Solver *S, const am_Id *ids,
                             const am_Num *values, unsigned seed, int step) {
     unsigned i;
     for (i = 0; i < NV; ++i) {
-        am_Row *r = amR_get(S, amS_var(ids[i]));
+        am_Row *r = (am_Row *)amH_get(&S->rows, amS_var(ids[i]));
         am_Num  want = r ? r->constant : (am_Num)0;
         if (memcmp(&want, &values[i], sizeof(am_Num)) != 0)
             fail("a loaded binding does not match the dumped tableau", seed,
                  step);
     }
+}
+
+/* ---- dump / load: rows and objective, not just bindings ---- */
+
+/* every column the tableau can name: variables, both columns of each public
+ * constraint, both columns of each edit */
+#define NSYMS (NV + 2 * NC + 2 * NV)
+
+typedef struct symmap {
+    am_Symbol src[NSYMS];
+    am_Symbol dst[NSYMS];
+    unsigned  n;
+} symmap;
+
+static void map_add(symmap *m, am_Symbol src, am_Symbol dst) {
+    assert(m->n < NSYMS);
+    m->src[m->n] = src, m->dst[m->n] = dst, m->n += 1;
+}
+
+static void map_vars(const lbuf *lb, symmap *m) {
+    unsigned i;
+    for (i = 0; i < NV; ++i)
+        if (vars[i]) map_add(m, amS_var(vars[i]), amS_var(lb->lvars[i]));
+}
+
+static void map_cons(const lbuf *lb, symmap *m, unsigned seed, int step) {
+    unsigned i;
+    for (i = 0; i < NC; ++i) {
+        am_Constraint *c = cons[i], *d = lb->lcons[i];
+        if (c == NULL) continue;
+        if (!amV_isexternal(c->marker)) {
+            if (d == NULL)
+                fail("a marker has no loaded constraint", seed, step);
+            map_add(m, c->marker, d->marker);
+        }
+        if (!amV_isexternal(c->other)) {
+            if (d == NULL)
+                fail("an other has no loaded constraint", seed, step);
+            map_add(m, c->other, d->other);
+        }
+    }
+}
+
+static void map_edits(am_Solver *S, am_Solver *L, const lbuf *lb, symmap *m,
+                      unsigned seed, int step) {
+    am_Iterator it = amH_iter(&S->suggests);
+    while (amH_next(&it)) {
+        am_Suggest  *s = *amH_val(am_Suggest *, it), *d;
+        am_Suggest **dp;
+        unsigned     i;
+        for (i = 0; i < NV; ++i)
+            if (vars[i] == it.key.u.id) break;
+        if (i == NV) fail("an edit is on an unknown variable", seed, step);
+        dp = (am_Suggest **)amH_get(&L->suggests, amS_var(lb->lvars[i]));
+        if (dp == NULL) fail("an edit has no loaded counterpart", seed, step);
+        d = *dp;
+        map_add(m, s->constraint.marker, d->constraint.marker);
+        map_add(m, s->constraint.other, d->constraint.other);
+    }
+}
+
+static void build_symmap(am_Solver *S, am_Solver *L, const lbuf *lb, symmap *m,
+                         unsigned seed, int step) {
+    m->n = 0;
+    map_vars(lb, m), map_cons(lb, m, seed, step);
+    map_edits(S, L, lb, m, seed, step);
+}
+
+static am_Symbol mapped(const symmap *m, am_Symbol sym, unsigned seed,
+                        int step) {
+    unsigned i;
+    for (i = 0; i < m->n; ++i)
+        if (m->src[i].bits == sym.bits) return m->dst[i];
+    fail("a tableau symbol has no loaded counterpart", seed, step);
+    return amS_null();
+}
+
+static void check_one_row(const symmap *m, const am_Row *a, const am_Row *b,
+                          const char *what, unsigned seed, int step) {
+    am_Iterator it = amH_iter(&a->terms);
+    if (a->terms.count != b->terms.count)
+        failf(seed, step, "the loaded %s has a different term count", what);
+    if (memcmp(&a->constant, &b->constant, sizeof(am_Num)) != 0)
+        failf(seed, step, "the loaded %s has a different constant", what);
+    while (amH_next(&it)) {
+        am_Symbol     key = mapped(m, it.key, seed, step);
+        const am_Num *term = termof(b, key);
+        if (term == NULL) failf(seed, step, "the loaded %s lost a term", what);
+        if (memcmp(term, amH_val(am_Num, it), sizeof(am_Num)) != 0)
+            failf(seed, step, "the loaded %s has a different coefficient",
+                  what);
+    }
+}
+
+static void check_rows(am_Solver *S, am_Solver *L, const lbuf *lb,
+                       unsigned seed, int step) {
+    symmap      m;
+    am_Iterator it;
+    build_symmap(S, L, lb, &m, seed, step);
+    it = amH_iter(&S->rows);
+    while (amH_next(&it)) {
+        const am_Row *a = amH_val(am_Row, it);
+        am_Symbol     k = mapped(&m, it.key, seed, step);
+        am_Row       *b = (am_Row *)amH_get(&L->rows, k);
+        if (b == NULL) fail("a loaded tableau is missing a row", seed, step);
+        check_one_row(&m, a, b, "row", seed, step);
+    }
+    check_one_row(&m, &S->objective, &L->objective, "objective", seed, step);
 }
 
 static void verify_truncation(const char *buf, size_t len, unsigned seed,
@@ -276,6 +401,7 @@ static am_Solver *check_roundtrip(am_Solver *S, unsigned seed, int step) {
     if ((L = am_load(NULL, NULL, &lb.base, 0)) == NULL)
         fail("am_load() failed", seed, step);
     if (lb.bad) fail("a load callback saw an unknown name", seed, step);
+    am_refcount(L, lb.lvars[0]); /* materialize before comparing tableau rows */
     if (L->vars.count != S->vars.count)
         fail("the loaded solver has a different variable count", seed, step);
     if (L->constraints.count != S->constraints.count)
@@ -283,6 +409,7 @@ static am_Solver *check_roundtrip(am_Solver *S, unsigned seed, int step) {
     if (L->rows.count != S->rows.count)
         fail("the loaded solver has a different row count", seed, step);
     verify_bindings(S, vars, lvals, seed, step);
+    check_rows(S, L, &lb, seed, step);
     verify_truncation(dbytes, len, seed, step);
 
     for (i = 0; i < NC; ++i) named[i] = lb.lcons[i];
@@ -301,6 +428,7 @@ static am_Solver *check_roundtrip(am_Solver *S, unsigned seed, int step) {
     if ((L2 = am_load(NULL, NULL, &lb2.base, 0)) == NULL)
         fail("re-load failed", seed, step);
     if (lb2.bad) fail("a re-load callback saw an unknown name", seed, step);
+    am_refcount(L2, lb2.lvars[0]); /* materialize before comparing */
     if (L2->vars.count != L->vars.count
         || L2->constraints.count != L->constraints.count
         || L2->rows.count != L->rows.count)
