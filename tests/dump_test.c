@@ -1740,7 +1740,7 @@ TEST(load_edit_then_suggest_updates_rows) {
     am_Id      vx, vy, loaded;
     char       buf[TEST_BUFSIZE];
     size_t     len = 0;
-    unsigned   slot;
+    unsigned   slot = 0;
     MyLoader   ml = AM_ZERO;
 
     build_edited(S, &x, &y, &vx, &vy);
@@ -1767,7 +1767,7 @@ TEST(load_edit_then_clearedits) {
     am_Id      vx, vy, loaded;
     char       buf[TEST_BUFSIZE];
     size_t     len = 0;
-    unsigned   slot;
+    unsigned   slot = 0;
     MyLoader   ml = AM_ZERO;
 
     build_edited(S, &x, &y, &vx, &vy);
@@ -1792,7 +1792,7 @@ TEST(load_edit_then_deledit) {
     am_Id      vx, vy, loaded;
     char       buf[TEST_BUFSIZE];
     size_t     len = 0;
-    unsigned   slot;
+    unsigned   slot = 0;
     MyLoader   ml = AM_ZERO;
 
     build_edited(S, &x, &y, &vx, &vy);
@@ -1817,7 +1817,7 @@ TEST(dump_load_dump_load_keeps_the_edit) {
     am_Id      vx, vy, loaded, loaded2;
     char       buf[TEST_BUFSIZE], again[TEST_BUFSIZE];
     size_t     len = 0, len2 = 0;
-    unsigned   slot, slot2;
+    unsigned   slot = 0, slot2 = 0;
     MyLoader   ml = AM_ZERO, ml2 = AM_ZERO;
 
     build_edited(S, &x, &y, &vx, &vy);

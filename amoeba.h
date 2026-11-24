@@ -442,7 +442,7 @@ AM_INLINE int amH_initarena(am_Solver *S, am_Arena *a, size_t size) {
 AM_INLINE void amH_ref(am_Arena *a, am_Table *t, am_Size n, size_t vs) {
     size_t bytes = (n = amH_calcsize(n)) * (sizeof(am_Key) + vs);
     assert(a->buf && a->used <= a->size && bytes <= a->size - a->used);
-    t->size = n, t->count = 0, t->value_size = vs, t->last_free = 0;
+    t->size = n, t->count = 0, t->value_size = (am_Size)vs, t->last_free = 0;
     t->keys = (am_Key *)((char *)a->buf + a->used), t->vals = t->keys + n;
     a->refs += 1, a->used += bytes;
 }
@@ -468,12 +468,11 @@ AM_INLINE void amH_free(am_Solver *S, am_Table *t) {
     amH_init(t, t->value_size);
 }
 
-AM_INLINE int amH_next(am_Iterator *it) {
-    am_Size   cur = it->offset, size = it->t->size;
-    am_Symbol key;
-    while (cur < size && (key = it->t->keys[cur].sym).u.id == 0) cur++;
+AM_INLINE am_Size amH_next(am_Iterator *it) {
+    am_Size cur = it->offset, size = it->t->size;
+    while (cur < size && (it->key = it->t->keys[cur].sym).u.id == 0) cur++;
     if (cur >= size) return it->key = amS_null(), it->offset = 0;
-    return it->key = key, it->offset = cur + 1;
+    return it->offset = cur + 1;
 }
 
 AM_INLINE am_Size amH_find(const am_Table *t, am_Symbol sym) {
@@ -496,7 +495,7 @@ AM_INLINE int amH_alloc(am_Table *t, am_Solver *S, size_t req, size_t vsz) {
     amC(req <= (~(am_Size)0 >> 1));
     size = amH_calcsize((am_Size)req), objs = size * (sizeof(am_Key) + vsz);
     amC((keys = (am_Key *)amM_realloc(S, NULL, objs, 0, am_THash)) != NULL);
-    t->size = (am_Size)size, t->value_size = vsz;
+    t->size = (am_Size)size, t->value_size = (am_Size)vsz;
     t->arena_id = 0, t->keys = keys, t->vals = keys + size;
     return amH_reset(t), AM_OK;
 }
@@ -1004,7 +1003,7 @@ AM_INLINE int amD_num(am_Dump *X, am_Num n) {
     const int hi = !amN_bigendian(), is32 = sizeof(am_Num) < sizeof(double);
     am_Bits   u;
     amE(amD_reserve(X, 1 + (am_Size)sizeof(am_Num)));
-    *X->p++ = (char)(sizeof(am_Num) < sizeof(double) ? 0xCA : 0xCB);
+    *X->p++ = (unsigned char)(sizeof(am_Num) < sizeof(double) ? 0xCA : 0xCB);
     is32 ? (u.f32 = (float)n) : (u.f64 = (double)n);
     if (is32) return X->p = amD_u32be(X->p, u.u32[0]), AM_OK;
     return X->p = amD_u32be(amD_u32be(X->p, u.u32[hi]), u.u32[!hi]), AM_OK;
@@ -1015,7 +1014,7 @@ AM_INLINE int amD_string(am_Dump *X, am_Name name) {
     size_t     namelen = name ? strlen(name) : ((name = ""), 0);
     amC(namelen <= AM_NAME_LEN && namelen <= 0xFF);
     amE(namelen < 32 ? amD_head(X, 0xA0 + (unsigned)namelen, 0, 0)
-                     : amD_head(X, 0xD9, namelen, 1));
+                     : amD_head(X, 0xD9, (am_Size)namelen, 1));
     if ((X->p - X->buf) + namelen > AM_BUF_LEN)
         amE(amD_flush(X, (am_Size)(X->p - X->buf)));
     if (namelen > AM_BUF_LEN) return d->writer(d, name, namelen);
@@ -1064,10 +1063,9 @@ AM_INLINE int amD_edit(am_Dump *X, am_Iterator *it) {
 }
 
 AM_INLINE char *amD_numle(char *p, am_Num n) {
-    const int hi = !amN_bigendian(); /* high word first */
+    const int hi = !amN_bigendian(), is32 = sizeof(am_Num) < sizeof(double);
     am_Bits   u;
-    if (sizeof(am_Num) < sizeof(double))
-        return u.f32 = (float)n, amD_u32le(p, u.u32[0]);
+    if (is32) return u.f32 = (float)n, amD_u32le(p, u.u32[0]);
     return u.f64 = (double)n, amD_u32le(amD_u32le(p, u.u32[!hi]), u.u32[hi]);
 }
 
@@ -1337,8 +1335,9 @@ AM_INLINE int amL_initedits(am_Load *X, am_Size n, size_t total) {
 AM_INLINE am_Num amL_numle(const char *p) {
     const int hi = !amN_bigendian(), is32 = sizeof(am_Num) < sizeof(double);
     am_Bits   u;
-    if (is32) return u.u32[0] = amL_u32le(p), (am_Num)u.f32;
-    return (u.u32[!hi] = amL_u32le(p), u.u32[hi] = amL_u32le(p + 4)), u.f64;
+    u.u32[0] = amL_u32le(p);
+    if (!is32) u.u32[hi || (u.u32[1] = u.u32[0], !hi)] = amL_u32le(p + 4);
+    return is32 ? (am_Num)u.f32 : (am_Num)u.f64;
 }
 
 AM_INLINE int amL_addslots(size_t *psum, am_Size m, size_t vsz) {
