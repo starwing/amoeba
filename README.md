@@ -1,13 +1,19 @@
 # Amoeba -- the constraint solving algorithm in pure C
 
-[![Build Status](https://img.shields.io/github/actions/workflow/status/starwing/amoeba/test.yml?branch=master)](https://github.com/starwing/amoeba/actions?query=branch%3Amaster)[![Coverage Status](https://img.shields.io/coveralls/github/starwing/amoeba)](https://coveralls.io/github/starwing/amoeba?branch=master)
+English | [中文](README.zh.md)
 
-Amoeba is a pure C implement of Cassowary algorithm. It:
-- Uses Clean C, which is the cross set of ANSI C89 and C++, like the Lua language.
-- Is a single-file library. For more single-file library, see the stb project [here][1].
-- Largely impressed by [kiwi][2], the C++ implement of Cassowary algorithm, and the algorithm [paper][3].
-- With a Lua binding.
-- With the same license as the [Lua language][4].
+[![CI](https://github.com/starwing/amoeba/actions/workflows/test.yml/badge.svg?branch=master)](https://github.com/starwing/amoeba/actions/workflows/test.yml)
+[![Coverage Status](https://coveralls.io/repos/github/starwing/amoeba/badge.svg?branch=master)](https://coveralls.io/github/starwing/amoeba?branch=master)
+
+Amoeba is a pure-C implementation of the Cassowary algorithm. It:
+- Is written in Clean C, the common subset of ANSI C89 and C++ that Lua also
+  uses.
+- Is a single-file library. For more single-file libraries, see the stb
+  project [here][1].
+- Is largely inspired by [kiwi][2], the C++ implementation of the Cassowary
+  algorithm, and by the algorithm [paper][3].
+- Has a Lua binding.
+- Uses the same license as the [Lua language][4].
 
 [1]: https://github.com/nothings/stb
 [2]: https://github.com/nucleic/kiwi
@@ -19,8 +25,8 @@ Amoeba is a pure C implement of Cassowary algorithm. It:
 Amoeba is a Cassowary auto-layout engine that is faster than Facebook Yoga where
 a GUI actually spends its time: a warm round of edits is ~12x faster, and
 restoring a dumped solver and applying the first round is ~2.2x faster than
-rebuilding the Yoga tree and laying it out.  It is not a flexbox clone: the
-layout is an arbitrary set of linear constraints.
+rebuilding the Yoga tree and laying it out.  As a Cassowary engine, it is far
+more flexible than flexbox: any set of linear constraints can drive the layout.
 
 The benchmark scene is the DeepSeek Harness window (272 boxes, 1104
 constraints), measured with `just bench` and `just bench-yoga` at `-O2` on an
@@ -52,80 +58,83 @@ once a layout is built, which is the common case for a window that resizes,
 scrolls and edits.  Numbers drift with the machine; the shape is the point.
 
 Improvement relative to Kiwi:
-- Single header library that easy to distribution.
-- Lua binding vs. Python binding.
+- A single-header library that is easy to distribute.
+- A Lua binding, where kiwi offers Python.
+- Dumping and loading the whole solver state.
 - A per-edit suggest cache and a zero-allocation wake (see above).
 
 ## How To Use
 
-This libary export a constraint solver interface, to solve a constraint problem, you should use it in steps:
+The library exposes a constraint solver interface.  To solve a constraint
+problem, work through these steps:
 
-- create a new solver: `am_newsolver()`
-- create some variables: `am_newvariable()` binding the `am_Num` values.
-- create some constraints that may use variables: `am_newconstraint()`.
-- make constraints by construct equation using:
-  - `am_addterm()` add a $a \times variable$ term to constraint equation items.
-  - `am_setrelation()` to specify the equal/greater/less sign in center of equation.
-  - `am_addconstant()` to add a number without variable.
-  - `am_setstrength()` to specify the priority of this constraint in all constraints.
-- after make up a constraint, you could add it into solver by `am_add()`.
-- and you can read out the result of each variable from the binding `am_Num`.
-- or you can manually specify a new value to variable with `am_suggest()`.
-- after done, use `am_delsolver()` to free al memory.
+- Create a solver: `am_newsolver()`.
+- Create variables: `am_newvariable()` binds an `am_Num` value to each one.
+- Create constraints: `am_newconstraint()`.
+- Build a constraint's equation with:
+  - `am_addterm()`: adds an $a \times variable$ term.
+  - `am_setrelation()`: sets the relation (`=`, `>=` or `<=`) in the middle
+    of the equation.
+  - `am_addconstant()`: adds a constant term.
+  - `am_setstrength()`: sets the constraint's priority among all constraints.
+- Once the constraint is built, add it to the solver with `am_add()`.
+- Read each variable's result from its bound `am_Num`.
+- Set a new value for a variable with `am_suggest()` when needed.
+- Free everything with `am_delsolver()` when done.
 
-below is a tiny example to demonstrate the steps:
+A tiny example:
 
 ```c
-#define AM_IMPLEMENTATION // include implementations of library
-#include "amoeba.h"       // and interface
+/* include the implementation and the interface */
+#define AM_IMPLEMENTATION
+#include "amoeba.h"
 
 int main(void) {
-    // first, create a solver:
+    /* create a solver */
     am_Solver *S = am_newsolver(NULL, NULL);
     int ret;
 
-    // create some variable:
+    /* create variables */
     am_Num l, m, r;
     am_Id vl = am_newvariable(S, &l);
     am_Id vm = am_newvariable(S, &m);
     am_Id vr = am_newvariable(S, &r);
 
-    // create the constraint: 
+    /* create constraints */
     am_Constraint *c1 = am_newconstraint(S, AM_REQUIRED);
     am_Constraint *c2 = am_newconstraint(S, AM_REQUIRED);
 
-    // c1: m is in middle of l and r:
-    //     i.e. m = (l + r) / 2, or 2*m = l + r
+    /* c1: m is halfway between l and r, i.e. 2*m = l + r */
     am_addterm(c1, vm, 2.f);
     am_setrelation(c1, AM_EQUAL);
     am_addterm(c1, vl, 1.f);
     am_addterm(c1, vr, 1.f);
-    // apply c1
+    /* add c1 */
     ret = am_add(c1);
     assert(ret == AM_OK);
 
-    // c2: r - l >= 100
+    /* c2: r - l >= 100 */
     am_addterm(c2, vr, 1.f);
     am_addterm(c2, vl, -1.f);
     am_setrelation(c2, AM_GREATEREQUAL);
     am_addconstant(c2, 100.f);
-    // apply c2
+    /* add c2 */
     ret = am_add(c2);
     assert(ret == AM_OK);
 
-    // now we set variable l to 20
+    /* set l to 20 */
     am_suggest(S, vl, 20.f);
 
-    // and see the value of m and r:
+    /* read back m and r */
     am_updatevars(S);
 
-    // r should by 20 + 100 == 120:
+    /* r should be 20 + 100 == 120 */
     assert(r == 120.f);
 
-    // and m should in middle of l and r:
+    /* m should be halfway between l and r */
     assert(m == 70.f);
-    
-    // done with solver
+
+    /* done with the solver */
     am_delsolver(S);
     return 0;
 }
@@ -144,11 +153,11 @@ The library itself needs nothing but a C compiler:
 The repository is driven by [just](https://github.com/casey/just):
 
 ```sh
-just check           # every suite, ASan/UBSan, one process per test
-just check-release   # same suites at -O2
-just check-double    # AM_USE_DOUBLE
-just check-c89       # strict C89 compile check (no run)
-just check-cpp03     # strict C++03 compile check (no run)
+just test            # every suite, ASan/UBSan, one process per test
+just test-release    # same suites at -O2
+just test-double     # AM_USE_DOUBLE
+just test-c89        # strict C89 compile check (no run)
+just test-cpp03      # strict C++03 compile check (no run)
 just test dump       # one suite; just test dump dumpload one test
 just fuzz            # random-op fuzz, one process per seed
 just cov             # lcov report
@@ -157,9 +166,8 @@ just format          # clang-format the tree
 
 Test sources live in `tests/`; `misc/gen_entries.lua` turns `TEST(name)`
 functions into the entry table (so a Lua interpreter is a build dependency of
-the tests).  Code style is defined by `.clang-format` (clang-format >= 19).
-See [notes/](notes/) for implementation notes and [TODO.md](TODO.md) for the
-roadmap.
+the tests).  Code style is defined by `.clang-format` (clang-format >= 19,
+pinned to 23.1.5 in CI).  See [TODO.md](TODO.md) for the roadmap.
 
 ## Benchmarks
 
@@ -196,14 +204,14 @@ the `AM_USE_DOUBLE` build.
 
 ### Return value
 
-All functions below that returns `int` are returning error codes:
-- `AM_OK`: Operations success.
-- `AM_FAILED`: The operation is failed: the solver rejected a valid request
+Every function below that returns `int` returns an error code:
+- `AM_OK`: The operation succeeded.
+- `AM_FAILED`: The operation failed: the solver rejected a valid request
   (for example, adding a constraint that is already in the solver).
 - `AM_PARAM`: A parameter check failed (a null pointer, a zero variable id, a
   negative strength, an invalid relation, or constraints from different
   solvers).
-- `AM_UNSATISFIED`: Specific constraints added cannot satisfied.
+- `AM_UNSATISFIED`: The constraints being added cannot be satisfied.
 - `AM_UNBOUND`: The constraint conflicts with the constraints already in the
   solver (the artificial variable could not be driven to zero). It is the same
   kind of failure as `AM_UNSATISFIED`, reached through the inequality path.
@@ -232,138 +240,91 @@ Only streams produced by `am_dump()` are supported.  Loading any other data is
 unsupported: the loader only promises that `am_load()` itself does not crash.
 What a solver does after a successful load of a non-dump stream (including
 asserts or crashes in later calls) is outside the contract.  The loader performs
-structural checks, not tableau-semantic validation.
+structural checks and does not validate tableau semantics.
 
 `am_load()` spends less than `maxmem` bytes while loading (`0` selects
 `AM_MAX_LOADMEM`, 16 MiB by default; define `AM_MAX_LOADMEM` before including
 `amoeba.h` to change it).  The budget is strict: a single allocation whose
 growth equals the remaining budget fails.  It bounds the bytes requested from
-the allocator, not the process's actual memory use.  The budget is released
+the allocator; the process's memory use can be higher.  The budget is released
 when loading succeeds.
 
-To perform a dump or load operations, you should prepare `am_Dumper` or
-`am_Loader` to control the behavior in operations.
+To dump or load, prepare an `am_Dumper` or an `am_Loader` to control the
+operation.
 
 - `struct am_Dumper`
 
-  A user-defined dump behavior control type.  The user must provide `reader`
-  and `var_name` function pointers in it. there is a example:
+  A user-defined dump behavior.  `writer` and `var_name` are required;
+  `cons_name` is optional.  For example:
 
   ```c
-  /* dumps into a string buffer */
+  /* dump into a fixed-size buffer */
   typedef struct MyDumper {
       am_Dumper base;
-      char buf[MY_BUF_SIZE]; /* buffer */
-      size_t len;            /* and length */
+      char buf[MY_BUF_SIZE];
+      size_t len;
   } MyDumper;
 
-  static const char *dump_varname(am_Dumper *d, unsigned idx, am_Id var, am_Num *value) {
-      /* you should returns a var name here, or NULL if you do not want a name
-       * for this variable.
-       * A common implement retrives variable context from value pointer, and
-       * get name from it.  */
-      MyContext *ctx = (MyContext*)value;
-      return ctx->name;
-  }
-
-  static const char *dump_consname(am_Dumper *d, unsigned idx, am_Constraint *cons) {
-      /* Same as `var_name`, but retrieve constraint's name */
-      MyContext *ctx = *(MyContext**)cons;
-      return ctx->name;
-  }
-
-  static int dump_writer(am_Dumper *d, const void *buf, size_t len) {
-      /* Write the actually data */
-      MyDumper *myd = (MyDumper*)d;
-      if (myd->len + len > MY_BUF_SIZE)
-          return AM_FAILED; /* data out of buffer, errors returned */
-      memcpy(myd->buf + myd->len, buf, len);
-      myd->len += len;
-      /* All return value other than `AM_OK` will be returned directly by
-       * `am_dump()`. */
+  static int my_writer(am_Dumper *d, const void *buf, size_t len) {
+      MyDumper *w = (MyDumper*)d;
+      if (len > MY_BUF_SIZE - w->len) return AM_FAILED;
+      memcpy(w->buf + w->len, buf, len);
+      w->len += len;
       return AM_OK;
   }
 
-  /* do actually dump */
-  MyDumper d;
-  d.base.var_name  = dump_varname;
-  d.base.cons_name = dump_consname;
-  d.base.writer    = dump_writer;
-  d.len = 0;
+  static const char *my_varname(am_Dumper *d, unsigned i, am_Id v, am_Num *value) {
+      (void)d, (void)i, (void)v;
+      return ((MyContext*)value)->name; /* MyContext wraps the bound am_Num */
+  }
 
-  int ret = am_dump(solver, &d.base);
-  assert(ret == AM_OK);
-  /* now uses the d.buf & d.len */
+  MyDumper w;
+  memset(&w, 0, sizeof(w));
+  w.base.writer   = my_writer;
+  w.base.var_name = my_varname;  /* required */
+  /* w.base.cons_name = my_consname;  optional */
+
+  int ret = am_dump(solver, &w.base);
+  /* now use w.buf and w.len */
   ```
 
 - `struct am_Loader`
 
-  A user-defined load behavior control type.  Zero-initialize it (for example
-  with `memset`) before setting the callbacks: `reader` and `load_var` are
-  required, `solver` and `load_cons` are optional and are skipped when left
-  null.  There is an example:
+  A user-defined load behavior.  Zero-initialize it (for example with
+  `memset`) before setting the callbacks: `reader` and `load_var` are
+  required; `solver` and `load_cons` are optional and skipped when null.
+  For example:
 
   ```c
-  /* loads from a string buffer */
+  /* load from a memory block */
   typedef struct MyLoader {
       am_Loader base;
-      VarMap    vars;
-      ConsMap   cons;
-      const am_Solver *solver; /* set by load_solver */
-      const char *buf; /* the buffer to read */
-      size_t remain;   /* remain bytes */
+      const char *buf;
+      size_t len;
   } MyLoader;
 
-  static void load_solver(am_Loader *l, const am_Solver *solver) {
-      /* optional: the solver exists, but is still empty and read-only */
-      ((MyLoader*)l)->solver = solver;
+  static const char *my_reader(am_Loader *l, size_t *plen) {
+      MyLoader *r = (MyLoader*)l;
+      const char *p = r->buf;
+      *plen = r->len;
+      r->buf = NULL, r->len = 0; /* hand the data out once */
+      return p;
   }
 
-  static am_Num *load_var(am_Loader *l, const char *name, unsigned idx, am_Id var) {
-      /* you should returns a binding for variable named `name`, or the load
-       * fails and `am_load()` returns `NULL`.
-       * A common implement creates variable context into some map, returns it.
-       * Notice that `name` can be `NULL` if no name avaialable, and that it is
-       * only valid during this call: copy it if you keep it.  */
-      MyLoader *myl = (MyLoader*)l;
-      MyContext *ctx = my_create_ctx_by_idx_and_name(&myl->vars, idx, name);
-      return &ctx->value;
+  static am_Num *my_loadvar(am_Loader *l, const char *name, unsigned i, am_Id v) {
+      (void)l, (void)i;
+      return &my_var(name, v)->value; /* name may be NULL; copy it if kept */
   }
 
-  static void load_cons(am_Loader *l, const char *name, unsigned idx, am_Constraint *cons) {
-      /* same as `var_name`, but can be NULL in `am_Loader*` means do not
-       * retrieve any constraints from previous state.
-       * Notice that `name` can be `NULL` and is only valid during the call.  */
-      MyLoader *myl = (MyLoader*)l;
-      MyContext *ctx = save_cons_and_create_context(&myl->cons, idx, name, cons);
-      *(MyContext**)cons = ctx;
-  }
+  MyLoader r;
+  memset(&r, 0, sizeof(r));
+  r.base.reader   = my_reader;
+  r.base.load_var = my_loadvar;  /* required */
+  /* r.base.solver = my_solver; r.base.load_cons = my_loadcons;  optional */
+  r.buf = data, r.len = size;
 
-  static const char *load_reader(am_Loader *l, size_t *plen) {
-      /* Get the data to reads, if returns `NULL` or store `0` into `plen`,
-       * stops reading */
-      MyLoader *myl = (MyLoader*)l;
-      const char *buf = myl->buf;
-      *plen = myl->len;
-      if (buf) {
-          my->buf = NULL;
-          my->len = 0;
-      }
-      return buf;
-  }
-
-  /* do actually load */
-  MyLoader l;
-  memset(&l, 0, sizeof(l)); /* optional callbacks must start null */
-  l.base.solver    = load_solver; /* optional */
-  l.base.load_var  = load_var;
-  l.base.load_cons = load_cons;   /* optional */
-  l.base.reader    = load_reader;
-  d.buf = get_some_data(&d.len);
-
-  am_Solver *solver = am_load(NULL, NULL, &l.base, 0);
-  assert(solver != NULL);
-  /* now uses the solver */
+  am_Solver *solver = am_load(NULL, NULL, &r.base, 0);
+  /* now use solver */
   ```
 
   `am_load()` returns `NULL` on failure and releases the half-built solver; any
@@ -373,11 +334,12 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
 
 - `am_Solver *am_newsolver(am_Allocf *allocf, void *ud);`
 
-  Create a new solver with custom memory alloculator, pass NULL for use default ones.
+  Create a solver with a custom allocator; pass NULL to use the default.
 
 - `void am_resetsolver(am_Solver *solver);`
 
-  Remove all constraints from solver, all variables and constraints created are keeped.
+  Remove all constraints from the solver; the variables and constraints
+  themselves are kept.
   The tableau is dropped, so no variable has a row any more, but the value bindings
   are **not** refreshed: `*pvalue` keeps whatever value it had before the reset.
   The caller owns them from then on; `am_updatevars()` only consumes the dirty
@@ -385,31 +347,33 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
 
 - `void am_delsolver(am_Solver *solver);`
 
-  Delete a solver and frees all memory it used, after that, all variables/constraints created from this solver are all freed.  Passing `NULL` does nothing.
+  Delete a solver and free all memory it used; every variable and constraint
+  created from it is freed.  Passing `NULL` does nothing.
 
 - `void am_updatevars(am_Solver *solver);`
 
-  Refresh variables' value into it's constrainted value.
+  Refresh each variable's value to what the solver computed.
   Only variables whose value may have changed since the last refresh are queued,
   and only queued bindings are written.  `am_add()` and a successful
   `am_setstrength()` queue everything their solve moved (see `am_add()` below);
-  `am_remove()` writes a leaving binding immediately, and `am_load()` settles
+  `am_remove()` writes a leaving binding immediately, and `am_load()` writes
   every binding itself.  `am_resetsolver()` queues nothing.
-  You could use `am_autoupdate()` to update all variables automatically when solver changes.
+  You can use `am_autoupdate()` to update all variables automatically whenever
+  the solver changes.
   A `NULL` solver does nothing.
 
 - `void am_autoupdate(am_Solver *solver, int auto_update);`
 
   Set the auto update flags.
-  If setted, all variables will be updated to its latest values right after any changes done to the `solver`.
+  When set, all variables are updated to their latest values right after any
+  change to the `solver`.
 
 - `am_Id am_newvariable(am_Solver *solver, am_Num *pvalue);`
 
-  Create a new variable with a value `pvalue` binding to it. Returns `0` on
-  error.
+  Create a variable bound to `pvalue`.  Returns `0` on error.
 
-  Notice that the pvalue pointer can be retrived in `am_dump()` or
-  `am_varvalue()`, so you could put context data here:
+  The `pvalue` pointer comes back from `am_dump()` or `am_varvalue()`, so it
+  can anchor context data:
 
   ```c
   typedef struct MyVarContext {
@@ -419,53 +383,55 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
   } MyVarContext;
   MyVarContext *ctx = new_context();
   am_Id var = am_newvariable(solver, &ctx->value);
-  /* retrive the context: */
+  /* retrieve the context: */
   MyVarContext *ctx = (MyVarContext*)am_varvalue(solver, var, NULL);
   ```
 
 - `void am_delvariable(am_Solver *solver, am_Id var);`
 
-  Remove this variable, after that, it cannot be added into further constraints.
+  Remove the variable; it cannot be used in later constraints.
 
 - `am_Num *am_varvalue(am_Solver *solver, am_Id var, am_Num *newvalue);`
 
-  Retrieve or reset the value binding of the variable. if `newvalue` is `NULL`,
-  only retrieve the old pointer, otherwise the binding is retargeted to
-  `newvalue` and the original pointer is returned.
+  Retrieve or reset the value binding of the variable.  If `newvalue` is
+  `NULL`, only retrieve the old pointer; otherwise the binding is retargeted
+  to `newvalue` and the original pointer is returned.
 
 - `int am_refcount(const am_Solver *solver, am_Id var);`
 
   Retrieve the internal reference count of the variable: one for the variable
-  itself, plus one per live term.  It is what decides when an unreferenced
-  variable is dropped; it is not a user-facing ownership count.
+  itself, plus one per live term.  It decides when an unreferenced variable is
+  dropped; it does not express ownership.
 
 - `am_Id am_vars(const am_Solver *solver, am_Id var);`
 
   Walk the variables the solver holds.  Pass `0` for the first one, then the
-  previous result; `0` means "no more".  The order is the solver's internal
-  slot order, not creation order, and any change to the solver may reshuffle
-  it, so start over instead of keeping an anchor across changes.
+  previous result; `0` means "no more".  The order follows internal solver
+  slots, which may differ from creation order, and any change to the solver may
+  reshuffle it, so start over after a change; anchors do not stay valid.
 
 - `int am_addedit(am_Solver *solver, am_Id var, am_Num strength);`
 
-  Prepare to change the value of variables or the `strength` value if the variable is in edit now.
+  Prepare to change a variable's value, or its `strength` when it is already in
+  edit.
 
 - `void am_deledit(am_Solver *solver, am_Id var);`
 
-  Cancel the modify of variable.
-  The value binding by `var` will restore to the referred value according the solver.
+  Cancel the variable's edit.
+  The binding of `var` is restored to the value the solver gives it.
 
 - `void am_suggest(am_Solver *solver, am_Id var, am_Num value);`
 
-  Actually change the value of the variable `var`.
+  Change the value of the variable `var`.
   A variable id the solver does not know is ignored.
 
-  After changed, other variable may changed due to the constraints in solver.
-  If you do not want change the strength of suggest (default is `AM_MEDIUM`), you may call `am_suggest()` directly without `am_addedit()`.
+  Other variables may change afterwards because of the solver's constraints.
+  If the suggest strength should stay at its default (`AM_MEDIUM`), call
+  `am_suggest()` directly without `am_addedit()`.
 
 - `int am_hasedit(const am_Solver *solver, am_Id var);`
 
-  Check whether a variable has suggested value in the `solver`.
+  Check whether a variable has a suggested value in the `solver`.
 
 - `void am_clearedits(am_Solver *solver);`
 
@@ -473,8 +439,8 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
 
 - `am_Constraint *am_newconstraint(am_Solver *solver, am_Num strength);`
 
-  Create a new constraints. Notice that where are one pointer's space can be
-  used to store context data in the head of `am_Constraint`, example:
+  Create a new constraint.  The head of an `am_Constraint` has room for one
+  pointer, which can hold context data:
 
   ```c
   am_Constraint *cons = am_newconstraint(solver, AM_REQUIRED);
@@ -485,22 +451,23 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
 
 - `void am_resetconstraint(am_Constraint *cons);`
 
-  Remove all terms and variables from the constraint, restore it to blank state.
+  Remove all terms and variables from the constraint and restore it to a blank
+  state.
 
 - `void am_delconstraint(am_Constraint *cons);`
 
-  Free the constraint. if it's added into solver, remove it first.
+  Free the constraint.  If it is in the solver, remove it first.
 
   This is free semantics: the constraint is recycled, its expression released
   and its variable references dropped.  `cons` is dead when the call returns --
   using it again (including passing it a second time) is undefined behaviour and
-  is not detected.  The default allocator puts the slot back into the constraint
-  pool, so a second call may still read plausible memory: that is reuse, not a
-  promise.
+  not detected.  The default allocator puts the slot back into the constraint
+  pool, so a second call may still read plausible memory: that is slot reuse, so
+  it proves nothing.
 
 - `am_Constraint *am_cloneconstraint(am_Constraint *other, am_Num strength);`
 
-  Clone a new constraint from the existing one with new `strength`.
+  Clone the constraint with a new `strength`.
   Returns `NULL` when the new constraint cannot be allocated.
 
 - `am_Constraint *am_constraints(const am_Solver *solver, am_Constraint *cons);`
@@ -513,32 +480,33 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
 
 - `int am_addterm(am_Constraint *cons, am_Id var, am_Num multiplier);`
 
-  Add a term into constraint.
+  Add a term to the constraint.
 
-  Example: a constraint like `2*m == x+y`, has terms `2*m`, `1*x` and `1*y`.
-  So to makeup this constraint, you could:
+  For example, `2*m == x+y` has the terms `2*m`, `1*x` and `1*y`.  Build it
+  like this:
 
   ```c
-  // 2*m == x + y
-  am_addterm(c, m, 2.0); // 2*m
-  am_setrelation(c, AM_EQUAL); // =
-  am_addterm(c, x, 1.0); // x
-  am_addterm(c, y, 1.0); // y
+  /* 2*m == x + y */
+  am_addterm(c, m, 2.0); /* 2*m */
+  am_setrelation(c, AM_EQUAL); /* = */
+  am_addterm(c, x, 1.0); /* x */
+  am_addterm(c, y, 1.0); /* y */
   ```
 
 - `int am_setrelation(am_Constraint *cons, int relation);`
 
-  Set the relations of constraint, could be one of these:
+  Set the constraint's relation, one of:
 
   - `AM_EQUAL`
   - `AM_GREATEREQUAL`
   - `AM_LESSEQUAL`
 
-  The terms added before `am_setrelation()` become the left hand terms of constraints, and the terms adds after call will become the right hand terms of constraints.
+  Terms added before `am_setrelation()` form the left-hand side; terms added
+  after it form the right-hand side.
 
 - `int am_addconstant(am_Constraint *cons, am_Num constant);`
 
-  Add a constant without variable into constraint as a term.  A constant the
+  Add a constant term to the constraint.  A constant that the
   solver treats as numerical zero is stored as `0` (below `AM_NUM_EPS`: 1e-4
   in the default `float` build, 1e-6 with `AM_USE_DOUBLE`); `am_constant()`
   reports the stored value.
@@ -549,22 +517,22 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
 
 - `int am_merge(am_Constraint *cons, const am_Constraint *other, am_Num coef);`
 
-  Merge other constraints into `cons`, with a coefficient multiplying `other`.
+  Merge `other` into `cons`, multiplied by `coef`.
 
 - `int am_add(am_Constraint *cons);`
 
-  Add constraint into the solver it's created from.  A successful add publishes
-  the solution it computed: with auto update on the bindings are current when the
-  call returns, with it off the next `am_updatevars()` writes them.  A failed add
-  changes no binding.
+  Add the constraint to the solver it was created from.  A successful add
+  publishes the solution it computed: with auto update on, the bindings are
+  current when the call returns; with it off, the next `am_updatevars()` writes
+  them.  A failed add changes no binding.
 
 - `void am_remove(am_Constraint *cons);`
 
-  Remove added constraint.
+  Remove an added constraint.
 
 - `int am_hasconstraint(const am_Constraint *cons);`
 
-  Check whether a constraint has been added into the solver or not.
+  Check whether a constraint has been added to the solver.
 
 - `am_Id am_terms(const am_Constraint *cons, am_Id var, am_Num *coef);`
 
@@ -604,12 +572,12 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
 
 - `int am_dump(am_Solver *solver, am_Dumper *d);`
 
-  Dump whole solver state (without edits) into binary data.
+  Dump the whole solver state (edits included) into binary data.
 
   Returns `AM_FAILED` when the state holds a symbol that the dump has no index
-  for.  `am_load()` accepts such a stream (it validates structure, not symbol
-  ownership), so a solver loaded from a hand-edited stream can reach that
-  shape; the bytes written up to the failure must be discarded.
+  for.  `am_load()` accepts such a stream (it validates structure and leaves
+  symbol ownership unchecked), so a solver loaded from a hand-edited stream can
+  reach that shape; discard the bytes written up to the failure.
 
 - `am_Solver *am_load(am_Allocf *allocf, void *ud, am_Loader *l, size_t maxmem);`
 
@@ -618,5 +586,5 @@ To perform a dump or load operations, you should prepare `am_Dumper` or
   `am_newsolver()`.  `maxmem` is the strict byte budget of the load (`0` =
   `AM_MAX_LOADMEM`); a single allocation may not consume the whole remaining
   budget.  Only streams produced by `am_dump()` are supported, and variable
-  bindings are not refreshed yet (see "Dump & Load").
+  bindings are restored from the stream (see "Dump & Load").
 
