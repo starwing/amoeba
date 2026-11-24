@@ -3,6 +3,7 @@ AGENTS.md
 # notes/ 整体不入库。用 notes/* 而不是 notes/，否则 git 根本不会进入这个目录。
 notes/*
 archive/*
+.agent-teams/*
 
 # --- 历史遗留：库文件/Windows 产物 ---
 *.dll

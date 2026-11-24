@@ -72,8 +72,8 @@ typedef struct am_Constraint am_Constraint;
 typedef unsigned am_Id;
 
 typedef enum am_Type { /* clang-format off */
-    am_TSolver = 1, am_TConstraint, am_TScratch,
-    am_TPool, am_TArena, am_THash, am_TVec
+    am_TNone, am_TSolver, am_TConstraint, am_TSuggest,
+    am_TScratch, am_TArena, am_THash, am_TVec
 } am_Type; /* clang-format on */
 
 typedef void *am_Allocf(void **pud, void *p, size_t ns, size_t os, am_Type t);
@@ -226,9 +226,10 @@ typedef union am_Symbol {
 } am_Symbol;
 
 typedef struct am_MemPool {
-    void  *pages; /* page chain, link at tail */
-    void  *freed; /* free slot list */
-    size_t size;  /* slot size, pointer multiple */
+    void   *pages; /* page chain, link at tail */
+    void   *freed; /* free slot list */
+    am_Type type;  /* pool type, e.g., am_TConstraint, am_TSuggest, etc. */
+    am_Size size;  /* slot size, pointer multiple */
 } am_MemPool;
 
 typedef struct am_Key {
@@ -345,9 +346,6 @@ static int amN_negative(am_Num a) { return !amN_nearzero(a) && a < 0.f; }
 /* clang-format off */
 typedef struct am_Vec { am_Size cap, len; } am_Vec;
 
-AM_INLINE void amP_put(am_MemPool *pool, void *obj)
-{ *(void **)obj = pool->freed, pool->freed = obj; }
-
 AM_INLINE am_Iterator amH_iter(const am_Table *t)
 { am_Iterator it; it.t = t, it.key = amS_null(), it.offset = 0; return it; }
 
@@ -357,6 +355,13 @@ AM_INLINE void amH_init(am_Table *t, size_t value_size)
 AM_INLINE am_Size amH_calcsize(am_Size request)
 { am_Size s = AM_MIN_HASHSIZE; while (s < request) s <<= 1; return s; }
 /* clang-format on */
+
+static void *amM_defallocf(void **pud, void *p, size_t n, size_t o, am_Type t) {
+    void *np;
+    if (n == 0) return free(p), (void *)0;
+    if ((np = realloc(p, n)) == NULL) abort();
+    return (void)pud, (void)o, (void)t, np;
+}
 
 static void *amM_realloc(am_Solver *S, void *p, size_t n, size_t o, am_Type t) {
     size_t grow = n > o ? n - o : 0;
@@ -368,28 +373,35 @@ static void *amM_realloc(am_Solver *S, void *p, size_t n, size_t o, am_Type t) {
     return np;
 }
 
-AM_INLINE void amP_init(am_MemPool *pool, size_t size) {
-    memset(pool, 0, sizeof(*pool)), pool->size = size;
+AM_INLINE void amP_init(am_MemPool *pool, am_Type ty, size_t size) {
+    memset(pool, 0, sizeof(*pool)), pool->type = ty, pool->size = (am_Size)size;
     assert(size >= sizeof(void *) && size % sizeof(void *) == 0);
     assert(AM_POOL_SIZE / size > 2);
 }
 
 static void amP_free(am_Solver *S, am_MemPool *pool) {
     const size_t offset = AM_POOL_SIZE - sizeof(void *);
-    while (pool->pages != NULL) {
-        void *next = *(void **)((char *)pool->pages + offset);
-        amM_realloc(S, pool->pages, 0, AM_POOL_SIZE, am_TPool);
-        pool->pages = next;
+    void        *next;
+    if (pool->type) return;
+    for (; pool->pages != NULL; pool->pages = next) {
+        next = *(void **)((char *)pool->pages + offset);
+        amM_realloc(S, pool->pages, 0, AM_POOL_SIZE, am_TNone);
     }
-    amP_init(pool, pool->size);
+    amP_init(pool, pool->type, pool->size);
+}
+
+AM_INLINE int amP_put(am_Solver *S, am_MemPool *pool, void *obj) {
+    if (pool->type) return amM_realloc(S, obj, 0, pool->size, pool->type), 0;
+    return *(void **)obj = pool->freed, pool->freed = obj, 1;
 }
 
 AM_INLINE void *amP_get(am_Solver *S, am_MemPool *pool) {
     const size_t size = pool->size;
     const size_t offset = AM_POOL_SIZE - sizeof(void *);
-    char        *page, *end, *obj = (char *)pool->freed;
-    if (obj != NULL) return (pool->freed = *(void **)obj), obj;
-    page = (char *)amM_realloc(S, NULL, AM_POOL_SIZE, 0, am_TPool);
+    char        *page, *end, *obj;
+    if (pool->type) return amM_realloc(S, NULL, size, 0, pool->type);
+    if ((obj = (char *)pool->freed)) return (pool->freed = *(void **)obj), obj;
+    page = (char *)amM_realloc(S, NULL, AM_POOL_SIZE, 0, am_TNone);
     if (page == NULL) return NULL;
     end = &page[offset], *(void **)end = pool->pages;
     pool->pages = page, page += size, end -= size;
@@ -661,8 +673,8 @@ static am_Suggest *amC_newedit(am_Solver *S, am_Id var, am_Num strength) {
 }
 
 static void amC_freesuggest(am_Solver *S, am_Suggest *s) {
-    amX_free(S, s->dirtyset), am_delconstraint(&s->constraint);
-    amP_put(&S->editpool, s);
+    am_delconstraint(&s->constraint);
+    amX_free(S, s->dirtyset), amP_put(S, &S->editpool, s);
 }
 
 /* Cassowary algorithm */
@@ -1522,27 +1534,11 @@ AM_API am_Num am_strength(const am_Constraint *c)
 AM_API void am_autoupdate(am_Solver *S, int v) { S->auto_update = v; }
 AM_API int  am_relation(const am_Constraint *c) { return c ? c->relation : 0; }
 
-static void *amS_defallocf(void **pud, void *p, size_t n, size_t o, am_Type t) {
-    void *np;
-    if (n == 0) return free(p), (void *)0;
-    if ((np = realloc(p, n)) == NULL) abort();
-    return (void)pud, (void)o, (void)t, np;
-}
-
-static void *amS_getcons(am_Solver *S) {
-    if (S->allocf == amS_defallocf) return amP_get(S, &S->conspool);
-    return amM_realloc(S, NULL, sizeof(am_Constraint), 0, am_TConstraint);
-}
-
-AM_INLINE int amS_putcons(am_Solver *S, am_Constraint *c) {
-    if (S->allocf == amS_defallocf) return amP_put(&S->conspool, c), 1;
-    return amM_realloc(S, c, 0, sizeof(*c), am_TConstraint), 0;
-}
-
 AM_API am_Solver *am_newsolver(am_Allocf *allocf, void *ud) {
     am_Solver *S;
-    if (allocf == NULL) allocf = amS_defallocf;
-    S = (am_Solver *)allocf(&ud, NULL, sizeof(am_Solver), 0, am_TSolver);
+    am_Type    t = (allocf == NULL) ? am_TNone : am_TSolver;
+    if (t == am_TNone) allocf = amM_defallocf;
+    S = (am_Solver *)allocf(&ud, NULL, sizeof(am_Solver), 0, t);
     if (S == NULL) return NULL;
     memset(S, 0, sizeof(*S)), S->ud = ud, S->allocf = allocf;
     amR_init(&S->objective);
@@ -1550,8 +1546,8 @@ AM_API am_Solver *am_newsolver(am_Allocf *allocf, void *ud) {
     amH_init(&S->constraints, sizeof(am_Constraint *));
     amH_init(&S->suggests, sizeof(am_Suggest *));
     amH_init(&S->rows, sizeof(am_Row));
-    amP_init(&S->conspool, sizeof(am_Constraint));
-    amP_init(&S->editpool, sizeof(am_Suggest));
+    amP_init(&S->conspool, t ? am_TConstraint : t, sizeof(am_Constraint));
+    amP_init(&S->editpool, t ? am_TSuggest : t, sizeof(am_Suggest));
     return S;
 }
 
@@ -1579,13 +1575,13 @@ AM_API void am_delsolver(am_Solver *S) {
     while (amH_next(&it)) {
         am_Constraint *c = *amH_val(am_Constraint *, it);
         amR_free(S, &c->expression);
-        if (amV_isexternal(c->sym)) amS_putcons(S, c);
+        if (amV_isexternal(c->sym)) amP_put(S, &S->conspool, c);
     }
     it = amH_iter(&S->suggests);
     while (amH_next(&it)) {
         am_Suggest *s = *amH_val(am_Suggest *, it);
-        amX_free(S, s->dirtyset), amH_free(S, &s->constraint.expression.terms);
-        amP_put(&S->editpool, s);
+        amH_free(S, &s->constraint.expression.terms);
+        amX_free(S, s->dirtyset), amP_put(S, &S->editpool, s);
     }
     it = amH_iter(&S->rows);
     while (amH_next(&it)) amR_free(S, amH_val(am_Row, it));
@@ -1692,10 +1688,10 @@ AM_API am_Constraint *am_newconstraint(am_Solver *S, am_Num strength) {
     am_Constraint *c;
     int            ret;
     if (S == NULL || amN_negative(strength)) return NULL;
-    if (!(c = (am_Constraint *)amS_getcons(S))) return NULL;
+    if (!(c = (am_Constraint *)amP_get(S, &S->conspool))) return NULL;
     ret = amC_init(S, amS_var(amS_new(S)), c);
     c->strength = amN_nearzero(strength) ? AM_REQUIRED : strength;
-    if (ret != AM_OK) amS_putcons(S, c), c = NULL;
+    if (ret != AM_OK) amP_put(S, &S->conspool, c), c = NULL;
     return c;
 }
 
@@ -1719,7 +1715,7 @@ AM_API void am_delconstraint(am_Constraint *c) {
     it = amH_iter(&c->expression.terms);
     while (amH_next(&it)) am_delvariable(c->S, it.key.u.id);
     amR_free(S, &c->expression);
-    if (amV_isexternal(c->sym)) amS_putcons(S, c);
+    if (amV_isexternal(c->sym)) amP_put(S, &S->conspool, c);
 }
 
 AM_API am_Constraint *am_cloneconstraint(am_Constraint *o, am_Num strength) {

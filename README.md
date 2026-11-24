@@ -339,6 +339,11 @@ operation.
 
   Create a solver with a custom allocator; pass NULL to use the default.
 
+  All memory goes through the allocator.  With the default allocator (pass
+  NULL), constraints and suggests are carved from internal 4 KB page pools;
+  with a custom `allocf`, nothing is pooled: every constraint and suggest is
+  allocated one by one, and any pooling is the caller's job.
+
 - `void am_resetsolver(am_Solver *solver);`
 
   Remove all constraints from the solver; the variables and constraints

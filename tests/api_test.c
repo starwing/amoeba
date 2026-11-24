@@ -340,6 +340,32 @@ TEST(cloneconstraint_reports_alloc_failure) {
     am_delsolver(S);
 }
 
+/* The caller's allocator must own every object: suggests are allocated one by
+ * one, not carved out of an internal page pool. */
+static unsigned type_allocs[8];
+
+static void *count_test_allocf(void **pud, void *p, size_t n, size_t o,
+                               am_Type t) {
+    if (n != 0 && (unsigned)t < 8) ++type_allocs[t];
+    return am_test_allocf(pud, p, n, o, t);
+}
+
+TEST(custom_allocator_owns_suggests) {
+    am_Solver *S;
+    am_Num     x = 0;
+    am_Id      vx;
+
+    S = am_newsolver(count_test_allocf, NULL);
+    assertok(S != NULL);
+    vx = am_newvariable(S, &x);
+    memset(type_allocs, 0, sizeof(type_allocs));
+    am_suggest(S, vx, 3.f);
+    assertok(am_hasedit(S, vx));
+    assertok(type_allocs[am_TSuggest] > 0);
+    asserteq(type_allocs[am_TNone], 0);
+    am_delsolver(S);
+}
+
 /* am_suggest() on a variable the solver does not know has no edit to create
  * and no value to move; the id may be stale after am_updatevars() collected
  * the variable, so this is not just a parameter error. */
@@ -897,6 +923,23 @@ static size_t dump_edited(unsigned char *buf) {
     len = dump_fixture(S, buf);
     am_delsolver(S);
     return len;
+}
+
+/* The same rule holds for the suggests rebuilt by am_load(). */
+TEST(custom_allocator_owns_loaded_suggests) {
+    static unsigned char stream[4096];
+    size_t               len;
+    stream_loader        sl;
+    am_Solver           *S;
+
+    len = dump_edited(stream);
+    stream_init(&sl, stream, len);
+    memset(type_allocs, 0, sizeof(type_allocs));
+    S = am_load(count_test_allocf, NULL, &sl.base, 0);
+    assertok(S != NULL);
+    assertok(type_allocs[am_TSuggest] > 0);
+    asserteq(type_allocs[am_TNone], 0);
+    am_delsolver(S);
 }
 
 static size_t dump_constant(am_Num v, unsigned char *buf) {

@@ -311,6 +311,10 @@ assert 或崩溃）不在契约内；loader 只检查结构，不校验 tableau 
 
   用自定义内存分配器创建一个新求解器；传 NULL 表示使用默认分配器。
 
+  所有内存都经过分配器。默认分配器（传 NULL）下，约束和 suggest 从内部 4 KB
+  页池分配；传入自定义 `allocf` 时不做池化：每个约束和 suggest 都逐个分配，
+  需要池化由调用方自己负责。
+
 - `void am_resetsolver(am_Solver *solver);`
 
   从求解器中移除所有约束，已创建的所有变量和约束保留。

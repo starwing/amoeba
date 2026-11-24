@@ -173,13 +173,11 @@ function Solver:vars() end
 ---@return amoeba.Constraint[]
 function Solver:constraints() end
 
---- Serialize the solver to a string.
----
---- Side effects: clears all edits/suggestions (`am_clearedits`), which can
---- change values; when `auto_update` is false it also calls `am_updatevars()`
---- first.
---- On failure returns `nil, message, code` (normally only internal or memory
---- errors).
+--- Serialize the solver to a string.  The stream includes every edit; the
+--- call does not clear them.  If `auto_update` is false, `am_dump()` first
+--- calls `am_updatevars()`, which can change values.
+--- On failure returns `nil, message, code` (for example a symbol the dump
+--- cannot index, or an allocation failure).
 ---@return string|nil dump
 ---@return string|nil message
 ---@return integer|nil code
