@@ -1,12 +1,21 @@
 # CI for amoeba.
 #
-# The suites are driven by just (`just test`, `just test-release`, ...); see
-# justfile and tests/justfile.  Every check builds the generated entry tables
-# with misc/gen_entries.lua, so Lua is a build dependency of the tests.
+#   format    clang-format gate (pinned; Linux only)
+#   check     test / test-release / test-double on Linux, macOS and Windows
+#   coverage  lcov -> Coveralls (Linux)
+#   finish    closes the parallel Coveralls build
 #
-# clang-format is installed through pipx at a pinned version: the runner image
-# ships clang-format 18, but .clang-format uses keys from 19+, and 18 rejects
-# them.  Bump the pin together with the local baseline.
+# Lua comes from leafo/gh-actions-lua on every OS: misc/gen_entries.lua is a
+# build dependency of the suites.  The Windows job runs
+# misc\run_tests_windows.bat directly (MSVC); just is installed on POSIX only.
+# The c89/cpp03 checks need a POSIX cc and the Lua binding is POSIX-only, so
+# those steps are skipped on Windows.
+#
+# clang-format is installed at a pinned version: the runner image ships 18,
+# but .clang-format uses keys from 19+, and 18 rejects them.
+#
+# ccache is restored per OS and source hash: when the C sources did not change
+# the suites compile from cache instead of rebuilding amoeba.h.
 
 name: CI
 
@@ -17,49 +26,132 @@ on:
     branches: [master]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  LUA_VERSION: "5.5"
+
 jobs:
-  checks:
+  format:
     if: "! contains(toJSON(github.event.commits.*.message), '[skip ci]')"
     runs-on: ubuntu-latest
-    env:
-      LUA: lua5.4
-      CC: gcc
-      CXX: g++
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install tools
+      - name: Install clang-format
         run: |
-          sudo apt-get update
-          sudo apt-get install -y lua5.4 liblua5.4-dev lcov
           pipx install clang-format==23.1.5
           pipx_bin="$(pipx environment --value PIPX_BIN_DIR)"
           echo "CLANG_FORMAT=$pipx_bin/clang-format" >> "$GITHUB_ENV"
-          lua5.4 -v
           "$pipx_bin/clang-format" --version
 
       - uses: extractions/setup-just@v4
 
-      - name: Build + run every suite (ASan/UBSan)
-        run: just test
-
-      - name: Optimised build (-O2, no sanitizers)
-        run: just test-release
-
-      - name: Double precision
-        run: just test-double
-
-      - name: Clean C (C89) compile check
-        run: just test-c89
-
-      - name: C++03 compile check
-        run: just test-cpp03
-
-      - name: Lua binding
-        run: just test-lua
-
       - name: clang-format check
         run: just format-check
+
+  check:
+    name: check (${{ matrix.os }})
+    if: "! contains(toJSON(github.event.commits.*.message), '[skip ci]')"
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      # gh-actions-lua installs the Lua headers here; the binding recipe reads
+      # LUA_INC instead of probing pkg-config.
+      LUA_INC: -I${{ github.workspace }}/.lua/include
+      HOMEBREW_NO_INSTALL_UPGRADE: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache Homebrew
+        if: runner.os == 'macOS'
+        uses: actions/cache@v5
+        with:
+          path: ~/Library/Caches/Homebrew
+          key: ${{ runner.os }}-brew-${{ hashFiles('.github/workflows/test.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-brew-
+
+      - name: Restore ccache
+        if: runner.os != 'Windows'
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ${{ runner.os }}-ccache-${{ hashFiles('amoeba.h', 'lua_amoeba.c', 'tests/*.c', 'tests/*.h', 'misc/gen_entries.lua', 'justfile', 'tests/justfile') }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-
+
+      # msvc-dev-cmd is required for the Windows build and the Lua action, and
+      # is a no-op on the other runners.
+      - uses: step-security/msvc-dev-cmd@v1
+
+      - uses: leafo/gh-actions-lua@v13
+        with:
+          luaVersion: ${{ env.LUA_VERSION }}
+
+      - name: Install ccache
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            brew install ccache
+            echo "CC=ccache clang" >> "$GITHUB_ENV"
+            echo "CXX=ccache clang++" >> "$GITHUB_ENV"
+          else
+            sudo apt-get update
+            sudo apt-get install -y ccache
+            echo "CC=ccache gcc" >> "$GITHUB_ENV"
+            echo "CXX=ccache g++" >> "$GITHUB_ENV"
+          fi
+          echo "CCACHE_DIR=$RUNNER_TEMP/ccache" >> "$GITHUB_ENV"
+
+      - if: runner.os != 'Windows'
+        uses: extractions/setup-just@v4
+
+      - name: Debug build (MSVC)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: misc\run_tests_windows.bat debug
+
+      - name: Debug build (ASan/UBSan)
+        if: runner.os != 'Windows'
+        run: just test
+
+      - name: Optimised build (MSVC)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: misc\run_tests_windows.bat release
+
+      - name: Optimised build (-O2, no sanitizers)
+        if: runner.os != 'Windows'
+        run: just test-release
+
+      - name: Double precision (MSVC)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: misc\run_tests_windows.bat double
+
+      - name: Double precision
+        if: runner.os != 'Windows'
+        run: just test-double
+
+      - name: C89 and C++03 compile checks
+        if: runner.os != 'Windows'
+        run: |
+          just test-c89
+          just test-cpp03
+
+      - name: Lua binding
+        if: runner.os != 'Windows'
+        run: just test-lua
 
   coverage:
     if: "! contains(toJSON(github.event.commits.*.message), '[skip ci]')"

@@ -44,15 +44,25 @@ default: all
 # gen + compile every suite into build/<tag>/
 [unix]
 [private]
-build tag flags suites=SUITES:
+build tag san flags suites=SUITES:
     #!/usr/bin/env bash
-    set -euo pipefail
+    # one compile per suite in parallel: the suites share amoeba.h, and the
+    # single-header build is the slowest part of the CI run
+    set -uo pipefail
     out='{{BUILD}}/{{tag}}'
     mkdir -p "$out"
+    pids=''
     for s in {{suites}}; do
-        {{LUA}} '{{GEN}}' "{{SRC}}/$s.c" "{{SRC}}/$s.gen.inc" {{flags}}
-        {{CC}} {{BASE}} {{SAN}} {{flags}} -o "$out/$s" "{{SRC}}/$s.c"
+        (
+            echo "=== {{tag}}/$s ==="
+            {{LUA}} '{{GEN}}' "{{SRC}}/$s.c" "{{SRC}}/$s.gen.inc" {{flags}} &&
+            {{CC}} {{BASE}} {{san}} {{flags}} -o "$out/$s" "{{SRC}}/$s.c"
+        ) &
+        pids="$pids $!"
     done
+    fail=0
+    for p in $pids; do wait "$p" || fail=1; done
+    exit $fail
 
 # run every test of every suite, one process per test
 [unix]
@@ -103,21 +113,21 @@ verify tags:
 # build + run every suite under ASan/UBSan
 [unix]
 [private]
-all: (build "debug" "") (run "debug") (verify "debug")
+all: (build "debug" SAN "") (run "debug") (verify "debug")
 
 # -O2, no sanitizers: catches tests that only pass in a debug build
 [unix]
-test-release: (build "release" "-O2") (run "release") (verify "release")
+test-release: (build "release" "" "-O2") (run "release") (verify "release")
 
 # poison every automatic variable with 0xAA: a test (or library helper) that
 # reads uninitialised memory behaves deterministically and fails here
 [unix]
-test-uninit: (build "uninit" "-O1 -ftrivial-auto-var-init=pattern") \
+test-uninit: (build "uninit" SAN "-O1 -ftrivial-auto-var-init=pattern") \
     (run "uninit") (verify "uninit")
 
 # am_Num = double
 [unix]
-test-double: (build "double" "-DAM_USE_DOUBLE") (run "double") \
+test-double: (build "double" SAN "-DAM_USE_DOUBLE") (run "double") \
     (verify "double")
 
 # no name: every suite; one suite, one process per test:

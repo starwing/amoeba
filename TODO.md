@@ -47,9 +47,11 @@ A3/A5/C3 已关闭，不再有依赖。E2（dump/load 去 id）见 §7。
 
 ### B2. Windows / MSVC 的测试路径
 
-- 现状：`tests/justfile` 的 recipe 是 bash；Windows recipe 只 echo 一句「需要 POSIX shell」。
-- 做法：仿 znet 的 `tests/run.bat` + `check.bat`，至少覆盖 `/W4 /WX` 的编译检查。
-- 验收：GitHub Actions 的 windows job 能跑 `just check-msvc`。
+- 现状：已加。`misc\run_tests_windows.bat` 用 MSVC `/W4 /WX` 编译三套 suite 并逐个
+  测试运行；`misc\msvc-env.bat` 在 ssh/纯 cmd 会话里加载 vcvars64。
+- 做法：CI 的 `check` job 是 ubuntu/macos/windows 矩阵；Windows job 直接运行
+  该脚本（不装 just）。
+- 验收：windows-latest 全绿；c89/cpp03 与 Lua 绑定仍只跑 POSIX（MSVC 无 -pedantic）。
 
 ### B4. Lua 绑定
 

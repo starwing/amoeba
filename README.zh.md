@@ -155,6 +155,9 @@ just cov             # lcov 报告
 just format          # 用 clang-format 格式化整棵树
 ```
 
+Windows CI 直接运行 `misc\run_tests_windows.bat`（MSVC）；严格 C89/C++03
+检查与 Lua 绑定只在 POSIX 上运行。
+
 测试源码位于 `tests/`；`misc/gen_entries.lua` 把 `TEST(name)` 函数变成入口表（因此
 Lua 解释器是测试的构建依赖）。代码风格由 `.clang-format` 定义（clang-format >= 19，
 CI 中固定为 23.1.5）。路线图见 [TODO.md](TODO.md)。

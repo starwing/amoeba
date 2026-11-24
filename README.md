@@ -164,6 +164,9 @@ just cov             # lcov report
 just format          # clang-format the tree
 ```
 
+The Windows CI job runs `misc\run_tests_windows.bat` directly (MSVC); the
+strict C89/C++03 checks and the Lua binding are POSIX-only.
+
 Test sources live in `tests/`; `misc/gen_entries.lua` turns `TEST(name)`
 functions into the entry table (so a Lua interpreter is a build dependency of
 the tests).  Code style is defined by `.clang-format` (clang-format >= 19,
