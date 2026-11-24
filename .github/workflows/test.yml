@@ -3,6 +3,10 @@
 # The suites are driven by just (`just test`, `just test-release`, ...); see
 # justfile and tests/justfile.  Every check builds the generated entry tables
 # with misc/gen_entries.lua, so Lua is a build dependency of the tests.
+#
+# clang-format is installed through pipx at a pinned version: the runner image
+# ships clang-format 18, but .clang-format uses keys from 19+, and 18 rejects
+# them.  Bump the pin together with the local baseline.
 
 name: CI
 
@@ -22,16 +26,19 @@ jobs:
       CC: gcc
       CXX: g++
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y lua5.4 liblua5.4-dev lcov clang-format
+          sudo apt-get install -y lua5.4 liblua5.4-dev lcov
+          pipx install clang-format==23.1.5
+          pipx_bin="$(pipx environment --value PIPX_BIN_DIR)"
+          echo "CLANG_FORMAT=$pipx_bin/clang-format" >> "$GITHUB_ENV"
           lua5.4 -v
-          clang-format --version
+          "$pipx_bin/clang-format" --version
 
-      - uses: extractions/setup-just@v2
+      - uses: extractions/setup-just@v4
 
       - name: Build + run every suite (ASan/UBSan)
         run: just test
@@ -51,12 +58,7 @@ jobs:
       - name: Lua binding
         run: just test-lua
 
-      # Advisory for now: the formatting baseline is clang-format >= 19 (the
-      # config uses newer keys) and the distro package may be older than the
-      # one used locally.  Flip continue-on-error once the version is pinned
-      # in both places (see TODO.md).
-      - name: clang-format check (advisory)
-        continue-on-error: true
+      - name: clang-format check
         run: just format-check
 
   coverage:
@@ -66,7 +68,7 @@ jobs:
       LUA: lua5.4
       CC: gcc
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install tools
         run: |
@@ -75,16 +77,16 @@ jobs:
           sudo apt-get install -y libperlio-gzip-perl libjson-perl \
             libcapture-tiny-perl libdatetime-perl
 
-      - uses: extractions/setup-just@v2
+      - uses: extractions/setup-just@v4
 
       - name: Collect coverage
         run: just cov
 
       - name: Coveralls
-        uses: coverallsapp/github-action@master
+        uses: coverallsapp/github-action@v2.3.8
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          path-to-lcov: tests/build/amoeba.info
+          file: tests/build/amoeba.info
           parallel: true
 
   finish:
@@ -92,7 +94,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Coveralls Finished
-        uses: coverallsapp/github-action@master
+        uses: coverallsapp/github-action@v2.3.8
         with:
-          github-token: ${{ secrets.github_token }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           parallel-finished: true

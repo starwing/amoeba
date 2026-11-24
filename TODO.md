@@ -39,11 +39,11 @@ A3/A5/C3 已关闭，不再有依赖。E2（dump/load 去 id）见 §7。
 
 ### B1. CI 的格式门禁
 
-- 现状：`just format-check` 在 CI 里是 `continue-on-error: true`，因为工作流的 clang-format
-  （发行版）和本地 23.1.4 可能不一致（配置用了 19+ 的 key）。
-- 做法：锁定版本（CI 装固定版本，或改用 `pip install clang-format==<ver>`），然后改成 blocking。
+- 现状：已改。CI 改用 pipx 安装固定版本 `clang-format==23.1.5`，`format-check` 去掉
+  `continue-on-error`，成为 blocking 门禁（runner 自带的是 18，读不了配置里 19+ 的 key）。
+- 待办：推送后确认 CI 首跑通过并提交；本地已用 23.1.5 验证 `just format-check` 通过。
 - 验收：故意打乱一个空格，CI 变红。
-- 前置：唯一的 `style:` 提交落地——已满足（`50ab0a9`），可以直接做版本锁定。
+- 前置：唯一的 `style:` 提交落地——已满足（`50ab0a9`）。
 
 ### B2. Windows / MSVC 的测试路径
 
